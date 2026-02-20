@@ -10,47 +10,47 @@ export type SummaErrorCode =
 	| "INTERNAL";
 
 export class SummaError extends Error {
-	code: SummaErrorCode;
+	readonly code: SummaErrorCode;
 
-	constructor(code: SummaErrorCode, message: string) {
-		super(message);
+	constructor(code: SummaErrorCode, message: string, options?: { cause?: unknown }) {
+		super(message, options);
 		this.code = code;
 		this.name = "SummaError";
 	}
 
-	static insufficientBalance(message = "Insufficient balance") {
-		return new SummaError("INSUFFICIENT_BALANCE", message);
+	static insufficientBalance(message = "Insufficient balance", cause?: unknown) {
+		return new SummaError("INSUFFICIENT_BALANCE", message, { cause });
 	}
 
-	static accountFrozen(message = "Account is frozen") {
-		return new SummaError("ACCOUNT_FROZEN", message);
+	static accountFrozen(message = "Account is frozen", cause?: unknown) {
+		return new SummaError("ACCOUNT_FROZEN", message, { cause });
 	}
 
-	static accountClosed(message = "Account is closed") {
-		return new SummaError("ACCOUNT_CLOSED", message);
+	static accountClosed(message = "Account is closed", cause?: unknown) {
+		return new SummaError("ACCOUNT_CLOSED", message, { cause });
 	}
 
-	static limitExceeded(message = "Transaction limit exceeded") {
-		return new SummaError("LIMIT_EXCEEDED", message);
+	static limitExceeded(message = "Transaction limit exceeded", cause?: unknown) {
+		return new SummaError("LIMIT_EXCEEDED", message, { cause });
 	}
 
-	static notFound(message = "Resource not found") {
-		return new SummaError("NOT_FOUND", message);
+	static notFound(message = "Resource not found", cause?: unknown) {
+		return new SummaError("NOT_FOUND", message, { cause });
 	}
 
-	static invalidArgument(message = "Invalid argument") {
-		return new SummaError("INVALID_ARGUMENT", message);
+	static invalidArgument(message = "Invalid argument", cause?: unknown) {
+		return new SummaError("INVALID_ARGUMENT", message, { cause });
 	}
 
-	static duplicate(message = "Duplicate resource") {
-		return new SummaError("DUPLICATE", message);
+	static duplicate(message = "Duplicate resource", cause?: unknown) {
+		return new SummaError("DUPLICATE", message, { cause });
 	}
 
-	static conflict(message = "Conflict") {
-		return new SummaError("CONFLICT", message);
+	static conflict(message = "Conflict", cause?: unknown) {
+		return new SummaError("CONFLICT", message, { cause });
 	}
 
-	static internal(message = "Internal error") {
-		return new SummaError("INTERNAL", message);
+	static internal(message = "Internal error", cause?: unknown) {
+		return new SummaError("INTERNAL", message, { cause });
 	}
 }

@@ -3,12 +3,15 @@
 	"private": true,
 	"type": "module",
 	"packageManager": "pnpm@10.6.2",
+	"engines": {
+		"node": ">=22.0.0"
+	},
 	"scripts": {
 		"build": "turbo build",
 		"dev": "turbo dev",
 		"test": "turbo test",
 		"test:coverage": "turbo test -- --coverage",
-		"typecheck": "tsc --build",
+		"typecheck": "turbo typecheck",
 		"clean": "turbo clean",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write .",

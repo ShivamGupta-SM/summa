@@ -21,4 +21,21 @@ program.addCommand(migrateCommand);
 program.addCommand(verifyCommand);
 program.addCommand(statusCommand);
 
-program.parse();
+function sanitizeErrorMessage(message: string): string {
+	return message
+		.replace(/postgres(ql)?:\/\/[^\s]+/gi, "postgres://***")
+		.replace(/(password|token|secret|key)[=:]\s*\S+/gi, "$1=***");
+}
+
+program.exitOverride();
+
+try {
+	await program.parseAsync();
+} catch (error) {
+	if (error instanceof Error && "code" in error && error.code === "commander.helpDisplayed") {
+		process.exit(0);
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	console.error(sanitizeErrorMessage(message));
+	process.exit(1);
+}

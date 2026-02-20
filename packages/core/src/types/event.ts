@@ -3,7 +3,7 @@ export const AGGREGATE_TYPES = {
 	TRANSACTION: "transaction",
 	HOLD: "hold",
 	SCHEDULED_TRANSACTION: "scheduled_transaction",
-} as const;
+} as const satisfies Record<string, string>;
 
 export type AggregateType = (typeof AGGREGATE_TYPES)[keyof typeof AGGREGATE_TYPES];
 
@@ -12,20 +12,20 @@ export const ACCOUNT_EVENTS = {
 	FROZEN: "AccountFrozen",
 	UNFROZEN: "AccountUnfrozen",
 	CLOSED: "AccountClosed",
-} as const;
+} as const satisfies Record<string, string>;
 
 export const TRANSACTION_EVENTS = {
 	INITIATED: "TransactionInitiated",
 	POSTED: "TransactionPosted",
 	REVERSED: "TransactionReversed",
-} as const;
+} as const satisfies Record<string, string>;
 
 export const HOLD_EVENTS = {
 	CREATED: "HoldCreated",
 	COMMITTED: "HoldCommitted",
 	VOIDED: "HoldVoided",
 	EXPIRED: "HoldExpired",
-} as const;
+} as const satisfies Record<string, string>;
 
 export const SCHEDULED_EVENTS = {
 	CREATED: "ScheduledTransactionCreated",
@@ -34,7 +34,7 @@ export const SCHEDULED_EVENTS = {
 	COMPLETED: "ScheduledTransactionCompleted",
 	RESCHEDULED: "ScheduledTransactionRescheduled",
 	FAILED: "ScheduledTransactionFailed",
-} as const;
+} as const satisfies Record<string, string>;
 
 export interface StoredEvent {
 	id: string;
