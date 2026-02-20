@@ -1,11 +1,11 @@
 // Types
-
-// DB adapter
 export * from "./db/index.js";
-export type { SummaErrorCode } from "./error/index.js";
 
 // Errors
-export { SummaError } from "./error/index.js";
+export type { BaseErrorCode, RawErrorCode, SummaErrorCode } from "./error/index.js";
+export { BASE_ERROR_CODES, SummaError } from "./error/index.js";
+
+// Type definitions
 export * from "./types/index.js";
 
 // Utilities

@@ -1,4 +1,72 @@
+import type { RawErrorCode } from "../error/codes.js";
 import type { SummaContext } from "./context.js";
+
+// =============================================================================
+// PLUGIN REGISTRY (Module Augmentation)
+// =============================================================================
+
+/**
+ * Plugin registry for TypeScript module augmentation.
+ * Plugins declare themselves here for type-safe `hasPlugin()` and context inference.
+ *
+ * @example
+ * ```ts
+ * declare module "@summa/core" {
+ *   interface SummaPluginRegistry {
+ *     "velocity-limits": {
+ *       context: { limits: LimitManager };
+ *     }
+ *   }
+ * }
+ * ```
+ */
+// biome-ignore lint/suspicious/noEmptyInterface: used for declaration merging
+export interface SummaPluginRegistry {}
+
+export type SummaPluginId = keyof SummaPluginRegistry;
+
+// =============================================================================
+// OPERATION TYPES (for matcher-based hooks)
+// =============================================================================
+
+export type SummaOperation =
+	| { type: "account.create"; params: Record<string, unknown> }
+	| { type: "account.freeze"; params: { accountId: string } }
+	| { type: "account.unfreeze"; params: { accountId: string } }
+	| { type: "account.close"; params: Record<string, unknown> }
+	| { type: "transaction.credit"; params: Record<string, unknown> }
+	| { type: "transaction.debit"; params: Record<string, unknown> }
+	| { type: "transaction.transfer"; params: Record<string, unknown> }
+	| { type: "transaction.refund"; params: Record<string, unknown> }
+	| { type: "hold.create"; params: Record<string, unknown> }
+	| { type: "hold.commit"; params: Record<string, unknown> }
+	| { type: "hold.void"; params: { holdId: string } };
+
+export interface SummaHookContext {
+	operation: SummaOperation;
+	context: SummaContext;
+}
+
+// =============================================================================
+// TABLE DEFINITION (for plugin schema contributions)
+// =============================================================================
+
+export interface ColumnDefinition {
+	type: "text" | "integer" | "bigint" | "boolean" | "timestamp" | "jsonb" | "uuid" | "serial";
+	primaryKey?: boolean;
+	notNull?: boolean;
+	default?: string;
+	references?: { table: string; column: string };
+}
+
+export interface TableDefinition {
+	columns: Record<string, ColumnDefinition>;
+	indexes?: Array<{
+		name: string;
+		columns: string[];
+		unique?: boolean;
+	}>;
+}
 
 // =============================================================================
 // PLUGIN INTERFACE
@@ -10,7 +78,7 @@ export interface SummaPlugin {
 	/** Called during createSumma() initialization */
 	init?: (ctx: SummaContext) => Promise<void> | void;
 
-	/** Lifecycle hooks */
+	/** Lifecycle hooks (existing — used by all current plugins) */
 	hooks?: {
 		beforeTransaction?: (params: TransactionHookParams) => Promise<void>;
 		afterTransaction?: (params: TransactionHookParams) => Promise<void>;
@@ -18,6 +86,18 @@ export interface SummaPlugin {
 		afterAccountCreate?: (params: AccountHookParams) => Promise<void>;
 		beforeHoldCreate?: (params: HoldHookParams) => Promise<void>;
 		afterHoldCommit?: (params: HoldCommitHookParams) => Promise<void>;
+	};
+
+	/** Generic matcher-based hooks (future-proof extension of hooks) */
+	operationHooks?: {
+		before?: Array<{
+			matcher: (op: SummaOperation) => boolean;
+			handler: (params: SummaHookContext) => Promise<void | { cancel: true; reason: string }>;
+		}>;
+		after?: Array<{
+			matcher: (op: SummaOperation) => boolean;
+			handler: (params: SummaHookContext) => Promise<void>;
+		}>;
 	};
 
 	/** Background workers that process data on intervals */
@@ -29,6 +109,24 @@ export interface SummaPlugin {
 		description: string;
 		handler: (ctx: SummaContext) => Promise<void>;
 		suggestedInterval: string;
+	}>;
+
+	/** Schema extension — tables added by this plugin */
+	schema?: Record<string, TableDefinition>;
+
+	/** Typed error codes contributed by this plugin */
+	$ERROR_CODES?: Record<string, RawErrorCode>;
+
+	/** Type inference hints (for TypeScript DX) */
+	$Infer?: Record<string, unknown>;
+
+	/** Rate limiting rules for specific operations */
+	rateLimit?: Array<{
+		operation: string | ((op: string) => boolean);
+		/** Window size in seconds */
+		window: number;
+		/** Max operations in window */
+		max: number;
 	}>;
 }
 

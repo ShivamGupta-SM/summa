@@ -1,8 +1,9 @@
-import { existsSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
+import { findConfigFile } from "../utils/get-config.js";
 
 const CONFIG_FILENAME = "summa.config.ts";
 
@@ -22,15 +23,14 @@ const adapters: AdapterChoice[] = [
 		hint: "recommended",
 		pkg: "@summa/drizzle-adapter",
 		peerDeps: ["drizzle-orm"],
-		template: (currency) => `import { defineConfig } from "summa/config";
+		template: (currency) => `import { createSumma } from "summa";
 import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { schema } from "@summa/drizzle-adapter/schema";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
 
-export default defineConfig({
-  database: drizzleAdapter({ db, schema }),
+export const summa = createSumma({
+  database: drizzleAdapter(db),
   currency: "${currency}",
   systemAccounts: {
     world: "@World",
@@ -47,14 +47,14 @@ export default defineConfig({
 		hint: "prisma client",
 		pkg: "@summa/prisma-adapter",
 		peerDeps: ["@prisma/client"],
-		template: (currency) => `import { defineConfig } from "summa/config";
+		template: (currency) => `import { createSumma } from "summa";
 import { prismaAdapter } from "@summa/prisma-adapter";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
-export default defineConfig({
-  database: prismaAdapter({ prisma }),
+export const summa = createSumma({
+  database: prismaAdapter(prisma),
   currency: "${currency}",
   systemAccounts: {
     world: "@World",
@@ -71,7 +71,7 @@ export default defineConfig({
 		hint: "type-safe SQL",
 		pkg: "@summa/kysely-adapter",
 		peerDeps: ["kysely"],
-		template: (currency) => `import { defineConfig } from "summa/config";
+		template: (currency) => `import { createSumma } from "summa";
 import { kyselyAdapter } from "@summa/kysely-adapter";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
@@ -80,8 +80,8 @@ const db = new Kysely({
   dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.DATABASE_URL }) }),
 });
 
-export default defineConfig({
-  database: kyselyAdapter({ db }),
+export const summa = createSumma({
+  database: kyselyAdapter(db),
   currency: "${currency}",
   systemAccounts: {
     world: "@World",
@@ -98,10 +98,10 @@ export default defineConfig({
 		hint: "testing only",
 		pkg: "@summa/memory-adapter",
 		peerDeps: [],
-		template: (currency) => `import { defineConfig } from "summa/config";
+		template: (currency) => `import { createSumma } from "summa";
 import { memoryAdapter } from "@summa/memory-adapter";
 
-export default defineConfig({
+export const summa = createSumma({
   database: memoryAdapter(),
   currency: "${currency}",
   systemAccounts: {
@@ -120,10 +120,16 @@ export const initCommand = new Command("init")
 	.option("-f, --force", "Overwrite existing config file")
 	.option("-y, --yes", "Skip prompts and use defaults (drizzle, USD)")
 	.action(async (options: { force?: boolean; yes?: boolean }) => {
-		const configPath = resolve(process.cwd(), CONFIG_FILENAME);
+		const parent = initCommand.parent;
+		const cwd: string = parent?.opts().cwd ?? process.cwd();
 
-		if (existsSync(configPath) && !options.force) {
-			p.log.warning(`${CONFIG_FILENAME} already exists. Use ${pc.bold("--force")} to overwrite.`);
+		const existing = findConfigFile(cwd);
+		const configPath = resolve(cwd, CONFIG_FILENAME);
+
+		if (existing && !options.force) {
+			p.log.warning(
+				`Config already exists at ${pc.dim(existing)}. Use ${pc.bold("--force")} to overwrite.`,
+			);
 			process.exitCode = 1;
 			return;
 		}
@@ -152,7 +158,7 @@ export const initCommand = new Command("init")
 							placeholder: "USD",
 							defaultValue: "USD",
 							validate: (v) => {
-								if (!/^[A-Z]{3,4}$/.test(v.toUpperCase())) {
+								if (v == null || !/^[A-Z]{3,4}$/.test(v.toUpperCase())) {
 									return "Enter a valid ISO currency code (e.g. USD, EUR, INR)";
 								}
 							},

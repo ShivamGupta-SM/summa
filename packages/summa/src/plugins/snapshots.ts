@@ -190,7 +190,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 			accountsSnapshotted++;
 		}
 
-		lastAccountId = accountBatch[accountBatch.length - 1]?.id;
+		lastAccountId = accountBatch[accountBatch.length - 1]?.id ?? lastAccountId;
 		if (accountBatch.length < BATCH_SIZE) break;
 	}
 

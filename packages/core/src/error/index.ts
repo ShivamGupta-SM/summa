@@ -1,3 +1,5 @@
+export { BASE_ERROR_CODES, type BaseErrorCode, type RawErrorCode } from "./codes.js";
+
 export type SummaErrorCode =
 	| "INSUFFICIENT_BALANCE"
 	| "ACCOUNT_FROZEN"
@@ -7,50 +9,104 @@ export type SummaErrorCode =
 	| "INVALID_ARGUMENT"
 	| "DUPLICATE"
 	| "CONFLICT"
-	| "INTERNAL";
+	| "INTERNAL"
+	| "HOLD_EXPIRED"
+	| "CHAIN_INTEGRITY_VIOLATION"
+	| "RATE_LIMITED";
 
 export class SummaError extends Error {
 	readonly code: SummaErrorCode;
+	readonly status: number;
+	readonly details?: Record<string, unknown>;
 
-	constructor(code: SummaErrorCode, message: string, options?: { cause?: unknown }) {
-		super(message, options);
+	constructor(
+		code: SummaErrorCode,
+		message: string,
+		options?: { cause?: unknown; status?: number; details?: Record<string, unknown> },
+	) {
+		super(message, { cause: options?.cause });
 		this.code = code;
+		this.status = options?.status ?? 500;
+		this.details = options?.details;
 		this.name = "SummaError";
 	}
 
+	/**
+	 * Create a SummaError from a typed error code.
+	 * Uses the default message and status from BASE_ERROR_CODES.
+	 */
+	static fromCode<C extends SummaErrorCode>(
+		code: C,
+		options?: { message?: string; cause?: unknown; details?: Record<string, unknown> },
+	): SummaError {
+		// Dynamic import avoided — inline lookup for the base codes
+		const defaults: Record<string, { message: string; status: number }> = {
+			INSUFFICIENT_BALANCE: { message: "Insufficient balance", status: 400 },
+			ACCOUNT_FROZEN: { message: "Account is frozen", status: 403 },
+			ACCOUNT_CLOSED: { message: "Account is closed", status: 403 },
+			LIMIT_EXCEEDED: { message: "Transaction limit exceeded", status: 429 },
+			NOT_FOUND: { message: "Resource not found", status: 404 },
+			INVALID_ARGUMENT: { message: "Invalid argument", status: 400 },
+			DUPLICATE: { message: "Duplicate operation", status: 409 },
+			CONFLICT: { message: "Resource conflict", status: 409 },
+			INTERNAL: { message: "Internal error", status: 500 },
+			HOLD_EXPIRED: { message: "Hold has expired", status: 410 },
+			CHAIN_INTEGRITY_VIOLATION: { message: "Hash chain integrity violated", status: 500 },
+			RATE_LIMITED: { message: "Rate limit exceeded", status: 429 },
+		};
+		const raw = defaults[code] ?? { message: "Unknown error", status: 500 };
+		return new SummaError(code, options?.message ?? raw.message, {
+			cause: options?.cause,
+			status: raw.status,
+			details: options?.details,
+		});
+	}
+
 	static insufficientBalance(message = "Insufficient balance", cause?: unknown) {
-		return new SummaError("INSUFFICIENT_BALANCE", message, { cause });
+		return new SummaError("INSUFFICIENT_BALANCE", message, { cause, status: 400 });
 	}
 
 	static accountFrozen(message = "Account is frozen", cause?: unknown) {
-		return new SummaError("ACCOUNT_FROZEN", message, { cause });
+		return new SummaError("ACCOUNT_FROZEN", message, { cause, status: 403 });
 	}
 
 	static accountClosed(message = "Account is closed", cause?: unknown) {
-		return new SummaError("ACCOUNT_CLOSED", message, { cause });
+		return new SummaError("ACCOUNT_CLOSED", message, { cause, status: 403 });
 	}
 
 	static limitExceeded(message = "Transaction limit exceeded", cause?: unknown) {
-		return new SummaError("LIMIT_EXCEEDED", message, { cause });
+		return new SummaError("LIMIT_EXCEEDED", message, { cause, status: 429 });
 	}
 
 	static notFound(message = "Resource not found", cause?: unknown) {
-		return new SummaError("NOT_FOUND", message, { cause });
+		return new SummaError("NOT_FOUND", message, { cause, status: 404 });
 	}
 
 	static invalidArgument(message = "Invalid argument", cause?: unknown) {
-		return new SummaError("INVALID_ARGUMENT", message, { cause });
+		return new SummaError("INVALID_ARGUMENT", message, { cause, status: 400 });
 	}
 
 	static duplicate(message = "Duplicate resource", cause?: unknown) {
-		return new SummaError("DUPLICATE", message, { cause });
+		return new SummaError("DUPLICATE", message, { cause, status: 409 });
 	}
 
 	static conflict(message = "Conflict", cause?: unknown) {
-		return new SummaError("CONFLICT", message, { cause });
+		return new SummaError("CONFLICT", message, { cause, status: 409 });
 	}
 
 	static internal(message = "Internal error", cause?: unknown) {
-		return new SummaError("INTERNAL", message, { cause });
+		return new SummaError("INTERNAL", message, { cause, status: 500 });
+	}
+
+	static holdExpired(message = "Hold has expired", cause?: unknown) {
+		return new SummaError("HOLD_EXPIRED", message, { cause, status: 410 });
+	}
+
+	static chainIntegrityViolation(message = "Hash chain integrity violated", cause?: unknown) {
+		return new SummaError("CHAIN_INTEGRITY_VIOLATION", message, { cause, status: 500 });
+	}
+
+	static rateLimited(message = "Rate limit exceeded", cause?: unknown) {
+		return new SummaError("RATE_LIMITED", message, { cause, status: 429 });
 	}
 }

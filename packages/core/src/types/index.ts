@@ -55,10 +55,16 @@ export type {
 
 export type {
 	AccountHookParams,
+	ColumnDefinition,
 	HoldCommitHookParams,
 	HoldHookParams,
+	SummaHookContext,
+	SummaOperation,
 	SummaPlugin,
+	SummaPluginId,
+	SummaPluginRegistry,
 	SummaWorkerDefinition,
+	TableDefinition,
 	TransactionHookParams,
 } from "./plugin.js";
 export type {

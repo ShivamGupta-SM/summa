@@ -1,4 +1,5 @@
 import type { SummaAdapter } from "../db/adapter.js";
+import type { SecondaryStorage } from "../db/secondary-storage.js";
 import type { SummaPlugin } from "./plugin.js";
 
 export interface SummaOptions {
@@ -19,6 +20,9 @@ export interface SummaOptions {
 
 	/** Custom logger */
 	logger?: SummaLogger;
+
+	/** Secondary storage (Redis, Memcached) for rate limiting, caching, etc. */
+	secondaryStorage?: SecondaryStorage;
 }
 
 export interface SystemAccountDefinition {

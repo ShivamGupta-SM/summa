@@ -159,7 +159,7 @@ function buildDrizzleSql(query: string, params: unknown[]) {
 		return sql.raw(query);
 	}
 
-	return chunks.reduce((acc: ReturnType<typeof sql.raw>, chunk) => sql`${acc}${chunk}`);
+	return chunks.reduce((acc, chunk) => sql`${acc}${chunk}`);
 }
 
 // =============================================================================

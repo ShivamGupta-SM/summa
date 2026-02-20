@@ -3,6 +3,17 @@
 // =============================================================================
 // Plugin exports for the "summa/plugins" entry point.
 
+export { type AuditLogEntry, type AuditLogOptions, auditLog, queryAuditLog } from "./audit-log.js";
+export {
+	type DlqManagerOptions,
+	type DlqStats,
+	dlqManager,
+	type FailedEvent,
+	getDlqStats,
+	listUnresolvedEvents,
+	resolveEvent,
+	retryEvent,
+} from "./dlq-manager.js";
 export { type HoldExpiryOptions, holdExpiry } from "./hold-expiry.js";
 export {
 	getHotAccountStats,

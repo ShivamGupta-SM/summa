@@ -409,7 +409,8 @@ export async function commitHold(
 		// Check if hold has expired -- use DB time to avoid client clock skew
 		if (hold.hold_expires_at) {
 			const nowRows = await tx.raw<{ now: Date }>("SELECT NOW() as now", []);
-			if (new Date(hold.hold_expires_at) < new Date(nowRows[0]?.now)) {
+			const dbNow = nowRows[0]?.now;
+			if (dbNow && new Date(hold.hold_expires_at) < new Date(dbNow)) {
 				await tx.raw(`UPDATE transaction_record SET status = 'expired' WHERE id = $1`, [holdId]);
 				throw SummaError.conflict("Hold has expired");
 			}

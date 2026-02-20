@@ -463,7 +463,7 @@ export async function closeAccount(
 				],
 			);
 
-			sweepTxnId = sweepTxnRows[0]?.id;
+			sweepTxnId = sweepTxnRows[0]?.id ?? "";
 
 			// Debit source
 			const debitUpdateRows = await tx.raw<RawBalanceUpdateRow>(
@@ -524,6 +524,7 @@ export async function closeAccount(
 			);
 
 			// Event for sweep
+			if (!sweepTxnId) throw SummaError.internal("Sweep transaction ID missing after insert");
 			await appendEvent(tx, {
 				aggregateType: AGGREGATE_TYPES.TRANSACTION,
 				aggregateId: sweepTxnId,

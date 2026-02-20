@@ -26,9 +26,16 @@
       "dev-source": "./src/types/index.ts",
       "types": "./dist/types/index.d.mts",
       "default": "./dist/types/index.mjs"
+    },
+    "./db": {
+      "dev-source": "./src/db/index.ts",
+      "types": "./dist/db/index.d.mts",
+      "default": "./dist/db/index.mjs"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
@@ -43,8 +50,9 @@
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.0",
+    "@types/node": "^22.0.0",
     "publint": "^0.3.0",
-    "tsdown": "^0.12.0",
+    "tsdown": "catalog:",
     "typescript": "^5.8.0",
     "vitest": "^3.0.0"
   }

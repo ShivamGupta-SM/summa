@@ -413,7 +413,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			}
 		}
 
-		lastAccountId = accountBatch[accountBatch.length - 1]?.id;
+		lastAccountId = accountBatch[accountBatch.length - 1]?.id ?? lastAccountId;
 		if (accountBatch.length < BATCH_SIZE) break;
 	}
 
@@ -482,21 +482,21 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 		// meaning they were recorded alongside hot_account_entry inserts.
 		// We verify: net entry credits should be consistent with hot entries.
 
-		// Get consolidated (flushed) hot account totals
-		const hotConsolidatedRows = await ctx.adapter.raw<{
-			consolidated_sum: number;
+		// Get processed (flushed) hot account totals
+		const hotProcessedRows = await ctx.adapter.raw<{
+			processed_sum: number;
 		}>(
-			`SELECT COALESCE(SUM(amount), 0) AS consolidated_sum
+			`SELECT COALESCE(SUM(amount), 0) AS processed_sum
 			 FROM hot_account_entry
 			 WHERE account_id = $1
-			   AND status = 'consolidated'`,
+			   AND status = 'processed'`,
 			[sysAcct.id],
 		);
 
-		const consolidatedHotSum = Number(hotConsolidatedRows[0]?.consolidated_sum ?? 0);
+		const processedHotSum = Number(hotProcessedRows[0]?.processed_sum ?? 0);
 
-		// Total hot account net = consolidated + pending
-		const totalHotNet = consolidatedHotSum + pendingHotSum;
+		// Total hot account net = processed + pending
+		const totalHotNet = processedHotSum + pendingHotSum;
 
 		// entryNetCredits should equal totalHotNet
 		// (both represent the net flow into the system account)
@@ -510,7 +510,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 					entryNetCredits,
 					totalHotNet,
 					pendingHotSum,
-					consolidatedHotSum,
+					processedHotSum,
 				},
 			});
 		}
