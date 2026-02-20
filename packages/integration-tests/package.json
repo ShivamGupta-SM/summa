@@ -10,7 +10,7 @@
 		"@summa/drizzle-adapter": "workspace:*",
 		"@summa/test-utils": "workspace:*",
 		"summa": "workspace:*",
-		"drizzle-orm": "^0.41.0",
+		"drizzle-orm": "^0.45.1",
 		"pg": "^8.16.0",
 		"typescript": "catalog:",
 		"vitest": "catalog:"
