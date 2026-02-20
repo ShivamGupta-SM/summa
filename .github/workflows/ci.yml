@@ -149,7 +149,15 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Test
+      - name: Unit Tests
         run: pnpm test
         env:
           DATABASE_URL: postgres://summa:summa@localhost:5432/summa_test
+
+      - name: Integration Tests
+        run: pnpm test:integration
+        env:
+          DATABASE_URL: postgres://summa:summa@localhost:5432/summa_test
+
+      - name: Unused Dependencies (knip)
+        run: pnpm lint:dependencies

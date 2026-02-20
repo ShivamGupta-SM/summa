@@ -1,5 +1,5 @@
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import * as p from "@clack/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -126,6 +126,83 @@ const availablePlugins: PluginChoice[] = [
 ];
 
 // =============================================================================
+// FRAMEWORK DEFINITIONS
+// =============================================================================
+
+interface FrameworkChoice {
+	value: string;
+	label: string;
+	hint: string;
+	handlerImport: string;
+	handlerFactory: string;
+	routeFile: string;
+}
+
+const frameworks: FrameworkChoice[] = [
+	{
+		value: "next",
+		label: "Next.js",
+		hint: "App Router catch-all route",
+		handlerImport: 'import { createSummaNextHandler } from "summa/api/next";',
+		handlerFactory: "createSummaNextHandler",
+		routeFile: "app/api/ledger/[...path]/route.ts",
+	},
+	{
+		value: "hono",
+		label: "Hono",
+		hint: "lightweight web framework",
+		handlerImport: 'import { createSummaHono } from "summa/api/hono";',
+		handlerFactory: "createSummaHono",
+		routeFile: "src/routes/ledger.ts",
+	},
+	{
+		value: "express",
+		label: "Express",
+		hint: "classic Node.js framework",
+		handlerImport: 'import { createSummaExpress } from "summa/api/express";',
+		handlerFactory: "createSummaExpress",
+		routeFile: "src/routes/ledger.ts",
+	},
+	{
+		value: "fastify",
+		label: "Fastify",
+		hint: "high-performance framework",
+		handlerImport: 'import { createSummaFastify } from "summa/api/fastify";',
+		handlerFactory: "createSummaFastify",
+		routeFile: "src/routes/ledger.ts",
+	},
+	{
+		value: "none",
+		label: "None / Other",
+		hint: "skip API route scaffolding",
+		handlerImport: "",
+		handlerFactory: "",
+		routeFile: "",
+	},
+];
+
+function detectFramework(cwd: string): string | null {
+	const pkgPath = resolve(cwd, "package.json");
+	if (!existsSync(pkgPath)) return null;
+
+	try {
+		const pkg = JSON.parse(readFileSync(pkgPath, "utf-8")) as {
+			dependencies?: Record<string, string>;
+			devDependencies?: Record<string, string>;
+		};
+		const allDeps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+		if ("next" in allDeps) return "next";
+		if ("hono" in allDeps) return "hono";
+		if ("fastify" in allDeps) return "fastify";
+		if ("express" in allDeps) return "express";
+	} catch {
+		// Ignore parse errors
+	}
+	return null;
+}
+
+// =============================================================================
 // CONFIG TEMPLATE GENERATOR
 // =============================================================================
 
@@ -226,6 +303,58 @@ function generateConfigTemplate(opts: {
 }
 
 // =============================================================================
+// ROUTE FILE GENERATOR
+// =============================================================================
+
+function generateRouteFile(framework: FrameworkChoice): string {
+	const lines: string[] = [];
+
+	switch (framework.value) {
+		case "next":
+			lines.push('import { summa } from "@/summa.config";');
+			lines.push(framework.handlerImport);
+			lines.push("");
+			lines.push(
+				`const handler = ${framework.handlerFactory}(summa, { basePath: "/api/ledger" });`,
+			);
+			lines.push("");
+			lines.push("export const { GET, POST, PUT, PATCH, DELETE } = handler;");
+			break;
+		case "hono":
+			lines.push('import { summa } from "../summa.config";');
+			lines.push(framework.handlerImport);
+			lines.push("");
+			lines.push(
+				`export const ledger = ${framework.handlerFactory}(summa, { basePath: "/ledger" });`,
+			);
+			break;
+		case "express":
+			lines.push('import { summa } from "../summa.config";');
+			lines.push(framework.handlerImport);
+			lines.push("");
+			lines.push(
+				`export const ledgerRouter = ${framework.handlerFactory}(summa, { basePath: "/ledger" });`,
+			);
+			lines.push("");
+			lines.push("// app.use('/ledger', ledgerRouter);");
+			break;
+		case "fastify":
+			lines.push('import { summa } from "../summa.config";');
+			lines.push(framework.handlerImport);
+			lines.push("");
+			lines.push(
+				`export const ledgerPlugin = ${framework.handlerFactory}(summa, { basePath: "/ledger" });`,
+			);
+			lines.push("");
+			lines.push("// fastify.register(ledgerPlugin);");
+			break;
+	}
+
+	lines.push("");
+	return lines.join("\n");
+}
+
+// =============================================================================
 // INIT COMMAND
 // =============================================================================
 
@@ -253,6 +382,7 @@ export const initCommand = new Command("init")
 		const pm = detectPackageManager(cwd);
 		let adapterKey = "drizzle";
 		let currency = "USD";
+		let frameworkKey = "none";
 		let selectedPlugins: string[] = [];
 		let systemAccounts: Record<string, string> = {
 			world: "@World",
@@ -280,8 +410,30 @@ export const initCommand = new Command("init")
 			}
 			adapterKey = adapterResult;
 
-			// Step 2: Currency
-			p.log.step(pc.bold("2. Set Currency"));
+			// Step 2: Framework
+			p.log.step(pc.bold("2. API Framework"));
+
+			const detected = detectFramework(cwd);
+			const frameworkOptions = frameworks.map((f) => ({
+				value: f.value,
+				label: f.label,
+				hint: detected === f.value ? "detected" : f.hint,
+			}));
+
+			const frameworkResult = await p.select({
+				message: "Which framework for API routes?",
+				options: frameworkOptions,
+				initialValue: detected ?? "none",
+			});
+
+			if (p.isCancel(frameworkResult)) {
+				p.cancel("Setup cancelled.");
+				process.exit(0);
+			}
+			frameworkKey = frameworkResult;
+
+			// Step 3: Currency
+			p.log.step(pc.bold("3. Set Currency"));
 
 			const currencyResult = await p.text({
 				message: "Default currency code?",
@@ -300,8 +452,8 @@ export const initCommand = new Command("init")
 			}
 			currency = currencyResult.toUpperCase();
 
-			// Step 3: Plugins
-			p.log.step(pc.bold("3. Select Plugins"));
+			// Step 4: Plugins
+			p.log.step(pc.bold("4. Select Plugins"));
 
 			const pluginResult = await p.multiselect({
 				message: "Which plugins do you want to enable?",
@@ -319,8 +471,8 @@ export const initCommand = new Command("init")
 			}
 			selectedPlugins = pluginResult;
 
-			// Step 4: System Accounts
-			p.log.step(pc.bold("4. System Accounts"));
+			// Step 5: System Accounts
+			p.log.step(pc.bold("5. System Accounts"));
 
 			const useDefaults = await p.confirm({
 				message: `Use default system accounts? ${pc.dim("(@World, @Fees, @Suspense)")}`,
@@ -390,6 +542,44 @@ export const initCommand = new Command("init")
 		s.start("Creating config file");
 		writeFileSync(configPath, config, "utf-8");
 		s.stop(`Created ${pc.bold(CONFIG_FILENAME)}`);
+
+		// Generate .env.example if DATABASE_URL not already present
+		if (adapterKey !== "memory") {
+			const envExamplePath = resolve(cwd, ".env.example");
+			let shouldWrite = true;
+
+			if (existsSync(envExamplePath)) {
+				const content = readFileSync(envExamplePath, "utf-8");
+				if (content.includes("DATABASE_URL")) {
+					shouldWrite = false;
+				}
+			}
+
+			if (shouldWrite) {
+				const envLine = "DATABASE_URL=postgres://user:pass@localhost:5432/mydb\n";
+				if (existsSync(envExamplePath)) {
+					const existing = readFileSync(envExamplePath, "utf-8");
+					writeFileSync(envExamplePath, `${existing.trimEnd()}\n${envLine}`, "utf-8");
+				} else {
+					writeFileSync(envExamplePath, envLine, "utf-8");
+				}
+				p.log.success(`Created ${pc.bold(".env.example")} with DATABASE_URL`);
+			}
+		}
+
+		// Scaffold API route handler
+		const framework = frameworks.find((f) => f.value === frameworkKey);
+		if (framework && framework.value !== "none" && framework.routeFile) {
+			const routePath = resolve(cwd, framework.routeFile);
+			if (!existsSync(routePath)) {
+				const routeContent = generateRouteFile(framework);
+				mkdirSync(dirname(routePath), { recursive: true });
+				writeFileSync(routePath, routeContent, "utf-8");
+				p.log.success(`Created ${pc.bold(framework.routeFile)}`);
+			} else {
+				p.log.info(`Route file already exists: ${pc.dim(framework.routeFile)}`);
+			}
+		}
 
 		// Next steps
 		const deps = ["summa", adapter.pkg, ...adapter.peerDeps];

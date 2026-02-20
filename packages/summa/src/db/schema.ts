@@ -143,6 +143,14 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 		},
 		indexes: [{ name: "uq_summa_migration_name", columns: ["name"], unique: true }],
 	},
+	rateLimitLog: {
+		columns: {
+			id: { type: "serial", primaryKey: true, notNull: true },
+			key: { type: "text", notNull: true },
+			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+		indexes: [{ name: "idx_rate_limit_log_key_created", columns: ["key", "created_at"] }],
+	},
 };
 
 /**

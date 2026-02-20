@@ -23,6 +23,7 @@ export {
 	hotAccounts,
 } from "./hot-accounts.js";
 export { type MaintenanceOptions, maintenance } from "./maintenance.js";
+export { type ObservabilityOptions, observability } from "./observability.js";
 export { type OpenApiOptions, openApi } from "./open-api.js";
 export { getOutboxStats, type OutboxOptions, type OutboxStats, outbox } from "./outbox.js";
 export { getReconciliationStatus, reconciliation } from "./reconciliation.js";

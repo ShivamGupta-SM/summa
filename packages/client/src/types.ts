@@ -31,3 +31,24 @@ export type ResponseInterceptor = (
 	response: Response,
 	request: { url: string; init: RequestInit },
 ) => Response | Promise<Response>;
+
+// =============================================================================
+// TYPE INFERENCE
+// =============================================================================
+
+/**
+ * Infer a typed SummaClient from a server-side Summa instance.
+ * Carries plugin `$Infer` types through to the client for DX.
+ *
+ * @example
+ * ```ts
+ * import type { summa } from "./summa.config";
+ * import type { InferSummaClient } from "@summa/client";
+ *
+ * type Client = InferSummaClient<typeof summa>;
+ * // Client.$types.HotAccountStats is available
+ * ```
+ */
+export type InferSummaClient<TSumma> = TSumma extends { $Infer: infer TInfer }
+	? import("./client.js").SummaClient & { $types: TInfer }
+	: import("./client.js").SummaClient;

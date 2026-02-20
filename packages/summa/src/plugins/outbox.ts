@@ -4,7 +4,7 @@
 // Processes pending outbox entries, publishes via user-provided publisher,
 // handles retries with dead-letter queue, and cleans up old entries.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
 
 // =============================================================================
 // OPTIONS
@@ -36,6 +36,11 @@ export interface OutboxStats {
 // =============================================================================
 
 export function outbox(options: OutboxOptions): SummaPlugin {
+	validatePluginOptions("outbox", options, {
+		batchSize: { type: "number", default: 100 },
+		maxRetries: { type: "number", default: 3 },
+		retentionHours: { type: "number", default: 48 },
+	});
 	const batchSize = options.batchSize ?? 100;
 	const maxRetries = options.maxRetries ?? 3;
 	const retentionHours = options.retentionHours ?? 48;

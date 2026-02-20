@@ -2,10 +2,13 @@
 // API HANDLER — Framework-agnostic router for Summa ledger operations
 // =============================================================================
 
+import { randomUUID } from "node:crypto";
 import type {
 	AccountStatus,
 	HolderType,
 	LimitType,
+	PluginApiRequest,
+	PluginApiResponse,
 	PluginEndpoint,
 	SummaContext,
 	TransactionStatus,
@@ -40,6 +43,10 @@ export interface ApiHandlerOptions {
 	rateLimitKeyExtractor?: (req: ApiRequest) => string;
 	/** Trusted origins for CSRF protection. If set, state-mutating requests require valid Origin header. */
 	trustedOrigins?: string[];
+	/** Request interceptor. Return an ApiResponse to short-circuit (e.g., 401 for auth). */
+	onRequest?: (req: ApiRequest) => ApiRequest | ApiResponse | Promise<ApiRequest | ApiResponse>;
+	/** Response interceptor. Runs after route handler. */
+	onResponse?: (req: ApiRequest, res: ApiResponse) => ApiResponse | Promise<ApiResponse>;
 }
 
 // =============================================================================
@@ -82,6 +89,40 @@ function matchRoute(route: Route, path: string): Record<string, string> | null {
 
 function json(status: number, body: unknown): ApiResponse {
 	return { status, body, headers: { "Content-Type": "application/json" } };
+}
+
+// =============================================================================
+// REQUEST BODY VALIDATION
+// =============================================================================
+
+type FieldSpec =
+	| "string"
+	| "number"
+	| "boolean"
+	| "object"
+	| "string?"
+	| "number?"
+	| "boolean?"
+	| "object?";
+
+function validateBody(body: unknown, fields: Record<string, FieldSpec>): { error: string } | null {
+	if (body === null || body === undefined || typeof body !== "object") {
+		return { error: "Request body must be a JSON object" };
+	}
+	const obj = body as Record<string, unknown>;
+	for (const [key, spec] of Object.entries(fields)) {
+		const optional = spec.endsWith("?");
+		const expectedType = optional ? spec.slice(0, -1) : spec;
+		const value = obj[key];
+		if (value === undefined || value === null) {
+			if (!optional) return { error: `Missing required field: "${key}"` };
+			continue;
+		}
+		if (typeof value !== expectedType) {
+			return { error: `Field "${key}" must be ${expectedType}, got ${typeof value}` };
+		}
+	}
+	return null;
 }
 
 // =============================================================================
@@ -138,6 +179,13 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			currency: "string",
+			holderType: "string?",
+			name: "string?",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.accounts.create(
 			req.body as Parameters<Summa["accounts"]["create"]>[0],
 		);
@@ -148,16 +196,26 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/freeze", async (req, summa, params) => {
+		const err = validateBody(req.body, { reason: "string", frozenBy: "string" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { reason: string; frozenBy: string };
 		const result = await summa.accounts.freeze({ holderId: params.holderId ?? "", ...body });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/unfreeze", async (req, summa, params) => {
+		const err = validateBody(req.body, { unfrozenBy: "string" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { unfrozenBy: string };
 		const result = await summa.accounts.unfreeze({ holderId: params.holderId ?? "", ...body });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/close", async (req, summa, params) => {
+		const err = validateBody(req.body, {
+			closedBy: "string",
+			reason: "string?",
+			transferToHolderId: "string?",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { closedBy: string; reason?: string; transferToHolderId?: string };
 		const result = await summa.accounts.close({ holderId: params.holderId ?? "", ...body });
 		return json(200, result);
@@ -184,30 +242,53 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("POST", "/transactions/credit", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			amount: "number",
+			currency: "string",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.transactions.credit(
 			req.body as Parameters<Summa["transactions"]["credit"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/debit", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			amount: "number",
+			currency: "string",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.transactions.debit(
 			req.body as Parameters<Summa["transactions"]["debit"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/transfer", async (req, summa) => {
+		const err = validateBody(req.body, {
+			fromHolderId: "string",
+			toHolderId: "string",
+			amount: "number",
+			currency: "string",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.transactions.transfer(
 			req.body as Parameters<Summa["transactions"]["transfer"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/multi-transfer", async (req, summa) => {
+		const err = validateBody(req.body, { entries: "object", currency: "string" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.transactions.multiTransfer(
 			req.body as Parameters<Summa["transactions"]["multiTransfer"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/refund", async (req, summa) => {
+		const err = validateBody(req.body, { transactionId: "string" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.transactions.refund(
 			req.body as Parameters<Summa["transactions"]["refund"]>[0],
 		);
@@ -240,15 +321,25 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("POST", "/holds", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			amount: "number",
+			currency: "string",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.holds.create(req.body as Parameters<Summa["holds"]["create"]>[0]);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/holds/:holdId/commit", async (req, summa, params) => {
+		const err = validateBody(req.body, { amount: "number?" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { amount?: number };
 		const result = await summa.holds.commit({ holdId: params.holdId ?? "", ...body });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/holds/:holdId/void", async (req, summa, params) => {
+		const err = validateBody(req.body, { reason: "string?" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { reason?: string };
 		const result = await summa.holds.void({ holdId: params.holdId ?? "", ...body });
 		return json(200, result);
@@ -260,6 +351,13 @@ const routes: Route[] = [
 
 	// --- Limits ---
 	defineRoute("POST", "/limits", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			limitType: "string",
+			amount: "number",
+			currency: "string",
+		});
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const result = await summa.limits.set(req.body as Parameters<Summa["limits"]["set"]>[0]);
 		return json(201, result);
 	}),
@@ -291,6 +389,8 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("POST", "/events/verify", async (req, summa) => {
+		const err = validateBody(req.body, { aggregateType: "string", aggregateId: "string" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { aggregateType: string; aggregateId: string };
 		const result = await summa.events.verifyChain(body.aggregateType, body.aggregateId);
 		return json(200, result);
@@ -372,11 +472,26 @@ export async function handleRequest(
 	req: ApiRequest,
 	options?: ApiHandlerOptions,
 ): Promise<ApiResponse> {
-	const method = req.method.toUpperCase();
+	let currentReq = req;
+
+	// --- Request ID ---
+	const requestId =
+		currentReq.headers?.["x-request-id"] ?? currentReq.headers?.["X-Request-Id"] ?? randomUUID();
+
+	// --- Global onRequest hook ---
+	if (options?.onRequest) {
+		const result = await options.onRequest(currentReq);
+		if ("status" in result && "body" in result) {
+			return result as ApiResponse;
+		}
+		currentReq = result as ApiRequest;
+	}
+
+	const method = currentReq.method.toUpperCase();
 
 	// --- CSRF / Origin protection ---
 	if (options?.trustedOrigins && MUTATING_METHODS.has(method)) {
-		if (!checkOrigin(req, options.trustedOrigins)) {
+		if (!checkOrigin(currentReq, options.trustedOrigins)) {
 			return json(403, {
 				error: { code: "FORBIDDEN", message: "Origin not allowed" },
 			});
@@ -386,7 +501,7 @@ export async function handleRequest(
 	// --- Rate limiting ---
 	let rlHeaders: Record<string, string> | undefined;
 	if (options?.rateLimiter) {
-		const key = options.rateLimitKeyExtractor?.(req) ?? "global";
+		const key = options.rateLimitKeyExtractor?.(currentReq) ?? "global";
 		const result = await options.rateLimiter.consume(key);
 		rlHeaders = rateLimitHeaders(result);
 
@@ -399,79 +514,114 @@ export async function handleRequest(
 		}
 	}
 
-	// Helper to merge rate limit headers into response
+	// Helper to merge rate limit + request ID headers into response
 	const withHeaders = (response: ApiResponse): ApiResponse => {
-		if (rlHeaders) {
-			response.headers = { ...response.headers, ...rlHeaders };
-		}
+		response.headers = {
+			...response.headers,
+			...rlHeaders,
+			"X-Request-Id": requestId,
+		};
 		return response;
 	};
 
-	// --- Core routes ---
-	for (const r of routes) {
-		if (method !== r.method) continue;
-		const params = matchRoute(r, req.path);
-		if (!params) continue;
-
-		try {
-			return withHeaders(await r.handler(req, summa, params));
-		} catch (error) {
-			if (error instanceof SummaError) {
-				return withHeaders(
-					json(error.status, {
-						error: { code: error.code, message: error.message },
-					}),
-				);
-			}
-			return withHeaders(
-				json(500, {
-					error: { code: "INTERNAL", message: "Internal server error" },
-				}),
-			);
+	// --- Plugin onRequest hooks ---
+	const ctx = await summa.$context;
+	const pluginReq = toPluginReq(currentReq);
+	for (const plugin of ctx.plugins) {
+		if (!plugin.onRequest) continue;
+		const hookResult = await plugin.onRequest(pluginReq);
+		if ("status" in hookResult && "body" in hookResult) {
+			// Plugin short-circuited with a response
+			return withHeaders({
+				status: (hookResult as PluginApiResponse).status,
+				body: (hookResult as PluginApiResponse).body,
+				headers: {
+					"Content-Type": "application/json",
+					...(hookResult as PluginApiResponse).headers,
+				},
+			});
 		}
+		// Plugin transformed the request — update for downstream
+		Object.assign(pluginReq, hookResult);
 	}
 
-	// --- Plugin-contributed endpoints ---
-	const ctx = await summa.$context;
-	const pluginRoutes = getPluginRoutes(ctx);
+	// --- Route dispatch helper (shared error handling) ---
+	const dispatch = async (): Promise<ApiResponse> => {
+		// --- Core routes ---
+		for (const r of routes) {
+			if (method !== r.method) continue;
+			const params = matchRoute(r, currentReq.path);
+			if (!params) continue;
+			return await r.handler(currentReq, summa, params);
+		}
 
-	for (const pr of pluginRoutes) {
-		if (method !== pr.method) continue;
-		const params = matchCompiledRoute(pr, req.path);
-		if (!params) continue;
-
-		try {
-			const result = await pr.endpoint.handler(
-				{
-					method: req.method,
-					path: req.path,
-					body: req.body,
-					query: req.query,
-					params,
-					headers: req.headers,
-				},
-				ctx,
-			);
-			return withHeaders({
+		// --- Plugin-contributed endpoints ---
+		const pluginRoutes = getPluginRoutes(ctx);
+		for (const pr of pluginRoutes) {
+			if (method !== pr.method) continue;
+			const params = matchCompiledRoute(pr, currentReq.path);
+			if (!params) continue;
+			const result = await pr.endpoint.handler({ ...pluginReq, params }, ctx);
+			return {
 				status: result.status,
 				body: result.body,
 				headers: { "Content-Type": "application/json", ...result.headers },
+			};
+		}
+
+		return json(404, { error: { code: "NOT_FOUND", message: "Route not found" } });
+	};
+
+	let response: ApiResponse;
+	try {
+		response = await dispatch();
+	} catch (error) {
+		if (error instanceof SummaError) {
+			response = json(error.status, {
+				error: { code: error.code, message: error.message },
 			});
-		} catch (error) {
-			if (error instanceof SummaError) {
-				return withHeaders(
-					json(error.status, {
-						error: { code: error.code, message: error.message },
-					}),
-				);
-			}
-			return withHeaders(
-				json(500, {
-					error: { code: "INTERNAL", message: "Internal server error" },
-				}),
-			);
+		} else {
+			response = json(500, {
+				error: { code: "INTERNAL", message: "Internal server error" },
+			});
 		}
 	}
 
-	return withHeaders(json(404, { error: { code: "NOT_FOUND", message: "Route not found" } }));
+	// --- Plugin onResponse hooks (reverse order — middleware stack unwinding) ---
+	for (let i = ctx.plugins.length - 1; i >= 0; i--) {
+		const plugin = ctx.plugins[i];
+		if (!plugin?.onResponse) continue;
+		const pluginRes = await plugin.onResponse(pluginReq, {
+			status: response.status,
+			body: response.body,
+			headers: response.headers,
+		});
+		response = {
+			status: pluginRes.status,
+			body: pluginRes.body,
+			headers: { ...response.headers, ...pluginRes.headers },
+		};
+	}
+
+	// --- Global onResponse hook ---
+	if (options?.onResponse) {
+		response = await options.onResponse(currentReq, response);
+	}
+
+	return withHeaders(response);
+}
+
+// =============================================================================
+// HELPERS
+// =============================================================================
+
+function toPluginReq(req: ApiRequest): PluginApiRequest {
+	return {
+		method: req.method,
+		path: req.path,
+		body: req.body,
+		query: req.query,
+		params: {},
+		headers: req.headers,
+	};
 }

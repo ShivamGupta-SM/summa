@@ -102,6 +102,9 @@ export interface PluginApiResponse {
 export interface SummaPlugin {
 	id: string;
 
+	/** Plugin IDs that must be registered before this plugin. Used for load ordering and validation. */
+	dependencies?: string[];
+
 	/** Called during createSumma() initialization */
 	init?: (ctx: SummaContext) => Promise<void> | void;
 
@@ -158,6 +161,17 @@ export interface SummaPlugin {
 		/** Max operations in window */
 		max: number;
 	}>;
+
+	/** HTTP-level request interceptor. Return a PluginApiResponse to short-circuit. */
+	onRequest?: (
+		req: PluginApiRequest,
+	) => PluginApiRequest | PluginApiResponse | Promise<PluginApiRequest | PluginApiResponse>;
+
+	/** HTTP-level response interceptor. Runs in reverse plugin order (middleware stack unwinding). */
+	onResponse?: (
+		req: PluginApiRequest,
+		res: PluginApiResponse,
+	) => PluginApiResponse | Promise<PluginApiResponse>;
 }
 
 // =============================================================================

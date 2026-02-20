@@ -2,8 +2,13 @@
 export * from "./db/index.js";
 
 // Errors
-export type { BaseErrorCode, RawErrorCode, SummaErrorCode } from "./error/index.js";
-export { BASE_ERROR_CODES, SummaError } from "./error/index.js";
+export type {
+	BaseErrorCode,
+	MergeErrorCodes,
+	RawErrorCode,
+	SummaErrorCode,
+} from "./error/index.js";
+export { BASE_ERROR_CODES, createErrorCodes, SummaError } from "./error/index.js";
 
 // Type definitions
 export * from "./types/index.js";

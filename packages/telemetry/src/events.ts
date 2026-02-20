@@ -55,12 +55,36 @@ export interface CliStatusEvent extends BaseEvent {
 	properties: Record<string, never>;
 }
 
+export interface CliErrorEvent extends BaseEvent {
+	event: "cli.error";
+	properties: {
+		command: string;
+		errorCode?: string;
+		message: string;
+	};
+}
+
+export interface CliMigrateRollbackEvent extends BaseEvent {
+	event: "cli.migrate.rollback";
+	properties: {
+		count: number;
+	};
+}
+
+export interface CliMigrateListEvent extends BaseEvent {
+	event: "cli.migrate.list";
+	properties: Record<string, never>;
+}
+
 export type TelemetryEvent =
 	| CliInitEvent
 	| CliGenerateEvent
 	| CliMigrateEvent
 	| CliInfoEvent
 	| CliVerifyEvent
-	| CliStatusEvent;
+	| CliStatusEvent
+	| CliErrorEvent
+	| CliMigrateRollbackEvent
+	| CliMigrateListEvent;
 
 export type EventName = TelemetryEvent["event"];

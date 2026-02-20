@@ -23,15 +23,18 @@
 	"scripts": {
 		"build": "tsdown",
 		"dev": "tsdown --watch",
+		"test": "vitest run",
 		"typecheck": "tsc --project tsconfig.json",
 		"lint:package": "publint --strict",
-		"lint:types": "attw --profile esm-only --pack ."
+		"lint:types": "attw --profile esm-only --pack .",
+		"prepublishOnly": "tsdown"
 	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "^0.18.0",
 		"@types/node": "^22.0.0",
 		"publint": "^0.3.0",
 		"tsdown": "catalog:",
-		"typescript": "^5.8.0"
+		"typescript": "^5.8.0",
+		"vitest": "^3.0.0"
 	}
 }

@@ -5,7 +5,7 @@
 // in hot_account_entry and periodically batch-aggregated into the system_account
 // balance. This avoids row-level lock contention on high-throughput accounts.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
 
 // =============================================================================
 // OPTIONS
@@ -33,8 +33,12 @@ export interface HotAccountStats {
 // =============================================================================
 
 export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
-	const batchSize = options?.batchSize ?? 1000;
-	const retentionHours = options?.retentionHours ?? 24;
+	const opts = validatePluginOptions<HotAccountsOptions>("hot-accounts", options, {
+		batchSize: { type: "number", default: 1000 },
+		retentionHours: { type: "number", default: 24 },
+	});
+	const batchSize = opts.batchSize ?? 1000;
+	const retentionHours = opts.retentionHours ?? 24;
 
 	return {
 		id: "hot-accounts",

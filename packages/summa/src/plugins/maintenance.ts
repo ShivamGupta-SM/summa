@@ -5,7 +5,7 @@
 // Encore ledger: idempotency key cleanup, expired worker lease cleanup,
 // and processed event cleanup.
 
-import type { SummaPlugin } from "@summa/core";
+import { type SummaPlugin, validatePluginOptions } from "@summa/core";
 
 // =============================================================================
 // OPTIONS
@@ -27,7 +27,13 @@ export interface MaintenanceOptions {
 // =============================================================================
 
 export function maintenance(options?: MaintenanceOptions): SummaPlugin {
-	const processedEventRetentionHours = options?.processedEventRetentionHours ?? 168;
+	const opts = validatePluginOptions<MaintenanceOptions>("maintenance", options, {
+		idempotencyCleanupInterval: { type: "string", default: "1h" },
+		leaseCleanupInterval: { type: "string", default: "6h" },
+		processedEventRetentionHours: { type: "number", default: 168 },
+		processedEventCleanupInterval: { type: "string", default: "1d" },
+	});
+	const processedEventRetentionHours = opts.processedEventRetentionHours ?? 168;
 
 	return {
 		id: "maintenance",

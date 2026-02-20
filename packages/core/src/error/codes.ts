@@ -25,3 +25,47 @@ export const BASE_ERROR_CODES = {
 } as const satisfies Record<string, RawErrorCode>;
 
 export type BaseErrorCode = keyof typeof BASE_ERROR_CODES;
+
+// =============================================================================
+// PLUGIN ERROR CODE UTILITIES
+// =============================================================================
+
+/**
+ * Create typed error codes for a plugin. Returns a frozen object.
+ *
+ * @example
+ * ```ts
+ * export const ADMIN_ERROR_CODES = createErrorCodes({
+ *   ADMIN_UNAUTHORIZED: { message: "Admin access required", status: 403 },
+ * });
+ * ```
+ */
+export function createErrorCodes<T extends Record<string, RawErrorCode>>(codes: T): Readonly<T> {
+	return Object.freeze(codes);
+}
+
+/**
+ * Merge error codes from a plugin tuple with the base error codes.
+ *
+ * @example
+ * ```ts
+ * type AllCodes = MergeErrorCodes<[typeof adminPlugin, typeof auditPlugin]>;
+ * // BaseErrorCode | "ADMIN_UNAUTHORIZED" | "AUDIT_TAMPERED"
+ * ```
+ */
+export type MergeErrorCodes<
+	TPlugins extends readonly { $ERROR_CODES?: Record<string, RawErrorCode> }[],
+> = BaseErrorCode | ExtractPluginErrorCodes<TPlugins>;
+
+type ExtractPluginErrorCodes<
+	TPlugins extends readonly { $ERROR_CODES?: Record<string, RawErrorCode> }[],
+> = TPlugins extends readonly [
+	infer First,
+	...infer Rest extends { $ERROR_CODES?: Record<string, RawErrorCode> }[],
+]
+	?
+			| (First extends { $ERROR_CODES: infer Codes extends Record<string, RawErrorCode> }
+					? keyof Codes
+					: never)
+			| ExtractPluginErrorCodes<Rest>
+	: never;

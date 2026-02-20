@@ -28,4 +28,4 @@ jobs:
         run: pnpm build
 
       - name: Publish preview
-        run: pnpx pkg-pr-new publish --compact --pnpm './packages/core' './packages/summa' './packages/drizzle-adapter' './packages/kysely-adapter' './packages/prisma-adapter' './packages/memory-adapter' './packages/cli' './packages/test-utils'
+        run: pnpx pkg-pr-new publish --compact --pnpm './packages/core' './packages/summa' './packages/drizzle-adapter' './packages/kysely-adapter' './packages/prisma-adapter' './packages/memory-adapter' './packages/cli' './packages/client' './packages/telemetry' './packages/test-utils'

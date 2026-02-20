@@ -3,6 +3,7 @@ import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createTelemetry } from "@summa/telemetry";
 import { Command } from "commander";
 import pc from "picocolors";
 import { generateCommand } from "./commands/generate.js";
@@ -71,6 +72,13 @@ try {
 		process.exit(0);
 	}
 	const message = error instanceof Error ? error.message : String(error);
+	const errorCode = error instanceof Error && "code" in error ? String(error.code) : undefined;
+
+	// Track error via telemetry (fire-and-forget)
+	const telemetry = createTelemetry({ version: cliVersion });
+	const command = process.argv.slice(2).join(" ");
+	telemetry.track("cli.error", { command, errorCode, message: sanitizeErrorMessage(message) });
+
 	console.error(pc.red(sanitizeErrorMessage(message)));
 	process.exit(1);
 }

@@ -22,6 +22,8 @@ import * as transactions from "../managers/transaction-manager.js";
 export interface AdminOptions {
 	/** Base path prefix for admin routes (default: "/admin") */
 	basePath?: string;
+	/** Authorization check. Called on every admin request. Return `true` to allow, `false` to reject with 403. */
+	authorize?: (req: PluginApiRequest) => boolean | Promise<boolean>;
 }
 
 // =============================================================================
@@ -38,6 +40,19 @@ function json(status: number, body: unknown): PluginApiResponse {
 
 export function admin(options?: AdminOptions): SummaPlugin {
 	const prefix = options?.basePath ?? "/admin";
+	const authorize = options?.authorize;
+
+	// Wrap each endpoint handler with authorization check
+	function withAuth(handler: PluginEndpoint["handler"]): PluginEndpoint["handler"] {
+		if (!authorize) return handler;
+		return async (req, ctx) => {
+			const allowed = await authorize(req);
+			if (!allowed) {
+				return json(403, { error: { code: "FORBIDDEN", message: "Admin access denied" } });
+			}
+			return handler(req, ctx);
+		};
+	}
 
 	const endpoints: PluginEndpoint[] = [
 		// --- Account Management ---
@@ -332,6 +347,6 @@ export function admin(options?: AdminOptions): SummaPlugin {
 
 	return {
 		id: "admin",
-		endpoints,
+		endpoints: endpoints.map((ep) => ({ ...ep, handler: withAuth(ep.handler) })),
 	};
 }

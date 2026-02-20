@@ -139,6 +139,39 @@ export class SummaWorkerRunner {
 			}
 		}
 
+		// Wait for currently running workers to finish (with timeout)
+		const SHUTDOWN_TIMEOUT_MS = 10_000;
+		const runningWorkers = this.workers.filter((w) => w.running);
+		if (runningWorkers.length > 0) {
+			this.ctx.logger.info("Waiting for running workers to finish", {
+				count: runningWorkers.length,
+				workers: runningWorkers.map((w) => w.definition.id),
+			});
+
+			await Promise.race([
+				Promise.all(
+					runningWorkers.map(
+						(w) =>
+							new Promise<void>((resolve) => {
+								const check = () => {
+									if (!w.running) return resolve();
+									setTimeout(check, 50);
+								};
+								check();
+							}),
+					),
+				),
+				new Promise<void>((resolve) => {
+					setTimeout(() => {
+						this.ctx.logger.warn("Worker shutdown timed out, proceeding", {
+							stillRunning: runningWorkers.filter((w) => w.running).map((w) => w.definition.id),
+						});
+						resolve();
+					}, SHUTDOWN_TIMEOUT_MS);
+				}),
+			]);
+		}
+
 		// Release any held leases
 		await this.releaseAllLeases();
 	}

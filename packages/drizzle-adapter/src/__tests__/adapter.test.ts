@@ -48,12 +48,13 @@ describe("Drizzle Adapter", () => {
 	it("creates adapter with correct options", () => {
 		const adapter = drizzleAdapter(mock.db);
 		expect(adapter.id).toBe("drizzle");
-		expect(adapter.options).toEqual({
+		expect(adapter.options).toMatchObject({
 			supportsAdvisoryLocks: true,
 			supportsForUpdate: true,
 			supportsReturning: true,
 			dialectName: "postgres",
 		});
+		expect(adapter.options.dialect).toBeDefined();
 	});
 
 	// =========================================================================
@@ -229,12 +230,13 @@ describe("Drizzle Adapter", () => {
 
 		const result = await adapter.transaction(async (tx) => {
 			expect(tx.id).toBe("drizzle");
-			expect(tx.options).toEqual({
+			expect(tx.options).toMatchObject({
 				supportsAdvisoryLocks: true,
 				supportsForUpdate: true,
 				supportsReturning: true,
 				dialectName: "postgres",
 			});
+			expect(tx.options.dialect).toBeDefined();
 
 			const rows = await tx.raw<{ id: string }>("SELECT 1", []);
 			return rows[0]?.id;

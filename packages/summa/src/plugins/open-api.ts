@@ -28,8 +28,9 @@ interface RouteInfo {
 	path: string;
 	summary: string;
 	tag: string;
-	requestBody?: Record<string, unknown>;
-	responses: Record<string, { description: string }>;
+	requestBodySchema?: Record<string, unknown>;
+	responseSchema?: Record<string, unknown>;
+	responses: Record<string, { description: string; schema?: Record<string, unknown> }>;
 }
 
 const CORE_ROUTES: RouteInfo[] = [
@@ -55,6 +56,20 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/accounts",
 		summary: "Create account",
 		tag: "Accounts",
+		requestBodySchema: {
+			type: "object",
+			required: ["holderId", "currency"],
+			properties: {
+				holderId: { type: "string", description: "Unique holder identifier" },
+				currency: { type: "string", description: "ISO 4217 currency code" },
+				holderType: {
+					type: "string",
+					enum: ["individual", "business"],
+					description: "Type of account holder",
+				},
+				name: { type: "string", description: "Display name for the account" },
+			},
+		},
 		responses: { "201": { description: "Account created" } },
 	},
 	{
@@ -106,6 +121,19 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions/credit",
 		summary: "Credit account",
 		tag: "Transactions",
+		requestBodySchema: {
+			type: "object",
+			required: ["holderId", "amount", "currency"],
+			properties: {
+				holderId: { type: "string" },
+				amount: { type: "number", description: "Amount in minor units (cents)" },
+				currency: { type: "string" },
+				description: { type: "string" },
+				category: { type: "string" },
+				metadata: { type: "object" },
+				idempotencyKey: { type: "string" },
+			},
+		},
 		responses: { "201": { description: "Credit transaction created" } },
 	},
 	{
@@ -113,6 +141,19 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions/debit",
 		summary: "Debit account",
 		tag: "Transactions",
+		requestBodySchema: {
+			type: "object",
+			required: ["holderId", "amount", "currency"],
+			properties: {
+				holderId: { type: "string" },
+				amount: { type: "number", description: "Amount in minor units (cents)" },
+				currency: { type: "string" },
+				description: { type: "string" },
+				category: { type: "string" },
+				metadata: { type: "object" },
+				idempotencyKey: { type: "string" },
+			},
+		},
 		responses: { "201": { description: "Debit transaction created" } },
 	},
 	{
@@ -120,6 +161,20 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions/transfer",
 		summary: "Transfer between accounts",
 		tag: "Transactions",
+		requestBodySchema: {
+			type: "object",
+			required: ["fromHolderId", "toHolderId", "amount", "currency"],
+			properties: {
+				fromHolderId: { type: "string" },
+				toHolderId: { type: "string" },
+				amount: { type: "number", description: "Amount in minor units (cents)" },
+				currency: { type: "string" },
+				description: { type: "string" },
+				category: { type: "string" },
+				metadata: { type: "object" },
+				idempotencyKey: { type: "string" },
+			},
+		},
 		responses: { "201": { description: "Transfer transaction created" } },
 	},
 	{
@@ -127,6 +182,27 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions/multi-transfer",
 		summary: "Multi-destination transfer",
 		tag: "Transactions",
+		requestBodySchema: {
+			type: "object",
+			required: ["entries", "currency"],
+			properties: {
+				entries: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							holderId: { type: "string" },
+							amount: { type: "number" },
+							entryType: { type: "string" },
+						},
+					},
+				},
+				currency: { type: "string" },
+				description: { type: "string" },
+				metadata: { type: "object" },
+				idempotencyKey: { type: "string" },
+			},
+		},
 		responses: { "201": { description: "Multi-transfer transaction created" } },
 	},
 	{
@@ -134,6 +210,16 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions/refund",
 		summary: "Refund transaction",
 		tag: "Transactions",
+		requestBodySchema: {
+			type: "object",
+			required: ["transactionId"],
+			properties: {
+				transactionId: { type: "string" },
+				reason: { type: "string" },
+				amount: { type: "number", description: "Partial refund amount (optional)" },
+				idempotencyKey: { type: "string" },
+			},
+		},
 		responses: { "201": { description: "Refund transaction created" } },
 	},
 	{
@@ -281,8 +367,21 @@ function buildSpec(
 		if (route.method === "post" || route.method === "put" || route.method === "patch") {
 			operation.requestBody = {
 				required: true,
-				content: { "application/json": { schema: { type: "object" } } },
+				content: {
+					"application/json": {
+						schema: route.requestBodySchema ?? { type: "object" },
+					},
+				},
 			};
+		}
+		// Add response schemas if defined
+		for (const [code, resDef] of Object.entries(route.responses)) {
+			if (resDef.schema) {
+				(operation.responses as Record<string, unknown>)[code] = {
+					description: resDef.description,
+					content: { "application/json": { schema: resDef.schema } },
+				};
+			}
 		}
 		paths[route.path]![route.method] = operation;
 	}

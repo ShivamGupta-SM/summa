@@ -1,26 +1,22 @@
-export { BASE_ERROR_CODES, type BaseErrorCode, type RawErrorCode } from "./codes.js";
+import { BASE_ERROR_CODES, type BaseErrorCode } from "./codes.js";
 
-export type SummaErrorCode =
-	| "INSUFFICIENT_BALANCE"
-	| "ACCOUNT_FROZEN"
-	| "ACCOUNT_CLOSED"
-	| "LIMIT_EXCEEDED"
-	| "NOT_FOUND"
-	| "INVALID_ARGUMENT"
-	| "DUPLICATE"
-	| "CONFLICT"
-	| "INTERNAL"
-	| "HOLD_EXPIRED"
-	| "CHAIN_INTEGRITY_VIOLATION"
-	| "RATE_LIMITED";
+export {
+	BASE_ERROR_CODES,
+	type BaseErrorCode,
+	createErrorCodes,
+	type MergeErrorCodes,
+	type RawErrorCode,
+} from "./codes.js";
+
+export type SummaErrorCode = BaseErrorCode;
 
 export class SummaError extends Error {
-	readonly code: SummaErrorCode;
+	readonly code: string;
 	readonly status: number;
 	readonly details?: Record<string, unknown>;
 
 	constructor(
-		code: SummaErrorCode,
+		code: string,
 		message: string,
 		options?: { cause?: unknown; status?: number; details?: Record<string, unknown> },
 	) {
@@ -39,22 +35,7 @@ export class SummaError extends Error {
 		code: C,
 		options?: { message?: string; cause?: unknown; details?: Record<string, unknown> },
 	): SummaError {
-		// Dynamic import avoided — inline lookup for the base codes
-		const defaults: Record<string, { message: string; status: number }> = {
-			INSUFFICIENT_BALANCE: { message: "Insufficient balance", status: 400 },
-			ACCOUNT_FROZEN: { message: "Account is frozen", status: 403 },
-			ACCOUNT_CLOSED: { message: "Account is closed", status: 403 },
-			LIMIT_EXCEEDED: { message: "Transaction limit exceeded", status: 429 },
-			NOT_FOUND: { message: "Resource not found", status: 404 },
-			INVALID_ARGUMENT: { message: "Invalid argument", status: 400 },
-			DUPLICATE: { message: "Duplicate operation", status: 409 },
-			CONFLICT: { message: "Resource conflict", status: 409 },
-			INTERNAL: { message: "Internal error", status: 500 },
-			HOLD_EXPIRED: { message: "Hold has expired", status: 410 },
-			CHAIN_INTEGRITY_VIOLATION: { message: "Hash chain integrity violated", status: 500 },
-			RATE_LIMITED: { message: "Rate limit exceeded", status: 429 },
-		};
-		const raw = defaults[code] ?? { message: "Unknown error", status: 500 };
+		const raw = BASE_ERROR_CODES[code] ?? { message: "Unknown error", status: 500 };
 		return new SummaError(code, options?.message ?? raw.message, {
 			cause: options?.cause,
 			status: raw.status,

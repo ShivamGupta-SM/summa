@@ -31,6 +31,9 @@ export async function withTransactionTimeout<T>(
 
 	return await runWithTransactionContext(() =>
 		ctx.adapter.transaction(async (tx) => {
+			// Set isolation level for financial consistency
+			await tx.raw("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", []);
+
 			const safeStatementTimeout = Number(statementTimeout);
 			const safeLockTimeout = Number(lockTimeout);
 			if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
