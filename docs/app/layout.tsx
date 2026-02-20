@@ -2,8 +2,6 @@ import { RootProvider } from "fumadocs-ui/provider/next";
 import { GeistMono } from "geist/font/mono";
 import { GeistSans } from "geist/font/sans";
 import type { ReactNode } from "react";
-import { Navbar } from "@/components/nav-bar";
-import { NavbarProvider } from "@/components/nav-mobile";
 import { baseUrl, createMetadata } from "@/lib/metadata";
 import "./global.css";
 
@@ -28,10 +26,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
 						defaultTheme: "dark",
 					}}
 				>
-					<NavbarProvider>
-						<Navbar />
-						{children}
-					</NavbarProvider>
+					{children}
 				</RootProvider>
 			</body>
 		</html>
