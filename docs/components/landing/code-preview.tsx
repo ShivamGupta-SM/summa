@@ -79,8 +79,8 @@ export function CodePreview() {
 
 	return (
 		<MotionConfig transition={{ duration: 0.5, type: "spring", bounce: 0 }}>
-			<div className="relative w-full overflow-hidden bg-gradient-to-tr from-stone-100 to-stone-200 dark:from-stone-950/90 dark:via-black dark:to-black/90 ring-1 ring-white/10 backdrop-blur-lg rounded-sm">
-				<div className="flex items-center justify-between border-b border-stone-200 dark:border-stone-800 px-4 py-3">
+			<div className="relative w-full overflow-hidden bg-gradient-to-tr from-slate-100 to-slate-200 dark:from-slate-950/90 dark:via-slate-950 dark:to-slate-950/90 ring-1 ring-white/10 backdrop-blur-lg rounded-sm">
+				<div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 px-4 py-3">
 					<TrafficLightsIcon />
 					<div className="flex items-center gap-1">
 						{tabs.map((tab, index) => (
@@ -92,14 +92,14 @@ export function CodePreview() {
 								{activeTab === index && (
 									<motion.div
 										layoutId="tab-code-preview"
-										className="absolute inset-0 bg-stone-800 dark:bg-stone-700 rounded-full"
+										className="absolute inset-0 bg-slate-800 dark:bg-slate-700 rounded-full"
 									/>
 								)}
 								<span
 									className={`relative z-10 ${
 										activeTab === index
 											? "text-white"
-											: "text-stone-500 hover:text-stone-700 dark:hover:text-stone-300"
+											: "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
 									}`}
 								>
 									{tab.name}
@@ -109,7 +109,7 @@ export function CodePreview() {
 					</div>
 					<button
 						onClick={handleCopy}
-						className="text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 transition-colors"
+						className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
 						aria-label="Copy code"
 					>
 						{copied ? (
@@ -143,7 +143,7 @@ export function CodePreview() {
 											<code>
 												{tokens.map((line, i) => (
 													<div key={i} {...getLineProps({ line })} className="flex">
-														<span className="select-none w-8 shrink-0 text-right pr-4 text-stone-400 dark:text-stone-600 font-mono">
+														<span className="select-none w-8 shrink-0 text-right pr-4 text-slate-400 dark:text-slate-600 font-mono">
 															{i + 1}
 														</span>
 														<span>

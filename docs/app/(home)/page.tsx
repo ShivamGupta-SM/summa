@@ -17,7 +17,6 @@ import { GradientBG } from "@/components/landing/gradient-bg";
 import { Ripple } from "@/components/landing/ripple";
 import Section from "@/components/landing/section";
 import { Spotlight } from "@/components/landing/spotlight";
-import { cn } from "@/lib/utils";
 
 const features = [
 	{
@@ -189,7 +188,7 @@ export default function HomePage() {
 														<span className="text-sky-500">git:</span>
 														<span className="text-red-400">(main)</span>
 													</span>
-													<span className="italic text-amber-600">x</span>
+													<span className="italic text-emerald-500">x</span>
 												</p>
 												<p className="relative inline tracking-tight opacity-90 md:text-sm text-xs dark:text-white font-mono text-black">
 													npm i{" "}

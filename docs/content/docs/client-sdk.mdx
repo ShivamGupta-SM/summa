@@ -10,13 +10,9 @@ The `@summa/client` package provides a **type-safe HTTP client** for consuming t
 
 Use the client SDK when Summa runs as a **standalone service** and your application communicates with it over HTTP.
 
-```
-┌──────────────┐     HTTP      ┌─────────────┐
-│  Your App    │──────────────▶│  Summa API  │
-│  (@summa/    │   (JSON)      │  (Hono/     │
-│   client)    │◀──────────────│   Express)  │
-└──────────────┘               └─────────────┘
-```
+| Source | Direction | Destination |
+|--------|-----------|-------------|
+| **Your App** (`@summa/client`) | HTTP (JSON) | **Summa API** (Hono / Express) |
 
 ## Installation
 
@@ -54,40 +50,34 @@ const balance = await client.accounts.getBalance("user_123");
 
 ## Configuration
 
-```ts
-interface SummaClientOptions {
-  baseURL: string;
-  headers?: Record<string, string>;
-  fetch?: typeof globalThis.fetch;
-  onRequest?: RequestInterceptor | RequestInterceptor[];
-  onResponse?: ResponseInterceptor | ResponseInterceptor[];
-  timeout?: number;
-}
-```
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `baseURL` | `string` | Required | Base URL of the Summa API |
-| `headers` | `object` | `{}` | Static headers included in every request |
-| `fetch` | `function` | `globalThis.fetch` | Custom fetch implementation |
-| `onRequest` | `function \| function[]` | — | Request interceptor(s) |
-| `onResponse` | `function \| function[]` | — | Response interceptor(s) |
-| `timeout` | `number` | `30000` | Request timeout in milliseconds |
+<TypeTable
+  type={{
+    baseURL: { type: "string", description: "Base URL of the Summa API.", required: true },
+    headers: { type: "Record<string, string>", description: "Static headers included in every request.", default: "{}" },
+    fetch: { type: "typeof globalThis.fetch", description: "Custom fetch implementation.", default: "globalThis.fetch" },
+    onRequest: { type: "RequestInterceptor | RequestInterceptor[]", description: "Request interceptor(s)." },
+    onResponse: { type: "ResponseInterceptor | ResponseInterceptor[]", description: "Response interceptor(s)." },
+    timeout: { type: "number", description: "Request timeout in milliseconds.", default: "30000" },
+  }}
+/>
 
 ## Authentication
 
 The client SDK does not enforce any authentication scheme — add your auth headers via `headers` or interceptors:
 
+<Tabs items={["Static API key", "Dynamic token"]}>
+<Tab value="Static API key">
 ```ts
-// Static API key
 const client = createSummaClient({
   baseURL: "http://ledger:3000/api/ledger",
   headers: {
     "Authorization": `Bearer ${process.env.LEDGER_API_KEY}`,
   },
 });
-
-// Dynamic token via interceptor
+```
+</Tab>
+<Tab value="Dynamic token">
+```ts
 const client = createSummaClient({
   baseURL: "http://ledger:3000/api/ledger",
   onRequest: (url, init) => {
@@ -99,35 +89,35 @@ const client = createSummaClient({
   },
 });
 ```
+</Tab>
+</Tabs>
 
 ## Available Methods
 
-### Accounts
-
+<Tabs items={["Accounts", "Transactions", "Holds", "Events", "Limits"]}>
+<Tab value="Accounts">
 ```ts
-client.accounts.create(params)      // POST /accounts
-client.accounts.get(holderId)       // GET /accounts/:holderId
+client.accounts.create(params)       // POST /accounts
+client.accounts.get(holderId)        // GET /accounts/:holderId
 client.accounts.getBalance(holderId) // GET /accounts/:holderId/balance
-client.accounts.freeze(params)      // POST /accounts/:holderId/freeze
-client.accounts.unfreeze(params)    // POST /accounts/:holderId/unfreeze
-client.accounts.close(params)       // POST /accounts/:holderId/close
-client.accounts.list(params?)       // GET /accounts
+client.accounts.freeze(params)       // POST /accounts/:holderId/freeze
+client.accounts.unfreeze(params)     // POST /accounts/:holderId/unfreeze
+client.accounts.close(params)        // POST /accounts/:holderId/close
+client.accounts.list(params?)        // GET /accounts
 ```
-
-### Transactions
-
+</Tab>
+<Tab value="Transactions">
 ```ts
-client.transactions.credit(params)       // POST /transactions/credit
-client.transactions.debit(params)        // POST /transactions/debit
-client.transactions.transfer(params)     // POST /transactions/transfer
+client.transactions.credit(params)        // POST /transactions/credit
+client.transactions.debit(params)         // POST /transactions/debit
+client.transactions.transfer(params)      // POST /transactions/transfer
 client.transactions.multiTransfer(params) // POST /transactions/multi-transfer
-client.transactions.refund(params)       // POST /transactions/refund
-client.transactions.get(id)              // GET /transactions/:id
-client.transactions.list(params)         // GET /transactions
+client.transactions.refund(params)        // POST /transactions/refund
+client.transactions.get(id)               // GET /transactions/:id
+client.transactions.list(params)          // GET /transactions
 ```
-
-### Holds
-
+</Tab>
+<Tab value="Holds">
 ```ts
 client.holds.create(params)     // POST /holds
 client.holds.commit(params)     // POST /holds/:holdId/commit
@@ -136,27 +126,29 @@ client.holds.get(id)            // GET /holds/:id
 client.holds.listActive(params) // GET /holds/active
 client.holds.listAll(params)    // GET /holds
 ```
-
-### Events
-
+</Tab>
+<Tab value="Events">
 ```ts
-client.events.getForAggregate(type, id)    // GET /events/:type/:id
+client.events.getForAggregate(type, id)       // GET /events/:type/:id
 client.events.getByCorrelation(correlationId) // GET /events/correlation/:id
-client.events.verifyChain(type, id)        // POST /events/verify
+client.events.verifyChain(type, id)           // POST /events/verify
 ```
-
-### Limits
-
+</Tab>
+<Tab value="Limits">
 ```ts
-client.limits.set(params)        // POST /limits
-client.limits.get(holderId)      // GET /limits/:holderId
-client.limits.remove(params)     // DELETE /limits/:holderId
-client.limits.getUsage(params)   // GET /limits/:holderId/usage
+client.limits.set(params)      // POST /limits
+client.limits.get(holderId)    // GET /limits/:holderId
+client.limits.remove(params)   // DELETE /limits/:holderId
+client.limits.getUsage(params) // GET /limits/:holderId/usage
 ```
+</Tab>
+</Tabs>
 
 ## Error Handling
 
-The client throws `SummaClientError` for API errors:
+<Callout type="info" title="Typed errors">
+  The client throws `SummaClientError` for all API errors, with `code`, `status`, and `message` fields.
+</Callout>
 
 ```ts
 import { SummaClientError } from "@summa/client";
