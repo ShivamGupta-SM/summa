@@ -32,4 +32,14 @@ export {
 	scheduledTransactions,
 } from "./scheduled-transactions.js";
 export { getEndOfMonthBalance, getHistoricalBalance, snapshots } from "./snapshots.js";
+export {
+	generateStatementCsv,
+	getAccountStatement,
+	getStatementSummary,
+	type StatementEntry,
+	type StatementOptions,
+	type StatementResult,
+	type StatementSummary,
+	statements,
+} from "./statements.js";
 export { type VelocityLimitsOptions, velocityLimits } from "./velocity-limits.js";
