@@ -224,3 +224,178 @@ const client = createSummaClient({
   fetch: undiciFetch,
 });
 ```
+
+## Proxy Client
+
+For dynamic or plugin endpoints not covered by the typed client, use the **proxy client**. It maps property access chains to URL paths automatically:
+
+```ts
+import { createSummaProxyClient } from "@summa/client/proxy";
+
+const client = createSummaProxyClient({
+  baseURL: "http://localhost:3000/api/ledger",
+});
+
+// GET /admin/accounts
+const accounts = await client.admin.accounts.$get();
+
+// POST /admin/accounts/user_123/freeze
+await client.admin.accounts("user_123").freeze.$post({ reason: "suspicious" });
+
+// GET /metrics
+const metrics = await client.metrics.$get();
+```
+
+### Method Hints
+
+| Method | HTTP Verb | Usage |
+|--------|-----------|-------|
+| `$get(query?)` | GET | Read operations with optional query params |
+| `$post(body?)` | POST | Create/mutate operations with JSON body |
+| `$put(body?)` | PUT | Update operations |
+| `$delete(body?)` | DELETE | Delete operations |
+
+Dynamic path segments are inserted by calling the proxy node as a function:
+
+```ts
+client.transactions("txn-uuid").$get()  // GET /transactions/txn-uuid
+client.holds("hold-id").commit.$post()   // POST /holds/hold-id/commit
+```
+
+## Framework Bindings
+
+The client SDK includes first-class bindings for React, Vue, and Svelte. Each binding provides query and mutation patterns with loading/error state management.
+
+<Tabs items={["React", "Vue", "Svelte"]}>
+<Tab value="React">
+
+```bash
+pnpm add @summa/client react
+```
+
+```tsx
+import { SummaProvider, useSumma, useSummaQuery, useSummaMutation } from "@summa/client/react";
+
+// Wrap your app
+function App() {
+  return (
+    <SummaProvider options={{ baseURL: "/api/ledger" }}>
+      <Dashboard />
+    </SummaProvider>
+  );
+}
+
+// Query data
+function Dashboard() {
+  const { data: balance, loading, error, refetch } = useSummaQuery(
+    (client) => client.accounts.getBalance("user_123"),
+    ["user_123"],
+  );
+
+  if (loading) return <p>Loading...</p>;
+  if (error) return <p>Error: {error.message}</p>;
+  return <p>Balance: {balance?.balance}</p>;
+}
+
+// Mutations
+function TransferButton() {
+  const { mutate, loading } = useSummaMutation(
+    (client, params: { to: string; amount: number }) =>
+      client.transactions.transfer({
+        sourceHolderId: "user_123",
+        destinationHolderId: params.to,
+        amount: params.amount,
+        reference: `transfer-${Date.now()}`,
+      }),
+  );
+
+  return (
+    <button onClick={() => mutate({ to: "merchant_1", amount: 50_00 })} disabled={loading}>
+      {loading ? "Sending..." : "Transfer $50"}
+    </button>
+  );
+}
+```
+
+| Hook | Returns | Description |
+|------|---------|-------------|
+| `useSumma()` | `SummaClient` | Access the client from context |
+| `useSummaQuery(fn, deps?)` | `{ data, error, loading, refetch }` | Auto-fetching query with dependency tracking |
+| `useSummaMutation(fn)` | `{ mutate, data, error, loading }` | On-demand mutation with state |
+
+</Tab>
+<Tab value="Vue">
+
+```bash
+pnpm add @summa/client vue
+```
+
+```vue
+<script setup>
+import { provideSumma, useSummaQuery, useSummaMutation } from "@summa/client/vue";
+
+// In parent component
+provideSumma({ baseURL: "/api/ledger" });
+
+// Query
+const { data: balance, loading, error, refetch } = useSummaQuery(
+  (client) => client.accounts.getBalance("user_123"),
+);
+
+// Mutation
+const { mutate: transfer, loading: sending } = useSummaMutation(
+  (client, params) => client.transactions.transfer(params),
+);
+</script>
+```
+
+| Composable | Returns | Description |
+|------------|---------|-------------|
+| `provideSumma(options)` | `SummaClient` | Provide client via Vue `provide()` |
+| `useSummaClient()` | `SummaClient` | Inject client from parent |
+| `useSummaQuery(fn)` | `{ data: Ref, error: Ref, loading: Ref, refetch }` | Auto-fetching reactive query |
+| `useSummaMutation(fn)` | `{ mutate, data: Ref, error: Ref, loading: Ref }` | On-demand mutation with refs |
+
+</Tab>
+<Tab value="Svelte">
+
+```bash
+pnpm add @summa/client svelte
+```
+
+```svelte
+<script>
+import { createSummaStore } from "@summa/client/svelte";
+
+const { client, query, mutation } = createSummaStore({
+  baseURL: "/api/ledger",
+});
+
+const balance = query((c) => c.accounts.getBalance("user_123"));
+const transfer = mutation((c, params) => c.transactions.transfer(params));
+</script>
+
+{#if $balance.loading}
+  <p>Loading...</p>
+{:else if $balance.error}
+  <p>Error: {$balance.error.message}</p>
+{:else}
+  <p>Balance: {$balance.data?.balance}</p>
+{/if}
+
+<button
+  on:click={() => transfer.trigger({ sourceHolderId: "user_123", destinationHolderId: "merchant_1", amount: 5000, reference: "order-1" })}
+  disabled={$transfer.loading}
+>
+  Transfer
+</button>
+```
+
+| Function | Returns | Description |
+|----------|---------|-------------|
+| `createSummaStore(options)` | `{ client, query, mutation }` | Create a store factory |
+| `query(fn)` | Readable store `{ data, error, loading }` + `refetch()` | Auto-fetching store |
+| `mutation(fn)` | Readable store `{ data, error, loading }` + `trigger(vars)` | On-demand mutation store |
+
+</Tab>
+</Tabs>

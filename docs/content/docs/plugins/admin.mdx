@@ -24,12 +24,47 @@ const summa = createSumma({
 ```ts
 admin({
   basePath: "/admin",  // Default — prefix for all admin routes
+  authorize: async (req) => {
+    const key = req.headers?.["x-admin-key"];
+    return key === process.env.ADMIN_SECRET;
+  },
 })
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `basePath` | `string` | `"/admin"` | URL prefix for all admin endpoints |
+| `authorize` | `(req) => boolean \| Promise<boolean>` | — | Authorization check for every admin request. Return `false` to reject with 403. |
+
+### Authorization
+
+The `authorize` callback runs before every admin endpoint handler. If it returns `false`, the request is rejected with HTTP 403:
+
+```json
+{ "error": { "code": "FORBIDDEN", "message": "Admin access denied" } }
+```
+
+<Tabs items={["API key", "JWT token"]}>
+<Tab value="API key">
+```ts
+admin({
+  authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY,
+})
+```
+</Tab>
+<Tab value="JWT token">
+```ts
+admin({
+  authorize: async (req) => {
+    const token = req.headers?.["authorization"]?.replace("Bearer ", "");
+    if (!token) return false;
+    const payload = await verifyJwt(token);
+    return payload.role === "admin";
+  },
+})
+```
+</Tab>
+</Tabs>
 
 ## Endpoints
 
@@ -141,6 +176,6 @@ Returns:
 
 ## Notes
 
-- The admin plugin does **not** include authentication — add your own auth middleware at the framework level.
+- If `authorize` is not set, admin endpoints are **unauthenticated** — protect them with framework-level middleware or network rules.
 - All admin endpoints route through the same plugin endpoint system, so they benefit from rate limiting and CSRF protection if configured.
 - The `basePath` can be customized to avoid conflicts (e.g., `"/internal/admin"`).

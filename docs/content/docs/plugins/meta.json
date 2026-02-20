@@ -13,6 +13,7 @@
 		"maintenance",
 		"dlq-manager",
 		"admin",
-		"open-api"
+		"open-api",
+		"observability"
 	]
 }

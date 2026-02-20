@@ -1,0 +1,200 @@
+---
+title: Testing
+description: Test your Summa integration with the memory adapter and test utilities.
+icon: BeakerIcon
+---
+
+## Overview
+
+Summa provides first-class testing support through the **memory adapter** (no database required) and the **`@summa/test-utils`** package with assertion helpers for balance verification, double-entry integrity, and hash chain validation.
+
+## Setup
+
+```bash
+pnpm add -D @summa/memory-adapter @summa/test-utils vitest
+```
+
+## Unit Testing
+
+Use the memory adapter for fast, isolated unit tests:
+
+```ts title="tests/transactions.test.ts"
+import { describe, it, expect } from "vitest";
+import { createSumma } from "summa";
+import { memoryAdapter } from "@summa/memory-adapter";
+
+describe("Transactions", () => {
+  it("transfers funds between accounts", async () => {
+    const summa = createSumma({
+      database: memoryAdapter(),
+      currency: "USD",
+    });
+
+    await summa.accounts.create({ holderId: "alice", holderType: "individual", currency: "USD" });
+    await summa.accounts.create({ holderId: "bob", holderType: "individual", currency: "USD" });
+
+    // Credit Alice
+    await summa.transactions.credit({
+      holderId: "alice",
+      amount: 100_00,
+      reference: "deposit-1",
+    });
+
+    // Transfer to Bob
+    await summa.transactions.transfer({
+      sourceHolderId: "alice",
+      destinationHolderId: "bob",
+      amount: 30_00,
+      reference: "transfer-1",
+    });
+
+    const aliceBalance = await summa.accounts.getBalance("alice");
+    const bobBalance = await summa.accounts.getBalance("bob");
+
+    expect(aliceBalance.balance).toBe(70_00);
+    expect(bobBalance.balance).toBe(30_00);
+  });
+});
+```
+
+## Test Utilities
+
+The `@summa/test-utils` package provides assertion helpers:
+
+```ts
+import { getTestInstance } from "@summa/test-utils";
+
+const summa = getTestInstance(); // Memory adapter + default config
+```
+
+### Balance Assertions
+
+```ts
+import { assertAccountBalance } from "@summa/test-utils";
+
+// Assert exact balance
+await assertAccountBalance(summa, "user_123", {
+  balance: 100_00,
+  availableBalance: 80_00,
+  pendingDebit: 20_00,
+});
+```
+
+### Double-Entry Verification
+
+```ts
+import { assertDoubleEntry } from "@summa/test-utils";
+
+// Verify that all entries in a transaction sum to zero
+await assertDoubleEntry(summa, transactionId);
+```
+
+### Hash Chain Verification
+
+```ts
+import { assertHashChain } from "@summa/test-utils";
+
+// Verify event chain integrity for an aggregate
+await assertHashChain(summa, "account", accountId);
+```
+
+## Testing with Plugins
+
+Include plugins in your test instance to verify hook behavior:
+
+```ts
+import { createSumma } from "summa";
+import { memoryAdapter } from "@summa/memory-adapter";
+import { velocityLimits } from "summa/plugins";
+
+const summa = createSumma({
+  database: memoryAdapter(),
+  currency: "USD",
+  plugins: [velocityLimits()],
+});
+
+// Set a daily limit
+await summa.limits.set({
+  holderId: "user_123",
+  limitType: "daily",
+  maxAmount: 50_00,
+});
+
+// This should throw LIMIT_EXCEEDED
+await expect(
+  summa.transactions.credit({
+    holderId: "user_123",
+    amount: 100_00,
+    reference: "too-much",
+  }),
+).rejects.toThrow("LIMIT_EXCEEDED");
+```
+
+## Testing Error Scenarios
+
+```ts
+import { SummaError } from "@summa/core";
+
+it("rejects overdraft when not allowed", async () => {
+  try {
+    await summa.transactions.debit({
+      holderId: "user_123",
+      amount: 999_99,
+      reference: "overdraft-attempt",
+    });
+    expect.unreachable("Should have thrown");
+  } catch (error) {
+    expect(error).toBeInstanceOf(SummaError);
+    expect((error as SummaError).code).toBe("INSUFFICIENT_BALANCE");
+  }
+});
+
+it("prevents operations on frozen accounts", async () => {
+  await summa.accounts.freeze({
+    holderId: "user_123",
+    reason: "test",
+    frozenBy: "admin",
+  });
+
+  await expect(
+    summa.transactions.credit({
+      holderId: "user_123",
+      amount: 100,
+      reference: "blocked",
+    }),
+  ).rejects.toThrow("ACCOUNT_FROZEN");
+});
+```
+
+## Testing Idempotency
+
+```ts
+it("returns same result for duplicate idempotency key", async () => {
+  const params = {
+    holderId: "user_123",
+    amount: 50_00,
+    reference: "idem-test",
+    idempotencyKey: "key-001",
+  };
+
+  const first = await summa.transactions.credit(params);
+  const second = await summa.transactions.credit(params);
+
+  expect(first.id).toBe(second.id); // Same transaction returned
+});
+```
+
+## Memory Adapter Limitations
+
+The memory adapter is designed for testing. Be aware of these limitations:
+
+| Feature | Support |
+|---------|---------|
+| Basic CRUD | Full |
+| Transactions | Simulated (no true isolation) |
+| Advisory locks | Not supported |
+| Raw SQL | Not supported |
+| Persistence | In-memory only (lost on process exit) |
+| Concurrency safety | Not guaranteed |
+
+For integration tests that require real PostgreSQL behavior, use the Drizzle adapter with a test database.

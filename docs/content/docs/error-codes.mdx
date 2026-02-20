@@ -43,6 +43,7 @@ try {
 | `HOLD_EXPIRED` | 410 | Hold has passed its expiration time and cannot be committed |
 | `CHAIN_INTEGRITY_VIOLATION` | 500 | Event hash chain is broken — data may have been tampered with |
 | `RATE_LIMITED` | 429 | Too many requests — rate limit exceeded |
+| `VALIDATION_ERROR` | 400 | Request body validation failed (missing or invalid field type) |
 
 ## Error Handling Patterns
 

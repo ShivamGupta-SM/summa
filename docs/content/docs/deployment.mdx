@@ -1,0 +1,236 @@
+---
+title: Deployment
+description: Production deployment patterns, monitoring, and operational guidelines.
+icon: CloudArrowUp
+---
+
+## Overview
+
+This guide covers production deployment patterns for Summa, including database setup, worker management, observability, graceful shutdown, and security hardening.
+
+## Database Setup
+
+### Connection Pooling
+
+Configure your database adapter with appropriate pool settings:
+
+```ts
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,            // Max connections in pool
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
+});
+
+const db = drizzle(pool);
+```
+
+**Pool sizing guidelines:**
+
+| Workload | `max` connections | Notes |
+|----------|:-:|-------|
+| Light (< 100 txn/min) | 5–10 | Default for small services |
+| Medium (100–1000 txn/min) | 10–20 | Most production workloads |
+| Heavy (1000+ txn/min) | 20–50 | Enable hot accounts plugin |
+
+### Schema Migrations
+
+Run migrations during deployment (not at application startup):
+
+```bash
+# Preview changes
+npx summa migrate status --url "$DATABASE_URL"
+
+# Apply changes
+npx summa migrate push --url "$DATABASE_URL" --yes
+```
+
+For zero-downtime deployments, use your ORM's migration tooling:
+
+```bash
+npx summa generate --adapter drizzle --out src/db/schema.ts --yes
+npx drizzle-kit push
+```
+
+## Worker Management
+
+### Starting Workers
+
+Workers should start after your HTTP server is ready:
+
+```ts
+const server = app.listen(3000, async () => {
+  console.log("Server ready on :3000");
+  await summa.workers.start();
+});
+```
+
+### Graceful Shutdown
+
+Always stop workers before process exit. The worker runner awaits running workers with a 10-second timeout:
+
+```ts
+async function shutdown() {
+  console.log("Shutting down...");
+  await summa.workers.stop();  // Waits for running workers (up to 10s)
+  server.close();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+### Multi-Instance Deployment
+
+Workers use **distributed leases** via advisory locks. In a multi-instance deployment (Kubernetes, ECS, etc.), only one instance runs each worker. No additional configuration needed.
+
+## Observability
+
+### Structured Logging
+
+Use the built-in JSON logger for log aggregation:
+
+```ts
+import { createJsonLogger } from "@summa/core/logger";
+
+const summa = createSumma({
+  database: adapter,
+  logger: createJsonLogger({ level: "info", service: "ledger" }),
+});
+```
+
+Output (one JSON line per log entry):
+```json
+{"timestamp":"2026-02-21T10:30:00.000Z","level":"info","service":"ledger","message":"Transaction posted"}
+```
+
+### Prometheus Metrics
+
+Enable the observability plugin for request metrics:
+
+```ts
+import { observability } from "summa/plugins";
+
+plugins: [
+  observability({ serviceName: "ledger" }),
+]
+```
+
+Scrape `GET /api/ledger/metrics` with Prometheus. See [Observability Plugin](/docs/plugins/observability) for available metrics.
+
+### Request Tracing
+
+Every API response includes an `X-Request-Id` header. Forward the `x-request-id` header from your API gateway for end-to-end trace correlation. The observability plugin also propagates `traceparent` headers for distributed tracing.
+
+## Security Hardening
+
+### API Authentication
+
+Use handler-level `onRequest` hooks or framework middleware:
+
+```ts
+const handler = createSummaHono(summa, {
+  onRequest: (req) => {
+    const key = req.headers?.["x-api-key"];
+    if (!isValidKey(key)) {
+      return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } } };
+    }
+    return req;
+  },
+});
+```
+
+### Admin Endpoints
+
+Always configure `authorize` on the admin plugin in production:
+
+```ts
+admin({
+  authorize: async (req) => {
+    const token = req.headers?.["authorization"]?.replace("Bearer ", "");
+    return token ? await verifyAdminToken(token) : false;
+  },
+})
+```
+
+### Rate Limiting
+
+Choose a rate limiter backend based on your deployment:
+
+| Backend | Best for | Shared across instances? |
+|---------|----------|:-:|
+| `memory` | Single instance | No |
+| `database` | Multi-instance, no Redis | Yes |
+| `secondary` (Redis) | Multi-instance, high throughput | Yes |
+
+```ts
+import { createRateLimiter } from "summa/api";
+
+const rateLimiter = createRateLimiter({
+  window: 60,
+  max: 100,
+  storage: "database",  // Shared across instances
+});
+```
+
+### CSRF Protection
+
+Enable origin checking for browser-facing deployments:
+
+```ts
+const handler = createSummaHono(summa, {
+  trustedOrigins: ["https://app.example.com"],
+});
+```
+
+## Health Checks
+
+Summa exposes a health check endpoint at `GET /ok`:
+
+```bash
+curl http://localhost:3000/api/ledger/ok
+# {"ok":true}
+```
+
+Use this for load balancer health checks and Kubernetes readiness probes.
+
+## Recommended Plugin Set
+
+For production deployments, start with:
+
+```ts
+plugins: [
+  auditLog(),                       // Compliance
+  reconciliation(),                 // Integrity
+  maintenance(),                    // Cleanup
+  observability(),                  // Metrics
+  admin({ authorize: checkAuth }),  // Management
+  openApi(),                        // Documentation
+]
+```
+
+Add more plugins based on your requirements:
+- **`velocityLimits()`** — if you need per-account transaction limits
+- **`holdExpiry()`** — if you use two-phase holds
+- **`outbox({ publisher })`** + **`dlqManager()`** — if you publish events to external systems
+- **`hotAccounts()`** — if you have high-traffic accounts (> 1000 txn/min)
+- **`snapshots()`** — if you need historical balance queries
+- **`scheduledTransactions()`** — if you need future/recurring transactions
+
+## Integrity Verification
+
+Run periodic integrity checks in production:
+
+```bash
+# Full verification (balances + hash chain)
+npx summa verify --url "$DATABASE_URL"
+
+# Quick balance-only check
+npx summa verify --balances --url "$DATABASE_URL"
+```
+
+Schedule this as a cron job or CI step for continuous verification.

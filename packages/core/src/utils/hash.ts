@@ -12,7 +12,7 @@ const deterministicStringify = stringify.configure({ deterministic: true });
  */
 export function computeHash(prevHash: string | null, eventData: Record<string, unknown>): string {
 	// Normalize to match JSONB round-trip behavior
-	const normalized = JSON.parse(JSON.stringify(eventData));
+	const normalized = structuredClone(eventData);
 	const payload = (prevHash ?? "") + (deterministicStringify(normalized) as string);
 	return createHash("sha256").update(payload).digest("hex");
 }

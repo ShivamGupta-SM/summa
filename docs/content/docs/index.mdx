@@ -71,7 +71,7 @@ Financial systems are high-value targets. Summa bakes security into every layer 
 |-------|-----------|
 | **Your Application** | Your API routes, workers, cron jobs |
 | **Summa API** | `accounts` · `transactions` · `holds` · `events` · `limits` · `workers` |
-| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` |
+| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` · `observability` |
 | **Database Adapters** | Drizzle · Prisma · Kysely · Memory |
 
 ## Key Features
@@ -86,8 +86,8 @@ Financial systems are high-value targets. Summa bakes security into every layer 
   <Card title="Two-Phase Holds" href="/docs/holds">
     Reserve funds before settlement. Supports partial capture, void, expiry, and multi-destination splits.
   </Card>
-  <Card title="12 Built-in Plugins" href="/docs/plugins">
-    Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI, and more.
+  <Card title="13 Built-in Plugins" href="/docs/plugins">
+    Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI, observability, and more.
   </Card>
   <Card title="Idempotency" href="/docs/transactions#idempotency">
     Built-in idempotency key support. Safe retries with no double-posting, even under network failures.
@@ -164,6 +164,8 @@ const balance = await summa.accounts.getBalance("user_123");
   <File name="@summa/kysely-adapter" />
   <File name="@summa/memory-adapter" />
   <File name="@summa/client" />
+  <File name="@summa/telemetry" />
+  <File name="@summa/test-utils" />
 </Files>
 
 | Package | Description |
@@ -175,7 +177,9 @@ const balance = await summa.accounts.getBalance("user_123");
 | `@summa/prisma-adapter` | Prisma adapter |
 | `@summa/kysely-adapter` | Kysely adapter |
 | `@summa/memory-adapter` | In-memory adapter for testing |
-| `@summa/client` | Type-safe HTTP client SDK for the Summa API |
+| `@summa/client` | Type-safe HTTP client SDK with React, Vue, and Svelte bindings |
+| `@summa/telemetry` | Anonymous telemetry for CLI usage analytics |
+| `@summa/test-utils` | Test assertions for balance, double-entry, and hash chain verification |
 
 ## Next Steps
 
@@ -199,7 +203,7 @@ const balance = await summa.accounts.getBalance("user_123");
     Event sourcing and hash chain integrity.
   </Card>
   <Card title="Plugins" href="/docs/plugins">
-    Extend with 12 built-in plugins.
+    Extend with 13 built-in plugins.
   </Card>
   <Card title="Client SDK" href="/docs/client-sdk">
     Type-safe HTTP client for service-to-service calls.

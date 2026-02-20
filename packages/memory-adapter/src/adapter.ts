@@ -28,7 +28,7 @@ function cloneStore(store: Store): Store {
 	for (const [model, records] of store) {
 		const recordClone = new Map<string, Record<string, unknown>>();
 		for (const [id, record] of records) {
-			recordClone.set(id, { ...record });
+			recordClone.set(id, structuredClone(record));
 		}
 		clone.set(model, recordClone);
 	}

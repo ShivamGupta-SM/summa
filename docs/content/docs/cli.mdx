@@ -38,11 +38,20 @@ npx summa init
 The wizard walks you through:
 
 1. **Database adapter** — Drizzle ORM (recommended), Prisma, Kysely, or In-Memory
-2. **Currency** — ISO 4217 currency code (default: USD)
-3. **Plugins** — multiselect from 12 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI)
-4. **System accounts** — use defaults (@World, @Fees, @Suspense) or customize
+2. **Framework** — auto-detected from `package.json` dependencies (Next.js, Hono, Express, Fastify, SvelteKit) or manual selection
+3. **Currency** — ISO 4217 currency code (default: USD)
+4. **Plugins** — multiselect from 13 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI, observability)
+5. **System accounts** — use defaults (@World, @Fees, @Suspense) or customize
 
-Auto-detects your package manager (pnpm/npm/yarn/bun) for install instructions.
+The init wizard also:
+
+- **Auto-detects your package manager** (pnpm/npm/yarn/bun) for install instructions
+- **Generates `.env.example`** with `DATABASE_URL` placeholder
+- **Scaffolds an API route** based on the detected framework:
+  - **Next.js**: `app/api/ledger/[...path]/route.ts`
+  - **Hono**: `src/routes/ledger.ts`
+  - **Express**: `src/routes/ledger.ts`
+  - **Fastify**: `src/routes/ledger.ts`
 
 | Option | Description |
 |--------|-------------|

@@ -93,8 +93,7 @@
   },
   "dependencies": {
     "@summa/core": "workspace:*",
-    "pdfkit": "^0.17.2",
-    "safe-stable-stringify": "^2.5.0"
+    "pdfkit": "^0.17.2"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",

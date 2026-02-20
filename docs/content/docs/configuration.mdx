@@ -101,6 +101,7 @@ import {
   hotAccounts,
   scheduledTransactions,
   maintenance,
+  observability,
 } from "summa/plugins";
 
 plugins: [
@@ -114,6 +115,7 @@ plugins: [
   hotAccounts(),
   scheduledTransactions(),
   maintenance(),
+  observability(),
 ]
 ```
 
@@ -131,7 +133,6 @@ advanced: {
   lockTimeoutMs: 3000,             // Advisory lock acquisition timeout
   maxTransactionAmount: 1_000_000_000_00,  // $10M max per transaction
   enableEventSourcing: true,       // Enable/disable event log
-  enableHashChain: true,           // Enable/disable hash chain verification
 }
 ```
 
@@ -143,7 +144,21 @@ advanced: {
 | `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
 | `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
 | `enableEventSourcing` | `boolean` | `true` | Write events to the event log |
-| `enableHashChain` | `boolean` | `true` | Compute SHA-256 hash chains for events |
+
+<Callout type="warn" title="Hash chain is always enabled">
+  The SHA-256 hash chain is critical for tamper detection and is always enabled when event sourcing is on. It cannot be disabled independently.
+</Callout>
+
+### Configuration Validation
+
+`createSumma()` validates your configuration at startup:
+
+- **Currency** must be a valid ISO 4217 code (50+ supported currencies)
+- **System account identifiers** must start with `@`
+- **Numeric options** (`transactionTimeoutMs`, `lockTimeoutMs`, etc.) must be positive finite numbers
+- **Database adapter** is required
+
+Invalid configuration throws `SummaError` with code `INVALID_ARGUMENT` immediately, not at first use.
 
 ## `logger`
 
@@ -158,7 +173,31 @@ interface SummaLogger {
 }
 ```
 
-Example with Pino:
+### Built-in JSON Logger
+
+Summa ships with a structured JSON logger for production environments:
+
+```ts
+import { createJsonLogger } from "@summa/core/logger";
+
+const summa = createSumma({
+  database: adapter,
+  logger: createJsonLogger({ level: "info", service: "ledger" }),
+});
+```
+
+Each log line is emitted as single-line JSON, suitable for log aggregation (ELK, Datadog, CloudWatch):
+
+```json
+{"timestamp":"2026-02-21T10:30:00.000Z","level":"info","service":"ledger","message":"Transaction posted","txnId":"uuid"}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `level` | `"debug" \| "info" \| "warn" \| "error"` | `"info"` | Minimum log level to emit |
+| `service` | `string` | `"summa"` | Service name in structured output |
+
+### Custom Logger (Pino example)
 
 ```ts
 import pino from "pino";

@@ -9,3 +9,4 @@ catalog:
   tsdown: ^0.20.3
   publint: ^0.3.0
   "@arethetypeswrong/cli": ^0.18.0
+  "@types/node": ^22.0.0

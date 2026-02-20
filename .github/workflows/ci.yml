@@ -16,15 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
 
       - name: Biome check
         run: pnpm lint
@@ -40,18 +32,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup
 
       - name: Typecheck
         run: pnpm typecheck
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Cache Turbo
+        uses: actions/cache@v4
+        with:
+          path: .turbo
+          key: turbo-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-${{ runner.os }}-
+
+      - name: Build
+        run: pnpm build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: packages/*/dist
+          retention-days: 1
 
   lint-packages:
     name: Lint Packages
@@ -59,18 +67,13 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
+          name: build-output
+          path: packages
 
       - name: Lint packages (publint)
         run: pnpm lint:packages
@@ -81,39 +84,16 @@ jobs:
     needs: build
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
+          name: build-output
+          path: packages
 
       - name: Lint types (attw)
         run: pnpm lint:types
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
 
   test:
     name: Test
@@ -136,18 +116,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Build
-        run: pnpm build
+          name: build-output
+          path: packages
 
       - name: Unit Tests
         run: pnpm test
@@ -159,5 +134,12 @@ jobs:
         env:
           DATABASE_URL: postgres://summa:summa@localhost:5432/summa_test
 
-      - name: Unused Dependencies (knip)
+  unused-dependencies:
+    name: Unused Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Check unused dependencies (knip)
         run: pnpm lint:dependencies

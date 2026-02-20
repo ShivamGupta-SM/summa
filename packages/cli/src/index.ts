@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
 import { createTelemetry } from "@summa/telemetry";
 import { Command } from "commander";
 import pc from "picocolors";
@@ -19,11 +18,9 @@ import { verifyCommand } from "./commands/verify.js";
 process.on("SIGINT", () => process.exit(0));
 process.on("SIGTERM", () => process.exit(0));
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-
 let cliVersion = "0.1.0";
 try {
-	const pkg = JSON.parse(readFileSync(resolve(__dirname, "../package.json"), "utf-8"));
+	const pkg = JSON.parse(readFileSync(resolve(import.meta.dirname, "../package.json"), "utf-8"));
 	cliVersion = pkg.version ?? cliVersion;
 } catch {
 	// Fallback version

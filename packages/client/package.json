@@ -71,13 +71,13 @@
 		}
 	},
 	"devDependencies": {
-		"@arethetypeswrong/cli": "^0.18.0",
+		"@arethetypeswrong/cli": "catalog:",
 		"@types/react": "^19.0.0",
-		"publint": "^0.3.0",
+		"publint": "catalog:",
 		"svelte": "^5.53.0",
 		"tsdown": "catalog:",
-		"typescript": "^5.8.0",
-		"vitest": "^3.0.0",
+		"typescript": "catalog:",
+		"vitest": "catalog:",
 		"vue": "^3.5.28"
 	}
 }

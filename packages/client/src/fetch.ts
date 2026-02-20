@@ -71,7 +71,7 @@ export function createFetchClient(options: SummaClientOptions): FetchClient {
 
 		// 204 No Content
 		if (response.status === 204) {
-			return undefined as T;
+			return undefined as T & undefined;
 		}
 
 		return response.json() as Promise<T>;

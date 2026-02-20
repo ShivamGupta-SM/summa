@@ -98,6 +98,8 @@ interface ApiHandlerOptions {
   rateLimiter?: RateLimiter;
   rateLimitKeyExtractor?: (req: ApiRequest) => string;
   trustedOrigins?: string[];
+  onRequest?: (req: ApiRequest) => ApiRequest | ApiResponse | Promise<ApiRequest | ApiResponse>;
+  onResponse?: (req: ApiRequest, res: ApiResponse) => ApiResponse | Promise<ApiResponse>;
 }
 ```
 
@@ -106,6 +108,34 @@ interface ApiHandlerOptions {
 | `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
 | `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
 | `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit (e.g., 401 for auth). |
+| `onResponse` | `function` | Response interceptor. Modify responses before they are sent. |
+
+### Request/Response Hooks
+
+Use `onRequest` to add authentication, logging, or early rejection:
+
+```ts
+const handler = createSummaHono(summa, {
+  onRequest: (req) => {
+    const apiKey = req.headers?.["x-api-key"];
+    if (!apiKey || !isValidApiKey(apiKey)) {
+      return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } } };
+    }
+    return req; // Continue to route handler
+  },
+  onResponse: (req, res) => {
+    console.log(`${req.method} ${req.path} → ${res.status}`);
+    return res;
+  },
+});
+```
+
+**Execution order:** `onRequest` → CSRF check → rate limiting → plugin `onRequest` hooks → route handler → plugin `onResponse` hooks (reverse order) → `onResponse`
+
+### Request ID
+
+Every response includes an `X-Request-Id` header. The handler extracts it from the incoming `x-request-id` header (for distributed tracing) or generates a UUID if not present. Use this for correlating logs and traces across services.
 
 ## API Endpoints
 
@@ -258,6 +288,12 @@ Plugins can register additional endpoints via their `endpoints` array. These are
 |--------|------|-------------|
 | `GET` | `/openapi.json` | OpenAPI 3.1 specification |
 
+**Observability plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/metrics` | Prometheus-compatible metrics (text format) |
+
 ## Rate Limiting
 
 Summa includes built-in rate limiting with configurable presets:
@@ -319,6 +355,21 @@ const handler = createSummaHono(summa, {
 ```
 
 When `trustedOrigins` is set, POST/PUT/PATCH/DELETE requests must include a valid `Origin` header. Server-to-server calls without an `Origin` header are allowed through.
+
+## Request Validation
+
+All POST endpoints validate the request body at the handler level. Missing or invalid required fields return a `VALIDATION_ERROR`:
+
+```json
+{
+  "error": {
+    "code": "VALIDATION_ERROR",
+    "message": "Missing required field: holderId (expected string)"
+  }
+}
+```
+
+Validation checks that required fields are present and have the correct type (`string`, `number`, `object`). Optional fields (suffixed with `?` internally) are allowed to be absent.
 
 ## Request/Response Format
 

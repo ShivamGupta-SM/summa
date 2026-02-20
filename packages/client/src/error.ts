@@ -14,8 +14,9 @@ export class SummaClientError extends Error {
 		message: string,
 		status: number,
 		details?: Record<string, unknown>,
+		options?: { cause?: unknown },
 	) {
-		super(message);
+		super(message, { cause: options?.cause });
 		this.name = "SummaClientError";
 		this.code = code;
 		this.status = status;

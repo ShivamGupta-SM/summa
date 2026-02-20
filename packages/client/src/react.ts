@@ -70,19 +70,20 @@ export function useSummaQuery<T>(
 		setLoading(true);
 		setError(undefined);
 
-		fn(client)
-			.then((result) => {
+		(async () => {
+			try {
+				const result = await fn(client);
 				if (!cancelled) {
 					setData(result);
 					setLoading(false);
 				}
-			})
-			.catch((err: unknown) => {
+			} catch (err: unknown) {
 				if (!cancelled) {
 					setError(err instanceof Error ? err : new Error(String(err)));
 					setLoading(false);
 				}
-			});
+			}
+		})();
 
 		return () => {
 			cancelled = true;

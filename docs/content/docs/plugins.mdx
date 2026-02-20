@@ -22,6 +22,7 @@ import {
   maintenance,
   admin,
   openApi,
+  observability,
 } from "summa/plugins";
 
 const summa = createSumma({
@@ -38,8 +39,9 @@ const summa = createSumma({
     hotAccounts(),
     scheduledTransactions(),
     maintenance(),
-    admin(),
+    admin({ authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY }),
     openApi(),
+    observability(),
   ],
 });
 ```
@@ -58,8 +60,9 @@ const summa = createSumma({
 | [`hotAccounts`](/docs/plugins/hot-accounts) | Performance | Yes | Optimistic concurrency for high-traffic accounts |
 | [`scheduledTransactions`](/docs/plugins/scheduled-transactions) | Automation | Yes | Future and recurring transaction scheduling |
 | [`maintenance`](/docs/plugins/maintenance) | Operations | Yes | Automated cleanup of expired data |
-| [`admin`](/docs/plugins/admin) | Management | No | Elevated admin endpoints with dashboard stats |
+| [`admin`](/docs/plugins/admin) | Management | No | Elevated admin endpoints with authorization and dashboard stats |
 | [`openApi`](/docs/plugins/open-api) | Documentation | No | Auto-generated OpenAPI 3.1 specification |
+| [`observability`](/docs/plugins/observability) | Monitoring | No | Distributed tracing and Prometheus metrics via `/metrics` endpoint |
 
 ## Plugin Architecture
 
@@ -68,6 +71,7 @@ Every plugin implements the `SummaPlugin` interface:
 ```ts
 interface SummaPlugin {
   id: string;                    // Unique identifier
+  dependencies?: string[];       // Plugin IDs that must load first
   init?: (ctx) => Promise<void>; // Called on startup
 
   // HTTP endpoints contributed by the plugin
@@ -82,6 +86,10 @@ interface SummaPlugin {
     beforeHoldCreate?: (params) => Promise<void>;
     afterHoldCommit?: (params) => Promise<void>;
   };
+
+  // HTTP-level request/response interceptors
+  onRequest?: (req) => req | response;  // Return response to short-circuit
+  onResponse?: (req, res) => res;       // Modify response before sending
 
   // Background workers
   workers?: SummaWorkerDefinition[];
@@ -122,6 +130,46 @@ hooks: {
   },
 }
 ```
+
+### Plugin Dependencies
+
+Plugins can declare dependencies on other plugins. Summa validates that all required plugins are registered and sorts them topologically at startup.
+
+```ts
+{
+  id: "my-plugin",
+  dependencies: ["audit-log", "reconciliation"],
+  // ...
+}
+```
+
+If a required plugin is missing, `createSumma()` throws immediately:
+
+```
+Plugin "my-plugin" requires plugin "audit-log" which is not registered
+```
+
+### Request/Response Interceptors
+
+Plugins can intercept HTTP requests and responses at the handler level — before and after route matching. This is how the `observability` plugin adds tracing and metrics.
+
+```ts
+{
+  id: "my-auth-plugin",
+  onRequest: (req) => {
+    if (!req.headers?.["authorization"]) {
+      return { status: 401, body: { error: "Unauthorized" } };
+    }
+    return req; // Continue to route handler
+  },
+  onResponse: (req, res) => {
+    return { ...res, headers: { ...res.headers, "X-Custom": "value" } };
+  },
+}
+```
+
+- `onRequest` runs **after** CSRF/rate-limiting, **before** route matching. Return a response object to short-circuit.
+- `onResponse` runs **after** the route handler, in **reverse plugin order** (middleware stack unwinding).
 
 ### Background Workers
 
@@ -187,6 +235,9 @@ plugins: [
   dlqManager(),
   hotAccounts(),
   maintenance(),
+  observability(),
+  admin({ authorize: checkAdminAuth }),
+  openApi(),
 ]
 ```
 

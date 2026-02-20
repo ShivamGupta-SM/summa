@@ -1,0 +1,119 @@
+---
+title: Observability
+description: Distributed tracing and Prometheus metrics for the Summa ledger.
+icon: ChartBar
+---
+
+## Overview
+
+The observability plugin adds **distributed tracing** and **Prometheus-style metrics** to the Summa API handler. It uses `onRequest`/`onResponse` hooks to track request durations, status codes, and active request counts — no external dependencies required.
+
+## Setup
+
+```ts
+import { observability } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [observability()],
+});
+```
+
+## Configuration
+
+```ts
+observability({
+  serviceName: "ledger",           // Metric prefix (default: "summa")
+  tracing: true,                   // Enable request tracing (default: true)
+  metrics: true,                   // Enable /metrics endpoint (default: true)
+  traceHeader: "traceparent",      // Header for trace ID propagation (default: "traceparent")
+})
+```
+
+<TypeTable
+  type={{
+    serviceName: { type: "string", description: "Service name for metric prefixes.", default: '"summa"' },
+    tracing: { type: "boolean", description: "Enable request tracing via onRequest/onResponse hooks.", default: "true" },
+    metrics: { type: "boolean", description: "Enable Prometheus-style /metrics endpoint.", default: "true" },
+    traceHeader: { type: "string", description: "HTTP header for trace ID propagation.", default: '"traceparent"' },
+  }}
+/>
+
+## Metrics Endpoint
+
+When `metrics` is enabled, the plugin serves a Prometheus-compatible endpoint:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/metrics` | Prometheus text format metrics |
+
+### Available Metrics
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `summa_http_requests_total` | counter | Total HTTP requests processed |
+| `summa_http_requests_active` | gauge | Currently in-flight requests |
+| `summa_http_request_duration_ms` | summary | Request duration with p50, p95, p99 quantiles |
+| `summa_http_responses_total{status="2xx"}` | counter | Responses by status code class |
+
+### Example Output
+
+```
+# HELP summa_http_requests_total Total number of HTTP requests
+# TYPE summa_http_requests_total counter
+summa_http_requests_total 1234
+
+# HELP summa_http_requests_active Currently active HTTP requests
+# TYPE summa_http_requests_active gauge
+summa_http_requests_active 2
+
+# HELP summa_http_request_duration_ms HTTP request duration in milliseconds
+# TYPE summa_http_request_duration_ms summary
+summa_http_request_duration_ms{quantile="0.5"} 12.50
+summa_http_request_duration_ms{quantile="0.95"} 45.20
+summa_http_request_duration_ms{quantile="0.99"} 120.00
+summa_http_request_duration_ms_avg 18.30
+summa_http_request_duration_ms_count 1234
+summa_http_responses_total{status="2xx"} 1180
+summa_http_responses_total{status="4xx"} 50
+summa_http_responses_total{status="5xx"} 4
+```
+
+## Tracing
+
+When `tracing` is enabled, the plugin:
+
+1. Extracts a trace ID from the `traceparent` header (or `x-request-id`, or generates a UUID)
+2. Records the request start time
+3. Adds an `X-Trace-Id` response header for correlation
+4. Records request duration and status code metrics on response
+
+This integrates with any distributed tracing system that propagates trace context via HTTP headers (OpenTelemetry, Jaeger, Zipkin).
+
+## Prometheus Scraping
+
+Point your Prometheus scraper at the `/metrics` endpoint:
+
+```yaml title="prometheus.yml"
+scrape_configs:
+  - job_name: "summa-ledger"
+    scrape_interval: 15s
+    static_configs:
+      - targets: ["localhost:3000"]
+    metrics_path: /api/ledger/metrics
+```
+
+## Grafana Dashboard
+
+Use the exported metrics to build dashboards:
+
+- **Request rate**: `rate(summa_http_requests_total[5m])`
+- **Error rate**: `rate(summa_http_responses_total{status="5xx"}[5m])`
+- **P95 latency**: `summa_http_request_duration_ms{quantile="0.95"}`
+- **Active requests**: `summa_http_requests_active`
+
+## How It Works
+
+The plugin uses `onRequest` and `onResponse` hooks (not lifecycle hooks) to intercept every HTTP request at the handler level. Duration is measured with `performance.now()` for sub-millisecond accuracy. A sliding window of the last 10,000 request durations is maintained for percentile calculation.
+
+No external tracing SDK is required — the plugin provides lightweight, zero-dependency observability out of the box.

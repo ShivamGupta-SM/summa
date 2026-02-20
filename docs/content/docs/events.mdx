@@ -142,9 +142,16 @@ const summa = createSumma({
   database: adapter,
   advanced: {
     enableEventSourcing: false,  // Don't write events
-    enableHashChain: false,      // Don't compute hashes
   },
 });
 ```
 
 This reduces write amplification but loses the audit trail and chain verification capability.
+
+<Callout type="warn" title="Hash chain cannot be disabled">
+  The SHA-256 hash chain is always enabled when event sourcing is on. It is critical for tamper detection and integrity verification. All events are hashed with their predecessor's hash, forming a verifiable chain per aggregate.
+</Callout>
+
+## Transaction Isolation
+
+All event store operations run within `READ COMMITTED` isolation level transactions with configurable statement and lock timeouts. This ensures consistency without risking deadlocks under concurrent load.

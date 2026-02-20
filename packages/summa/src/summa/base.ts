@@ -234,13 +234,14 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 ): Summa<InferPluginTypes<TPlugins>> {
 	let workerRunner: SummaWorkerRunner | null = null;
 
-	const ctxPromise = buildContext(options).then(async (ctx) => {
+	const ctxPromise = (async () => {
+		const ctx = await buildContext(options);
 		await initializeSystemAccounts(ctx);
 		for (const plugin of ctx.plugins) {
 			if (plugin.init) await plugin.init(ctx);
 		}
 		return ctx;
-	});
+	})();
 
 	const getCtx = () => ctxPromise;
 

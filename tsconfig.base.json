@@ -4,7 +4,6 @@
 		"target": "esnext",
 		"module": "esnext",
 		"moduleResolution": "bundler",
-		"esModuleInterop": true,
 		"skipLibCheck": true,
 		"verbatimModuleSyntax": true,
 		"noUncheckedIndexedAccess": true,

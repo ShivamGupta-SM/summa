@@ -48,11 +48,11 @@
     }
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.18.0",
+    "@arethetypeswrong/cli": "catalog:",
     "drizzle-orm": "^0.41.0",
-    "publint": "^0.3.0",
+    "publint": "catalog:",
     "tsdown": "catalog:",
-    "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }

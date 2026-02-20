@@ -30,11 +30,11 @@
 		"prepublishOnly": "tsdown"
 	},
 	"devDependencies": {
-		"@arethetypeswrong/cli": "^0.18.0",
-		"@types/node": "^22.0.0",
-		"publint": "^0.3.0",
+		"@arethetypeswrong/cli": "catalog:",
+		"@types/node": "catalog:",
+		"publint": "catalog:",
 		"tsdown": "catalog:",
-		"typescript": "^5.8.0",
-		"vitest": "^3.0.0"
+		"typescript": "catalog:",
+		"vitest": "catalog:"
 	}
 }

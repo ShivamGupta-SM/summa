@@ -20,6 +20,9 @@
 		"webhooks",
 		"---Reference---",
 		"cli",
-		"error-codes"
+		"error-codes",
+		"---Guides---",
+		"testing",
+		"deployment"
 	]
 }
