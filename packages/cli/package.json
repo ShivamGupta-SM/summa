@@ -1,0 +1,32 @@
+{
+  "name": "@summa/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "summa": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "dev-source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.0.1",
+    "@summa/core": "workspace:*",
+    "commander": "^12.1.0",
+    "picocolors": "^1.1.1"
+  },
+  "devDependencies": {
+    "tsdown": "^0.12.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.0"
+  }
+}

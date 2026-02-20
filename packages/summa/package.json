@@ -1,0 +1,44 @@
+{
+  "name": "summa",
+  "version": "0.1.0",
+  "description": "Event-sourced double-entry financial ledger for TypeScript",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "dev-source": "./src/index.ts",
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./plugins": {
+      "dev-source": "./src/plugins/index.ts",
+      "types": "./dist/plugins/index.d.mts",
+      "default": "./dist/plugins/index.mjs"
+    },
+    "./types": {
+      "dev-source": "./src/types/index.ts",
+      "types": "./dist/types/index.d.mts",
+      "default": "./dist/types/index.mjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint:package": "publint --strict",
+    "lint:types": "attw --profile esm-only --pack ."
+  },
+  "dependencies": {
+    "@summa/core": "workspace:*",
+    "safe-stable-stringify": "^2.5.0"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
+  }
+}

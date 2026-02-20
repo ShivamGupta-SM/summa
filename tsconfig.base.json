@@ -1,0 +1,19 @@
+{
+	"compilerOptions": {
+		"strict": true,
+		"target": "esnext",
+		"module": "esnext",
+		"moduleResolution": "bundler",
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"verbatimModuleSyntax": true,
+		"noUncheckedIndexedAccess": true,
+		"incremental": true,
+		"composite": true,
+		"declaration": true,
+		"emitDeclarationOnly": true,
+		"outDir": "${configDir}/node_modules/.cache/ts/out",
+		"tsBuildInfoFile": "${configDir}/node_modules/.cache/ts/tsbuildinfo"
+	},
+	"exclude": ["**/dist/**", "**/node_modules/**"]
+}

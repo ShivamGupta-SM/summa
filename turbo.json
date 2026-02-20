@@ -1,0 +1,28 @@
+{
+	"$schema": "https://turbo.build/schema.json",
+	"tasks": {
+		"build": {
+			"dependsOn": ["^build"],
+			"inputs": ["$TURBO_DEFAULT$"],
+			"outputs": ["dist/**"]
+		},
+		"dev": {
+			"cache": false,
+			"persistent": true
+		},
+		"test": {
+			"dependsOn": ["^build", "build"],
+			"inputs": ["$TURBO_DEFAULT$", "vitest.config.*", "src/**", "*.test.*"],
+			"outputs": ["coverage/**"]
+		},
+		"lint:package": {
+			"dependsOn": ["build"],
+			"cache": false
+		},
+		"lint:types": {
+			"dependsOn": ["build"],
+			"cache": false
+		},
+		"clean": {}
+	}
+}

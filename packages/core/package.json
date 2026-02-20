@@ -1,0 +1,47 @@
+{
+	"name": "@summa/core",
+	"version": "0.1.0",
+	"type": "module",
+	"license": "MIT",
+	"exports": {
+		".": {
+			"dev-source": "./src/index.ts",
+			"types": "./dist/index.d.mts",
+			"default": "./dist/index.mjs"
+		},
+		"./db": {
+			"dev-source": "./src/db/index.ts",
+			"types": "./dist/db/index.d.mts",
+			"default": "./dist/db/index.mjs"
+		},
+		"./error": {
+			"dev-source": "./src/error/index.ts",
+			"types": "./dist/error/index.d.mts",
+			"default": "./dist/error/index.mjs"
+		},
+		"./utils": {
+			"dev-source": "./src/utils/index.ts",
+			"types": "./dist/utils/index.d.mts",
+			"default": "./dist/utils/index.mjs"
+		}
+	},
+	"files": ["dist"],
+	"scripts": {
+		"build": "tsdown",
+		"dev": "tsdown --watch",
+		"test": "vitest run",
+		"typecheck": "tsc --project tsconfig.json",
+		"lint:package": "publint --strict",
+		"lint:types": "attw --profile esm-only --pack ."
+	},
+	"dependencies": {
+		"safe-stable-stringify": "^2.5.0"
+	},
+	"devDependencies": {
+		"@arethetypeswrong/cli": "^0.18.0",
+		"publint": "^0.3.0",
+		"tsdown": "^0.12.0",
+		"typescript": "^5.8.0",
+		"vitest": "^3.0.0"
+	}
+}

@@ -1,0 +1,43 @@
+{
+  "name": "@summa/drizzle-adapter",
+  "version": "0.1.0",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "dev-source": "./src/index.ts",
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./schema": {
+      "dev-source": "./src/schema.ts",
+      "types": "./dist/schema.d.mts",
+      "default": "./dist/schema.mjs"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --project tsconfig.json",
+    "lint:package": "publint --strict",
+    "lint:types": "attw --profile esm-only --pack ."
+  },
+  "dependencies": {
+    "@summa/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=0.41.0",
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": { "optional": true }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "drizzle-orm": "^0.41.0",
+    "publint": "^0.3.0",
+    "tsdown": "^0.12.0",
+    "typescript": "^5.8.0"
+  }
+}
