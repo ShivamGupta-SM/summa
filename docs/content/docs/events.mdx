@@ -1,0 +1,150 @@
+---
+title: Events
+description: Event sourcing, hash chain verification, and the immutable audit trail.
+icon: QueueList
+---
+
+## Overview
+
+Summa is **event-sourced** — every mutation (account creation, transaction, hold, etc.) produces an immutable event stored in an append-only log. Events are never updated or deleted.
+
+Each event includes a **SHA-256 hash** computed from the event data and the previous event's hash, forming a cryptographic chain. If any event is tampered with, the chain breaks — detectable by verification.
+
+## Event Structure
+
+Every event stored in Summa follows the `StoredEvent` interface:
+
+```ts
+interface StoredEvent {
+  id: string;                    // UUID
+  sequenceNumber: number;        // Global sequence
+  aggregateType: string;         // "account", "transaction", "hold"
+  aggregateId: string;           // The entity's ID
+  aggregateVersion: number;      // Per-aggregate version counter
+  eventType: string;             // e.g. "AccountCreated", "TransactionPosted"
+  eventData: Record<string, unknown>;  // Event payload
+  correlationId: string;         // Groups related events
+  hash: string;                  // SHA-256 hash
+  prevHash: string | null;       // Previous event's hash (null for first)
+  createdAt: Date;
+}
+```
+
+## Event Types
+
+### Account Events
+
+| Event | When |
+|-------|------|
+| `AccountCreated` | New account is created |
+| `AccountFrozen` | Account is frozen |
+| `AccountUnfrozen` | Account is unfrozen |
+| `AccountClosed` | Account is permanently closed |
+
+### Transaction Events
+
+| Event | When |
+|-------|------|
+| `TransactionInitiated` | Transaction begins processing |
+| `TransactionPosted` | Transaction completes and balances are updated |
+| `TransactionReversed` | Transaction is refunded |
+
+### Hold Events
+
+| Event | When |
+|-------|------|
+| `HoldCreated` | New hold is placed on an account |
+| `HoldCommitted` | Hold is captured into a posted transaction |
+| `HoldVoided` | Hold is released without charging |
+| `HoldExpired` | Hold passed its expiration time |
+
+### Scheduled Transaction Events
+
+| Event | When |
+|-------|------|
+| `ScheduledTransactionCreated` | Future transaction is scheduled |
+| `ScheduledTransactionCancelled` | Scheduled transaction is cancelled |
+| `ScheduledTransactionProcessing` | Worker picks up the scheduled transaction |
+| `ScheduledTransactionCompleted` | Scheduled transaction succeeds |
+| `ScheduledTransactionRescheduled` | Scheduled transaction is retried later |
+| `ScheduledTransactionFailed` | Scheduled transaction fails permanently |
+
+## Querying Events
+
+### By aggregate
+
+Get all events for a specific entity:
+
+```ts
+// All events for an account
+const events = await summa.events.getForAggregate("account", accountId);
+
+// All events for a transaction
+const events = await summa.events.getForAggregate("transaction", txnId);
+
+// All events for a hold
+const events = await summa.events.getForAggregate("hold", holdId);
+```
+
+### By correlation
+
+All events in a single operation share a `correlationId`. For example, a transfer creates events on both the source and destination accounts — they share the same correlationId:
+
+```ts
+const events = await summa.events.getByCorrelation(txn.correlationId);
+// Returns: TransactionInitiated, TransactionPosted, entry events, etc.
+```
+
+## Hash Chain Verification
+
+Verify the integrity of the event chain for any aggregate:
+
+```ts
+const result = await summa.events.verifyChain("account", accountId);
+
+console.log(result.valid);           // true if chain is intact
+console.log(result.eventCount);      // number of events verified
+console.log(result.brokenAtVersion); // version where chain broke (if invalid)
+```
+
+The verification re-computes every hash from the event data and checks that each `hash` matches the next event's `prevHash`.
+
+## CLI Verification
+
+The CLI provides comprehensive integrity checks:
+
+```bash
+# Verify everything (balances + hash chain)
+npx summa verify
+
+# Verify hash chain only
+npx summa verify --chain
+
+# Verify double-entry balances only
+npx summa verify --balances
+```
+
+**Hash chain checks:**
+- Block checkpoint chain linkage (`prev_block_hash` matches)
+- Event hash chain per aggregate (samples up to 50 aggregates)
+
+**Balance checks:**
+- Per-transaction double-entry balance (every transaction must have equal debits and credits)
+- Global balance invariant (user + system + hot accounts = 0)
+- Duplicate entry detection
+
+## Disabling Event Sourcing
+
+For testing or high-throughput scenarios where you don't need the audit trail:
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  advanced: {
+    enableEventSourcing: false,  // Don't write events
+    enableHashChain: false,      // Don't compute hashes
+  },
+});
+```
+
+This reduces write amplification but loses the audit trail and chain verification capability.

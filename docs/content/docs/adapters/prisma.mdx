@@ -1,0 +1,173 @@
+---
+title: Prisma Adapter
+description: Use Summa with Prisma ORM and PostgreSQL.
+icon: Prisma
+---
+
+## Installation
+
+```bash
+pnpm add @summa/prisma-adapter @prisma/client
+```
+
+## Setup
+
+```ts
+import { prismaAdapter } from "@summa/prisma-adapter";
+import { createSumma } from "summa";
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient();
+
+export const summa = createSumma({
+  database: prismaAdapter(prisma),
+  currency: "USD",
+});
+```
+
+The `prismaAdapter()` accepts a `PrismaClient` instance (or any object implementing `$queryRawUnsafe`, `$executeRawUnsafe`, and `$transaction`) and returns a `SummaAdapter`.
+
+## Schema Generation
+
+Generate Prisma schema models for all Summa tables:
+
+```bash
+npx summa generate --adapter prisma --out prisma/summa.prisma
+```
+
+Copy the generated models into your main `schema.prisma` file and run:
+
+```bash
+npx prisma generate
+npx prisma db push
+```
+
+If you have plugins configured in your `summa.config.ts`, the generated schema includes their tables too.
+
+```prisma title="prisma/summa.prisma (generated)"
+model AccountBalance {
+  id         String   @id @default(uuid())
+  holderId   String   @map("holder_id")
+  holderType String   @map("holder_type")
+  currency   String
+  balance    BigInt   @default(0)
+  // ... more fields
+
+  @@map("account_balance")
+  @@index([holderId], name: "account_balance_holder_id_idx")
+}
+
+// ... all other models
+```
+
+## Migrations
+
+### Option 1: Direct Push (Recommended for Getting Started)
+
+```bash
+npx summa migrate push
+```
+
+Reads your config, compares against the database via `information_schema`, and applies changes directly.
+
+### Option 2: Prisma Migrations
+
+```bash
+# 1. Generate Summa models
+npx summa generate --adapter prisma --out prisma/summa.prisma
+
+# 2. Merge into your schema.prisma, then:
+npx prisma db push
+# or for version-controlled migrations:
+npx prisma migrate dev --name add-summa-tables
+```
+
+## Connection Management
+
+Prisma manages its own connection pool internally. For production, configure it via the connection URL:
+
+```prisma title="schema.prisma"
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+```
+
+```bash title=".env"
+# Connection pool size via URL parameter
+DATABASE_URL="postgresql://user:pass@host:5432/db?connection_limit=20&pool_timeout=30"
+```
+
+For serverless environments (Vercel, AWS Lambda), use Prisma Accelerate or PgBouncer:
+
+```bash
+DATABASE_URL="prisma://accelerate.prisma-data.net/?api_key=..."
+```
+
+## How It Works
+
+The Prisma adapter uses **raw SQL** via `$queryRawUnsafe` and `$executeRawUnsafe` — not Prisma's model-based queries. This is intentional:
+
+- Summa needs full control over `WHERE` clause generation across 20+ dynamic tables
+- Financial operations require `FOR UPDATE` row-level locking
+- All mutations use `RETURNING *` for atomic read-after-write
+
+### Adapter Capabilities
+
+| Capability | Supported |
+|------------|-----------|
+| Advisory locks (`pg_advisory_xact_lock`) | Yes |
+| `FOR UPDATE` row locking | Yes |
+| `RETURNING *` clause | Yes |
+| Dialect | PostgreSQL |
+
+### Automatic Case Conversion
+
+- **Database** uses `snake_case` (PostgreSQL convention)
+- **Summa API** uses `camelCase` (JavaScript convention)
+- The adapter converts automatically — you never deal with snake_case in your code
+
+## Transactions
+
+The adapter uses Prisma's interactive transactions (`$transaction`) for atomicity. All Summa operations within a single call execute inside a PostgreSQL transaction:
+
+```ts
+// This is a single atomic operation — debit + credit + event log
+await summa.transactions.transfer({
+  sourceHolderId: "alice",
+  destinationHolderId: "bob",
+  amount: 100_00,
+  reference: "payment-001",
+});
+```
+
+## Important Notes
+
+- The adapter requires access to raw SQL execution — ensure your Prisma client isn't restricted
+- Prisma's `$transaction` has a default timeout of 5 seconds. For large batch operations, you may need to increase it in your Prisma client configuration
+- All queries use `$1, $2` parameterized placeholders for SQL injection prevention
+
+## Full Example
+
+```ts
+import { createSumma } from "summa";
+import { prismaAdapter } from "@summa/prisma-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { PrismaClient } from "@prisma/client";
+
+const prisma = new PrismaClient({
+  log: ["warn", "error"],
+});
+
+export const summa = createSumma({
+  database: prismaAdapter(prisma),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Run migrations
+// npx summa migrate push
+
+// Start background workers
+await summa.workers.start();
+```

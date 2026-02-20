@@ -1,0 +1,70 @@
+---
+title: Outbox
+description: Transactional outbox pattern for reliable event publishing.
+icon: PaperAirplane
+---
+
+## Overview
+
+The outbox plugin implements the **transactional outbox pattern**, ensuring that domain events are reliably published to external systems (message queues, webhooks, etc.) without dual-write problems.
+
+Events are written to the `outbox_event` table **inside the same database transaction** as the ledger operation. A background worker then delivers them to your publisher function. This guarantees **at-least-once delivery** — events are never lost, even if the application crashes.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { outbox } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({
+      publisher: async (topic, payload) => {
+        // Deliver to your message queue, webhook, etc.
+        await myQueue.publish(topic, payload);
+      },
+    }),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+outbox({
+  publisher: myPublisher,    // Required — delivery function
+  batchSize: 100,            // Events processed per batch (default: 100)
+  maxRetries: 3,             // Max delivery attempts (default: 3)
+  retentionHours: 48,        // Keep processed events for 48 hours (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `publisher` | `function` | Required | `(topic, payload) => Promise<void>` — delivery function |
+| `batchSize` | `number` | `100` | Events processed per worker batch |
+| `maxRetries` | `number` | `3` | Maximum delivery attempts before moving to DLQ |
+| `retentionHours` | `number` | `48` | Hours to retain successfully delivered events |
+
+## How It Works
+
+1. When a transaction completes, events are written to the `outbox_event` table inside the same database transaction
+2. A background worker polls the outbox table for unprocessed events
+3. Events are delivered to your `publisher` function
+4. Successfully processed events are marked as delivered
+5. Failed events are retried up to `maxRetries` times, then moved to the DLQ (if [dlqManager](/docs/plugins/dlq-manager) is enabled)
+
+## Manual Processing
+
+```ts
+await summa.outbox.process();
+```
+
+## Type Inference
+
+```ts
+type Stats = typeof summa.$Infer.OutboxStats;
+// { pending: number, processed: number, failed: number }
+```

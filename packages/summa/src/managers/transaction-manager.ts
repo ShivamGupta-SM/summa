@@ -13,6 +13,7 @@ import type {
 	TransactionType,
 } from "@summa/core";
 import { AGGREGATE_TYPES, minorToDecimal, SummaError, TRANSACTION_EVENTS } from "@summa/core";
+import { runAfterTransactionHooks, runBeforeTransactionHooks } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { resolveAccountForUpdate } from "./account-manager.js";
 import { checkIdempotencyKeyInTx, saveIdempotencyKeyInTx } from "./idempotency.js";
@@ -57,7 +58,10 @@ export async function creditAccount(
 		);
 	}
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const hookParams = { type: "credit" as const, amount, reference, holderId, category, ctx };
+	await runBeforeTransactionHooks(ctx, hookParams);
+
+	const result = await withTransactionTimeout(ctx, async (tx) => {
 		// Idempotency check INSIDE transaction for atomicity
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
@@ -70,6 +74,8 @@ export async function creditAccount(
 		// Get destination account (FOR UPDATE to prevent stale reads)
 		const destAccount = await resolveAccountForUpdate(tx, holderId);
 		if (destAccount.status !== "active") {
+			if (destAccount.status === "frozen") throw SummaError.accountFrozen();
+			if (destAccount.status === "closed") throw SummaError.accountClosed();
 			throw SummaError.conflict(`Account is ${destAccount.status}`);
 		}
 
@@ -209,6 +215,9 @@ export async function creditAccount(
 
 		return rawToTransactionResponse(txnRecord, "credit", acctCurrency);
 	});
+
+	await runAfterTransactionHooks(ctx, hookParams);
+	return result;
 }
 
 // =============================================================================
@@ -250,7 +259,10 @@ export async function debitAccount(
 		);
 	}
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const hookParams = { type: "debit" as const, amount, reference, holderId, category, ctx };
+	await runBeforeTransactionHooks(ctx, hookParams);
+
+	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
@@ -262,6 +274,8 @@ export async function debitAccount(
 		// Get source account (FOR UPDATE to prevent stale balance reads)
 		const sourceAccount = await resolveAccountForUpdate(tx, holderId);
 		if (sourceAccount.status !== "active") {
+			if (sourceAccount.status === "frozen") throw SummaError.accountFrozen();
+			if (sourceAccount.status === "closed") throw SummaError.accountClosed();
 			throw SummaError.conflict(`Account is ${sourceAccount.status}`);
 		}
 
@@ -400,6 +414,9 @@ export async function debitAccount(
 
 		return rawToTransactionResponse(txnRecord, "debit", acctCurrency);
 	});
+
+	await runAfterTransactionHooks(ctx, hookParams);
+	return result;
 }
 
 // =============================================================================
@@ -443,7 +460,18 @@ export async function transfer(
 		throw SummaError.invalidArgument("Cannot transfer to the same account");
 	}
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const hookParams = {
+		type: "transfer" as const,
+		amount,
+		reference,
+		sourceHolderId,
+		destinationHolderId,
+		category,
+		ctx,
+	};
+	await runBeforeTransactionHooks(ctx, hookParams);
+
+	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
@@ -485,9 +513,16 @@ export async function transfer(
 
 		if (!source) throw SummaError.notFound("Source account not found");
 		if (!dest) throw SummaError.notFound("Destination account not found");
-		if (source.status !== "active") throw SummaError.conflict(`Source account is ${source.status}`);
-		if (dest.status !== "active")
+		if (source.status !== "active") {
+			if (source.status === "frozen") throw SummaError.accountFrozen("Source account is frozen");
+			if (source.status === "closed") throw SummaError.accountClosed("Source account is closed");
+			throw SummaError.conflict(`Source account is ${source.status}`);
+		}
+		if (dest.status !== "active") {
+			if (dest.status === "frozen") throw SummaError.accountFrozen("Destination account is frozen");
+			if (dest.status === "closed") throw SummaError.accountClosed("Destination account is closed");
 			throw SummaError.conflict(`Destination account is ${dest.status}`);
+		}
 
 		// Check sufficient balance first (cheap) before limit queries (expensive)
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
@@ -658,6 +693,9 @@ export async function transfer(
 
 		return rawToTransactionResponse(txnRecord, "transfer", srcCurrency);
 	});
+
+	await runAfterTransactionHooks(ctx, hookParams);
+	return result;
 }
 
 // =============================================================================
@@ -701,7 +739,17 @@ export async function multiTransfer(
 		throw SummaError.invalidArgument("At least one destination is required");
 	}
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const hookParams = {
+		type: "transfer" as const,
+		amount,
+		reference,
+		sourceHolderId,
+		category,
+		ctx,
+	};
+	await runBeforeTransactionHooks(ctx, hookParams);
+
+	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
@@ -713,6 +761,8 @@ export async function multiTransfer(
 		// Lock source account
 		const source = await resolveAccountForUpdate(tx, sourceHolderId);
 		if (source.status !== "active") {
+			if (source.status === "frozen") throw SummaError.accountFrozen();
+			if (source.status === "closed") throw SummaError.accountClosed();
 			throw SummaError.conflict(`Source account is ${source.status}`);
 		}
 
@@ -878,6 +928,9 @@ export async function multiTransfer(
 
 		return rawToTransactionResponse(txnRecord, "transfer", acctCurrency);
 	});
+
+	await runAfterTransactionHooks(ctx, hookParams);
+	return result;
 }
 
 // =============================================================================
@@ -1366,9 +1419,20 @@ function rawToTransactionResponse(
 		description: row.description ?? "",
 		sourceAccountId: row.source_account_id,
 		destinationAccountId: row.destination_account_id,
+		correlationId: row.correlation_id,
 		isReversal: row.is_reversal,
 		parentId: row.parent_id,
-		metadata: (row.meta_data ?? {}) as Record<string, unknown>,
+		metadata: (() => {
+			const raw = (row.meta_data ?? {}) as Record<string, unknown>;
+			const {
+				category: _c,
+				holderId: _h,
+				holderType: _ht,
+				destinations: _d,
+				...userMetadata
+			} = raw;
+			return userMetadata;
+		})(),
 		createdAt:
 			row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
 		postedAt: row.posted_at

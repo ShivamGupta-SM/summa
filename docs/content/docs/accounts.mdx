@@ -1,84 +1,215 @@
 ---
 title: Accounts
 description: Create, freeze, close, and query accounts.
+icon: Wallet
 ---
+
+## Overview
+
+Accounts are the fundamental building block in Summa. Every account belongs to a **holder** (identified by `holderId`) and tracks separate credit, debit, and pending balances using double-entry bookkeeping.
 
 ## Creating an Account
 
 ```ts
 const account = await summa.accounts.create({
   holderId: "user_123",
-  holderType: "customer",
+  holderType: "individual",
   currency: "USD",
+  allowOverdraft: false,
+  indicator: "ACC-001",
+  metadata: { tier: "premium" },
 });
 ```
 
-Every account tracks:
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Your external user/entity ID. One account per holderId.", required: true },
+    holderType: { type: '"individual" | "organization" | "system"', description: "The type of account holder.", required: true },
+    currency: { type: "string", description: "ISO 4217 code. Defaults to the instance currency.", default: "Instance currency" },
+    allowOverdraft: { type: "boolean", description: "Allow balance to go negative.", default: "false" },
+    indicator: { type: "string", description: "Unique human-readable identifier (e.g., ACC-001)." },
+    metadata: { type: "Record<string, unknown>", description: "Arbitrary key-value data stored with the account." },
+  }}
+/>
 
-- `balance` — net balance (credits minus debits)
-- `creditBalance` / `debitBalance` — running totals
-- `pendingCredit` / `pendingDebit` — reserved amounts from holds
-- `status` — `active`, `frozen`, or `closed`
+## Account Object
 
-## Account Indicators
-
-You can assign a unique indicator for human-friendly lookups:
+Every account returns the following fields:
 
 ```ts
-const account = await summa.accounts.create({
-  holderId: "user_123",
-  holderType: "customer",
-  currency: "USD",
-  indicator: "ACC-001",
+interface Account {
+  id: string;                    // UUID
+  holderId: string;              // Your external user/entity ID
+  holderType: HolderType;        // "individual" | "organization" | "system"
+  status: AccountStatus;         // "active" | "frozen" | "closed"
+  currency: string;              // ISO 4217 currency code
+  balance: number;               // Settled balance (cents/paise)
+  creditBalance: number;         // Lifetime credit total
+  debitBalance: number;          // Lifetime debit total
+  pendingCredit: number;         // Inflight credits
+  pendingDebit: number;          // Held amounts (reduces available balance)
+  allowOverdraft: boolean;
+  indicator: string | null;      // Human-friendly identifier
+  freezeReason: string | null;
+  frozenAt: Date | null;
+  frozenBy: string | null;
+  closedAt: Date | null;
+  closedBy: string | null;
+  closureReason: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+```
+
+## Getting an Account
+
+<Tabs items={["By holder ID", "By internal ID"]}>
+<Tab value="By holder ID">
+```ts
+const account = await summa.accounts.get("user_123");
+```
+</Tab>
+<Tab value="By internal ID">
+```ts
+const account = await summa.accounts.getById(accountId);
+```
+</Tab>
+</Tabs>
+
+## Checking Balance
+
+```ts
+const balance = await summa.accounts.getBalance("user_123");
+```
+
+<TypeTable
+  type={{
+    balance: { type: "number", description: "Settled balance (credits - debits)." },
+    creditBalance: { type: "number", description: "Lifetime credit total." },
+    debitBalance: { type: "number", description: "Lifetime debit total." },
+    pendingCredit: { type: "number", description: "Inflight credits." },
+    pendingDebit: { type: "number", description: "Held amounts." },
+    availableBalance: { type: "number", description: "balance - pendingDebit — what can be spent." },
+    currency: { type: "string", description: "ISO 4217 currency code." },
+  }}
+/>
+
+<Callout type="info" title="Available balance">
+  `availableBalance` is the key field — it's what the user can actually spend, accounting for pending holds.
+</Callout>
+
+## Listing Accounts
+
+```ts
+const result = await summa.accounts.list({
+  page: 1,
+  perPage: 20,
+  status: "active",
+  holderType: "individual",
+  search: "user_",
 });
 
-// Look up by indicator
-const found = await summa.accounts.getByIndicator("ACC-001");
+// result.accounts — Account[]
+// result.hasMore  — boolean
+// result.total    — number
 ```
 
 ## Freezing an Account
 
-Frozen accounts reject all transactions but preserve their state:
+Frozen accounts reject all transactions and holds but preserve their state. Useful for fraud investigations or compliance holds.
 
 ```ts
 await summa.accounts.freeze({
-  accountId: account.id,
-  reason: "Suspicious activity",
+  holderId: "user_123",
+  reason: "Suspicious activity — under review",
   frozenBy: "admin@example.com",
 });
 ```
 
+<Callout type="warn" title="Frozen accounts">
+  Attempting any transaction on a frozen account throws `ACCOUNT_FROZEN` error (HTTP 403).
+</Callout>
+
 ## Unfreezing
 
 ```ts
-await summa.accounts.unfreeze({ accountId: account.id });
+await summa.accounts.unfreeze({
+  holderId: "user_123",
+  unfrozenBy: "admin@example.com",
+});
 ```
 
 ## Closing an Account
 
-Closed accounts are permanent. If there's a remaining balance, you must sweep
-funds to another account:
+<Callout type="error" title="Permanent action">
+  Closing is **permanent** and cannot be undone. If there's a remaining balance, you must sweep funds to another account.
+</Callout>
 
 ```ts
 await summa.accounts.close({
-  accountId: account.id,
+  holderId: "user_123",
   closedBy: "admin@example.com",
   reason: "Customer request",
-  transferToHolderId: "treasury",
+  transferToHolderId: "treasury",  // Optional — sweep remaining balance
 });
 ```
 
+Attempting any operation on a closed account throws `ACCOUNT_CLOSED` error (HTTP 403).
+
 ## Overdrafts
 
-By default, accounts reject transactions that would result in a negative
-balance. Enable overdrafts per account:
+By default, transactions that would result in a negative balance are rejected with `INSUFFICIENT_BALANCE`. You can enable overdrafts at two levels:
 
+<Tabs items={["Account-level", "Per-transaction"]}>
+<Tab value="Account-level">
 ```ts
 const account = await summa.accounts.create({
   holderId: "merchant_1",
-  holderType: "merchant",
+  holderType: "organization",
   currency: "USD",
   allowOverdraft: true,
-  overdraftLimit: 100_00, // $100.00 in cents
+});
+```
+</Tab>
+<Tab value="Per-transaction">
+```ts
+await summa.transactions.debit({
+  holderId: "merchant_1",
+  amount: 500_00,
+  reference: "chargeback-001",
+  allowOverdraft: true,  // Override for this transaction only
+});
+```
+</Tab>
+</Tabs>
+
+## Account Indicators
+
+Indicators are optional, unique human-friendly identifiers for accounts:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+  indicator: "ACC-00001",
+});
+```
+
+## Metadata
+
+Accounts support arbitrary key-value metadata for storing application-specific data:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+  metadata: {
+    tier: "premium",
+    signupSource: "referral",
+    kycVerified: true,
+  },
 });
 ```

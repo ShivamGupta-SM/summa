@@ -205,13 +205,13 @@ export class SummaWorkerRunner {
 		const leaseUntil = new Date(Date.now() + leaseDurationMs).toISOString();
 
 		try {
+			const d = this.ctx.dialect;
 			const rows = await this.ctx.adapter.raw<{ worker_id: string }>(
 				`INSERT INTO worker_lease (worker_id, lease_holder, lease_until)
 				 VALUES ($1, $2, $3)
-				 ON CONFLICT (worker_id) DO UPDATE
-				 SET lease_holder = $2, lease_until = $3
-				 WHERE worker_lease.lease_until < NOW()
-				 RETURNING *`,
+				 ${d.onConflictDoUpdate(["worker_id"], { lease_holder: "$2", lease_until: "$3" })}
+				 WHERE worker_lease.lease_until < ${d.now()}
+				 ${d.returning(["*"])}`,
 				[workerId, this.leaseHolder, leaseUntil],
 			);
 

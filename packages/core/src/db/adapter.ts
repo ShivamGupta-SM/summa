@@ -73,4 +73,5 @@ export interface SummaAdapterOptions {
 	supportsForUpdate: boolean;
 	supportsReturning: boolean;
 	dialectName: "postgres" | "mysql" | "sqlite";
+	dialect?: import("./dialect.js").SqlDialect;
 }

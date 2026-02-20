@@ -10,10 +10,12 @@ import type {
 	Hold,
 	HoldDestination,
 	HolderType,
+	InferPluginTypes,
 	LedgerTransaction,
 	StoredEvent,
 	SummaContext,
 	SummaOptions,
+	SummaPlugin,
 	TransactionStatus,
 	TransactionType,
 } from "@summa/core";
@@ -32,7 +34,7 @@ import * as transactions from "../managers/transaction-manager.js";
 // SUMMA INTERFACE
 // =============================================================================
 
-export interface Summa {
+export interface Summa<TInfer = Record<string, never>> {
 	accounts: {
 		create: (params: {
 			holderId: string;
@@ -212,13 +214,24 @@ export interface Summa {
 	};
 	$context: Promise<SummaContext>;
 	$options: SummaOptions;
+	/** Type inference from plugins — type-only, runtime value is empty object */
+	$Infer: TInfer;
 }
+
+/**
+ * Summa instance with inferred plugin types.
+ */
+export type SummaInstance<TPlugins extends readonly SummaPlugin[] = SummaPlugin[]> = Summa<
+	InferPluginTypes<TPlugins>
+>;
 
 // =============================================================================
 // CREATE SUMMA
 // =============================================================================
 
-export function createSumma(options: SummaOptions): Summa {
+export function createSumma<const TPlugins extends readonly SummaPlugin[] = SummaPlugin[]>(
+	options: SummaOptions & { plugins?: [...TPlugins] },
+): Summa<InferPluginTypes<TPlugins>> {
 	let workerRunner: SummaWorkerRunner | null = null;
 
 	const ctxPromise = buildContext(options).then(async (ctx) => {
@@ -342,7 +355,7 @@ export function createSumma(options: SummaOptions): Summa {
 			},
 			verifyChain: async (type, id) => {
 				const ctx = await getCtx();
-				return hashChain.verifyHashChain(ctx, type, id);
+				return hashChain.verifyHashChain(ctx, type.toLowerCase(), id);
 			},
 		},
 		limits: {
@@ -378,5 +391,6 @@ export function createSumma(options: SummaOptions): Summa {
 		},
 		$context: ctxPromise,
 		$options: options,
+		$Infer: {} as InferPluginTypes<TPlugins>,
 	};
 }

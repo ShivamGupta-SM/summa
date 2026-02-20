@@ -1,0 +1,146 @@
+---
+title: Admin
+description: Elevated management endpoints with dashboard stats, cross-account queries, and reconciliation controls.
+icon: ShieldCheck
+---
+
+## Overview
+
+The admin plugin adds **13 HTTP endpoints** for account management, cross-account transaction listing, reconciliation controls, system account inspection, and dashboard statistics. These endpoints are designed for internal admin dashboards and back-office tooling.
+
+## Setup
+
+```ts
+import { admin } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [admin()],
+});
+```
+
+## Configuration
+
+```ts
+admin({
+  basePath: "/admin",  // Default — prefix for all admin routes
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `basePath` | `string` | `"/admin"` | URL prefix for all admin endpoints |
+
+## Endpoints
+
+### Account Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/accounts` | List all accounts with pagination and filtering |
+| `GET` | `/admin/accounts/:holderId` | Full account detail: balance, recent transactions, active holds |
+| `POST` | `/admin/accounts/:holderId/freeze` | Freeze an account |
+| `POST` | `/admin/accounts/:holderId/unfreeze` | Unfreeze an account |
+| `POST` | `/admin/accounts/:holderId/close` | Close an account |
+
+The `GET /admin/accounts/:holderId` endpoint returns a combined view:
+
+```json
+{
+  "account": { ... },
+  "balance": { ... },
+  "recentTransactions": [ ... ],
+  "activeHolds": [ ... ]
+}
+```
+
+### Transaction Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/transactions` | List all transactions across all accounts |
+| `GET` | `/admin/transactions/:id` | Transaction detail with individual entry records |
+| `POST` | `/admin/transactions/:id/refund` | Refund a transaction |
+
+The `GET /admin/transactions` endpoint supports cross-account queries (no `holderId` required):
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `page` | `number` | Page number |
+| `perPage` | `number` | Items per page (max 200) |
+| `status` | `string` | Filter by status |
+| `type` | `string` | Filter by type |
+| `dateFrom` | `string` | Filter: created after |
+| `dateTo` | `string` | Filter: created before |
+
+### Hold Management
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/holds` | List all holds across all accounts |
+
+### Reconciliation
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/reconciliation/status` | Get latest reconciliation results |
+| `POST` | `/admin/reconciliation/run` | Trigger a reconciliation run |
+
+### System Accounts
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/system-accounts` | List all system accounts with balances |
+
+Returns system accounts joined with their balance data:
+
+```json
+{
+  "systemAccounts": [
+    {
+      "id": "...",
+      "identifier": "@World",
+      "name": "World Account",
+      "currency": "USD",
+      "balance": -50000,
+      "available_balance": -50000,
+      "status": "active"
+    }
+  ]
+}
+```
+
+### Dashboard Stats
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/stats` | Aggregated dashboard statistics |
+
+Returns:
+
+```json
+{
+  "accounts": {
+    "total": 150,
+    "active": 140,
+    "frozen": 5,
+    "closed": 5
+  },
+  "transactions": {
+    "total": 10234,
+    "totalVolume": 5000000,
+    "todayCount": 42,
+    "todayVolume": 150000
+  },
+  "holds": {
+    "activeCount": 12,
+    "activeAmount": 50000
+  }
+}
+```
+
+## Notes
+
+- The admin plugin does **not** include authentication — add your own auth middleware at the framework level.
+- All admin endpoints route through the same plugin endpoint system, so they benefit from rate limiting and CSRF protection if configured.
+- The `basePath` can be customized to avoid conflicts (e.g., `"/internal/admin"`).

@@ -1,94 +1,213 @@
 ---
 title: Plugins
 description: Extend Summa with reconciliation, snapshots, velocity limits, and more.
+icon: PuzzlePiece
 ---
 
-## Available Plugins
+## Overview
 
-Summa ships with six built-in plugins:
+Summa's plugin system extends the core ledger with additional functionality through **lifecycle hooks**, **background workers**, and **database schema extensions**. Plugins are composable — enable only what you need.
 
 ```ts
 import {
+  auditLog,
   reconciliation,
   snapshots,
   velocityLimits,
+  holdExpiry,
   outbox,
+  dlqManager,
   hotAccounts,
   scheduledTransactions,
+  maintenance,
+  admin,
+  openApi,
 } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    auditLog(),
+    reconciliation(),
+    snapshots(),
+    velocityLimits(),
+    holdExpiry(),
+    outbox({ publisher: myPublisher }),
+    dlqManager(),
+    hotAccounts(),
+    scheduledTransactions(),
+    maintenance(),
+    admin(),
+    openApi(),
+  ],
+});
 ```
 
-## Reconciliation
+## Available Plugins
 
-Runs daily balance reconciliation to detect mismatches between account
-balances and their entry records:
+| Plugin | Category | Background Worker | Description |
+|--------|----------|:-:|-------------|
+| [`auditLog`](/docs/plugins/audit-log) | Compliance | Yes | Immutable audit trail for all ledger operations |
+| [`reconciliation`](/docs/plugins/reconciliation) | Integrity | Yes | Automated balance reconciliation with 5-step verification |
+| [`snapshots`](/docs/plugins/snapshots) | Reporting | Yes | Point-in-time balance snapshots for historical queries |
+| [`velocityLimits`](/docs/plugins/velocity-limits) | Security | Yes | Per-transaction, daily, and monthly amount limits |
+| [`holdExpiry`](/docs/plugins/hold-expiry) | Automation | Yes | Automatic void of expired holds |
+| [`outbox`](/docs/plugins/outbox) | Integration | Yes | Transactional outbox for reliable event publishing |
+| [`dlqManager`](/docs/plugins/dlq-manager) | Operations | Yes | Dead letter queue for failed event processing |
+| [`hotAccounts`](/docs/plugins/hot-accounts) | Performance | Yes | Optimistic concurrency for high-traffic accounts |
+| [`scheduledTransactions`](/docs/plugins/scheduled-transactions) | Automation | Yes | Future and recurring transaction scheduling |
+| [`maintenance`](/docs/plugins/maintenance) | Operations | Yes | Automated cleanup of expired data |
+| [`admin`](/docs/plugins/admin) | Management | No | Elevated admin endpoints with dashboard stats |
+| [`openApi`](/docs/plugins/open-api) | Documentation | No | Auto-generated OpenAPI 3.1 specification |
+
+## Plugin Architecture
+
+Every plugin implements the `SummaPlugin` interface:
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [reconciliation({ schedule: "0 2 * * *" })], // 2 AM daily
-});
+interface SummaPlugin {
+  id: string;                    // Unique identifier
+  init?: (ctx) => Promise<void>; // Called on startup
+
+  // HTTP endpoints contributed by the plugin
+  endpoints?: PluginEndpoint[];
+
+  // Lifecycle hooks
+  hooks?: {
+    beforeTransaction?: (params) => Promise<void>;
+    afterTransaction?: (params) => Promise<void>;
+    beforeAccountCreate?: (params) => Promise<void>;
+    afterAccountCreate?: (params) => Promise<void>;
+    beforeHoldCreate?: (params) => Promise<void>;
+    afterHoldCommit?: (params) => Promise<void>;
+  };
+
+  // Background workers
+  workers?: SummaWorkerDefinition[];
+
+  // Database tables (auto-created by migrate push)
+  schema?: Record<string, TableDefinition>;
+
+  // Custom error codes
+  $ERROR_CODES?: Record<string, RawErrorCode>;
+
+  // Type inference for TypeScript
+  $Infer?: Record<string, unknown>;
+}
 ```
 
-## Snapshots
+### Lifecycle Hooks
 
-Takes daily snapshots of all account balances for historical reporting:
+Hooks run **synchronously within the database transaction** — if a `beforeTransaction` hook throws, the entire transaction is rolled back.
+
+| Hook | When it runs | Can cancel? |
+|------|-------------|:-:|
+| `beforeTransaction` | Before any credit/debit/transfer | Yes — throw to reject |
+| `afterTransaction` | After transaction is posted | No |
+| `beforeAccountCreate` | Before account creation | Yes |
+| `afterAccountCreate` | After account is created | No |
+| `beforeHoldCreate` | Before hold creation | Yes |
+| `afterHoldCommit` | After hold is committed | No |
+
+Example — the velocity limits plugin uses `beforeTransaction` to check limits:
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [snapshots()],
-});
+hooks: {
+  beforeTransaction: async ({ type, amount, holderId, category, ctx }) => {
+    const result = await checkLimits(ctx, holderId, amount, category);
+    if (!result.allowed) {
+      throw new SummaError("LIMIT_EXCEEDED", result.message);
+    }
+  },
+}
 ```
 
-## Velocity Limits
+### Background Workers
 
-Enforce transaction limits per account (daily, monthly, per-transaction):
+Workers run on configurable intervals with **distributed lease** support — in a multi-instance deployment, only one instance runs each worker.
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [velocityLimits()],
-});
-
-// Set limits on an account
-await summa.limits.set({
-  accountId: account.id,
-  limitType: "daily",
-  maxAmount: 10_000_00, // $10,000/day
-});
+interface SummaWorkerDefinition {
+  id: string;              // Unique worker ID
+  handler: (ctx) => Promise<void>;
+  interval: string;        // "5s" | "1m" | "30m" | "1h" | "1d"
+  leaseRequired?: boolean; // Prevents duplicate runs in cluster
+}
 ```
 
-## Outbox
-
-Transactional outbox pattern for reliable event publishing:
+Start all plugin workers:
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [outbox()],
+await summa.workers.start();
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  await summa.workers.stop();
 });
 ```
 
-## Hot Accounts
+Worker intervals support `"5s"`, `"1m"`, `"30m"`, `"1h"`, `"1d"` format. A ±25% jitter is applied to prevent thundering herd effects. Lease duration is `2x` the worker interval.
 
-Optimistic concurrency for high-traffic accounts that would otherwise bottleneck
-on row-level locks:
+### Type Inference
+
+Plugins can extend the Summa instance with type-safe properties via `$Infer`:
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [hotAccounts()],
-});
+// Access plugin-provided types
+type AuditEntry = typeof summa.$Infer.AuditLogEntry;
+type OutboxStats = typeof summa.$Infer.OutboxStats;
+type HotStats = typeof summa.$Infer.HotAccountStats;
+type DlqStats = typeof summa.$Infer.DlqStats;
+type FailedEvent = typeof summa.$Infer.FailedEvent;
 ```
 
-## Scheduled Transactions
+## Recommended Plugin Combinations
 
-Schedule future or recurring transactions:
+### Minimum Production Setup
 
 ```ts
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
-  plugins: [scheduledTransactions()],
-});
+plugins: [
+  auditLog(),         // Compliance and debugging
+  reconciliation(),   // Data integrity verification
+  maintenance(),      // Cleanup expired keys and events
+]
 ```
+
+### Full Production Setup
+
+```ts
+plugins: [
+  auditLog(),
+  reconciliation(),
+  snapshots(),
+  velocityLimits(),
+  holdExpiry(),
+  outbox({ publisher: myPublisher }),
+  dlqManager(),
+  hotAccounts(),
+  maintenance(),
+]
+```
+
+### Testing / Development
+
+```ts
+plugins: []  // No plugins needed for basic testing
+```
+
+### Plugin Endpoints
+
+Plugins can contribute HTTP endpoints that are automatically routed through the API handler:
+
+```ts
+interface PluginEndpoint {
+  method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+  path: string;
+  handler: (req: PluginApiRequest, ctx: SummaContext) => Promise<PluginApiResponse>;
+}
+```
+
+For example, the `admin` plugin adds 13 management endpoints, and the `openApi` plugin serves the generated spec at `/openapi.json`. See [HTTP API](/docs/api-reference#plugin-endpoints) for the full list.
+
+See individual plugin pages for configuration options and detailed documentation.

@@ -14,6 +14,8 @@ export default defineConfig({
 			{ find: "summa/plugins", replacement: path.resolve(__dirname, "../summa/src/plugins/index.ts") },
 			{ find: "summa/types", replacement: path.resolve(__dirname, "../summa/src/types/index.ts") },
 			{ find: "summa", replacement: path.resolve(__dirname, "../summa/src/index.ts") },
+			{ find: "@summa/core/logger", replacement: path.resolve(__dirname, "../core/src/logger/index.ts") },
+			{ find: "@summa/core/db", replacement: path.resolve(__dirname, "../core/src/db/index.ts") },
 			{ find: "@summa/core", replacement: path.resolve(__dirname, "../core/src/index.ts") },
 			{ find: "@summa/drizzle-adapter/schema", replacement: path.resolve(__dirname, "../drizzle-adapter/src/schema.ts") },
 			{ find: "@summa/drizzle-adapter", replacement: path.resolve(__dirname, "../drizzle-adapter/src/index.ts") },

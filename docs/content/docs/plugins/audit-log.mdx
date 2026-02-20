@@ -1,0 +1,85 @@
+---
+title: Audit Log
+description: Immutable audit trail for all ledger operations.
+icon: ClipboardDocumentList
+---
+
+## Overview
+
+The audit log plugin records every account creation, transaction, hold, and administrative action into a dedicated `audit_log` table. Every mutation is tracked with who did it, what happened, and when.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { auditLog } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog()],
+});
+```
+
+## Configuration
+
+```ts
+auditLog({
+  operations: ["transaction.credit", "account.freeze"],  // Filter specific operations
+  retentionDays: 365,       // How long to keep audit entries (default: 365)
+  cleanupInterval: "1d",    // How often to purge old entries (default: "1d")
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `operations` | `string[]` | All operations | Filter to specific operation types |
+| `retentionDays` | `number` | `365` | Days to retain audit log entries |
+| `cleanupInterval` | `string` | `"1d"` | Background cleanup worker interval |
+
+## How It Works
+
+The plugin hooks into `afterTransaction`, `afterAccountCreate`, and `afterHoldCommit` lifecycle events. Every mutation is recorded with:
+
+- **operation** — what happened (e.g., `transaction.credit`, `account.freeze`, `hold.commit`)
+- **params** — the operation parameters
+- **actor** — who performed the action (if available)
+- **timestamp** — when the action occurred
+
+## Querying Audit Logs
+
+```ts
+const logs = await summa.auditLog.query({
+  targetId: account.id,
+  limit: 50,
+});
+
+for (const entry of logs) {
+  console.log(entry.operation);  // "transaction.credit"
+  console.log(entry.params);     // { holderId: "user_123", amount: 10000, ... }
+  console.log(entry.timestamp);  // "2025-01-15T10:30:00Z"
+}
+```
+
+## Type Inference
+
+```ts
+type AuditEntry = typeof summa.$Infer.AuditLogEntry;
+// { id, operation, params, actor, timestamp }
+```
+
+## Tracked Operations
+
+| Operation | Trigger |
+|-----------|---------|
+| `account.create` | Account created |
+| `account.freeze` | Account frozen |
+| `account.unfreeze` | Account unfrozen |
+| `account.close` | Account closed |
+| `transaction.credit` | Funds credited |
+| `transaction.debit` | Funds debited |
+| `transaction.transfer` | Funds transferred |
+| `transaction.refund` | Transaction refunded |
+| `hold.create` | Hold created |
+| `hold.commit` | Hold committed |
+| `hold.void` | Hold voided |

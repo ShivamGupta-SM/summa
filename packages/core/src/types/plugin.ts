@@ -60,12 +60,39 @@ export interface ColumnDefinition {
 }
 
 export interface TableDefinition {
+	/** When true, this definition extends an existing table rather than creating a new one. */
+	extend?: boolean;
 	columns: Record<string, ColumnDefinition>;
 	indexes?: Array<{
 		name: string;
 		columns: string[];
 		unique?: boolean;
 	}>;
+}
+
+// =============================================================================
+// PLUGIN ENDPOINT (for plugin-contributed HTTP routes)
+// =============================================================================
+
+export interface PluginEndpoint {
+	method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
+	path: string;
+	handler: (req: PluginApiRequest, ctx: SummaContext) => Promise<PluginApiResponse>;
+}
+
+export interface PluginApiRequest {
+	method: string;
+	path: string;
+	body: unknown;
+	query: Record<string, string | undefined>;
+	params: Record<string, string>;
+	headers?: Record<string, string>;
+}
+
+export interface PluginApiResponse {
+	status: number;
+	body: unknown;
+	headers?: Record<string, string>;
 }
 
 // =============================================================================
@@ -111,13 +138,16 @@ export interface SummaPlugin {
 		suggestedInterval: string;
 	}>;
 
-	/** Schema extension — tables added by this plugin */
+	/** HTTP endpoint contributions (routes served by the API handler) */
+	endpoints?: PluginEndpoint[];
+
+	/** Schema extension — tables added or extended by this plugin */
 	schema?: Record<string, TableDefinition>;
 
 	/** Typed error codes contributed by this plugin */
 	$ERROR_CODES?: Record<string, RawErrorCode>;
 
-	/** Type inference hints (for TypeScript DX) */
+	/** Type inference hints (for TypeScript DX — runtime value is unused) */
 	$Infer?: Record<string, unknown>;
 
 	/** Rate limiting rules for specific operations */
@@ -186,3 +216,24 @@ export interface HoldCommitHookParams {
 	originalAmount: number;
 	ctx: SummaContext;
 }
+
+// =============================================================================
+// $INFER — Extract plugin type hints
+// =============================================================================
+
+/**
+ * Merge $Infer from an array of plugins into a single intersection type.
+ *
+ * @example
+ * ```ts
+ * type Types = InferPluginTypes<[typeof auditLogPlugin, typeof outboxPlugin]>;
+ * // { AuditLogEntry: ...; OutboxStats: ... }
+ * ```
+ */
+export type InferPluginTypes<TPlugins extends readonly SummaPlugin[]> = TPlugins extends readonly [
+	infer First extends SummaPlugin,
+	...infer Rest extends SummaPlugin[],
+]
+	? (First["$Infer"] extends Record<string, unknown> ? First["$Infer"] : Record<string, never>) &
+			InferPluginTypes<Rest>
+	: Record<string, never>;

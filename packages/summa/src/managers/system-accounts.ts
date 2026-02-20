@@ -15,7 +15,7 @@ import type { SummaContext } from "@summa/core";
  * Reads the system account definitions from ctx.options.systemAccounts.
  */
 export async function initializeSystemAccounts(ctx: SummaContext): Promise<void> {
-	const { adapter, options, logger } = ctx;
+	const { adapter, options, logger, dialect } = ctx;
 
 	const systemAccounts = options.systemAccounts;
 	const entries = Object.entries(systemAccounts);
@@ -25,8 +25,8 @@ export async function initializeSystemAccounts(ctx: SummaContext): Promise<void>
 		const rows = await adapter.raw<{ id: string }>(
 			`INSERT INTO system_account (identifier, name, allow_overdraft, currency)
        VALUES ($1, $2, $3, $4)
-       ON CONFLICT (identifier) DO NOTHING
-       RETURNING id`,
+       ${dialect.onConflictDoNothing(["identifier"])}
+       ${dialect.returning(["id"])}`,
 			[identifier, `System Account: ${key}`, true, options.currency],
 		);
 

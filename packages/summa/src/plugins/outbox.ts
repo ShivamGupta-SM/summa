@@ -43,6 +43,8 @@ export function outbox(options: OutboxOptions): SummaPlugin {
 	return {
 		id: "outbox",
 
+		$Infer: {} as { OutboxStats: OutboxStats },
+
 		workers: [
 			{
 				id: "outbox-processor",
@@ -101,6 +103,7 @@ async function processOutboxBatch(
 
 	await ctx.adapter.transaction(async (tx) => {
 		// Select pending outbox entries with row-level locking, skipping already-locked rows
+		const { dialect } = ctx;
 		const rows = await tx.raw<RawOutboxRow>(
 			`SELECT id, topic, payload, retry_count, created_at
        FROM outbox
@@ -108,7 +111,7 @@ async function processOutboxBatch(
          AND retry_count < $1
        ORDER BY created_at ASC
        LIMIT $2
-       FOR UPDATE SKIP LOCKED`,
+       ${dialect.forUpdateSkipLocked()}`,
 			[options.maxRetries, options.batchSize],
 		);
 
@@ -124,9 +127,9 @@ async function processOutboxBatch(
 				// Insert into processed_event for deduplication (idempotent via ON CONFLICT)
 				const insertedRows = await tx.raw<{ id: string }>(
 					`INSERT INTO processed_event (id, topic, payload, processed_at)
-           VALUES ($1, $2, $3, NOW())
-           ON CONFLICT (id) DO NOTHING
-           RETURNING id`,
+           VALUES ($1, $2, $3, ${dialect.now()})
+           ${dialect.onConflictDoNothing(["id"])}
+           ${dialect.returning(["id"])}`,
 					[row.id, row.topic, JSON.stringify(payload)],
 				);
 
@@ -135,7 +138,7 @@ async function processOutboxBatch(
 					// Mark outbox entry as processed to prevent re-processing
 					await tx.rawMutate(
 						`UPDATE outbox
-             SET processed_at = NOW(), status = 'processed'
+             SET processed_at = ${dialect.now()}, status = 'processed'
              WHERE id = $1`,
 						[row.id],
 					);
@@ -201,11 +204,12 @@ async function processOutboxBatch(
 // =============================================================================
 
 async function cleanupProcessedOutbox(ctx: SummaContext, retentionHours: number): Promise<number> {
+	const { dialect } = ctx;
 	const deleted = await ctx.adapter.rawMutate(
 		`DELETE FROM outbox
      WHERE processed_at IS NOT NULL
        AND status = 'processed'
-       AND processed_at < NOW() - INTERVAL '1 hour' * $1`,
+       AND processed_at < ${dialect.now()} - ${dialect.interval("1 hour")} * $1`,
 		[retentionHours],
 	);
 
@@ -227,7 +231,7 @@ export async function getOutboxStats(ctx: SummaContext): Promise<OutboxStats> {
          WHEN status = 'processed' THEN 'processed'
          ELSE 'failed'
        END AS status,
-       COUNT(*)::int AS count
+       ${ctx.dialect.countAsInt()} AS count
      FROM outbox
      GROUP BY 1`,
 		[],

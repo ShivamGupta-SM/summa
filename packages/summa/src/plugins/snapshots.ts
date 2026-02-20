@@ -171,7 +171,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 					account_status,
 					checkpoint_hash
 				 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-				 ON CONFLICT (account_id, snapshot_date) DO NOTHING`,
+				 ${ctx.dialect.onConflictDoNothing(["account_id", "snapshot_date"])}`,
 				[
 					acct.id,
 					snapshotDate,
@@ -216,6 +216,8 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
  * Get the balance snapshot for a specific account on a specific date.
  * Returns null if no snapshot exists for that date.
  */
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export async function getHistoricalBalance(
 	ctx: SummaContext,
 	accountId: string,
@@ -233,6 +235,9 @@ export async function getHistoricalBalance(
 	accountStatus: string;
 	checkpointHash: string | null;
 } | null> {
+	// Return null early for invalid UUID to avoid PostgreSQL cast errors
+	if (!UUID_REGEX.test(accountId)) return null;
+
 	const dateStr = typeof date === "string" ? date : toDateString(date);
 
 	const rows = await ctx.adapter.raw<{
@@ -312,6 +317,9 @@ export async function getEndOfMonthBalance(
 	accountStatus: string;
 	checkpointHash: string | null;
 } | null> {
+	// Return null early for invalid UUID to avoid PostgreSQL cast errors
+	if (!UUID_REGEX.test(accountId)) return null;
+
 	// Build the first and last day of the month
 	// month is 1-indexed (1=January, 12=December)
 	const monthStr = String(month).padStart(2, "0");

@@ -49,15 +49,22 @@ export type {
 	HoldStatus,
 } from "./hold.js";
 export type {
+	AccountLimitInfo,
+	LimitType,
+} from "./limit.js";
+export type {
 	PaginatedResult,
 	PaginationParams,
 } from "./pagination.js";
-
 export type {
 	AccountHookParams,
 	ColumnDefinition,
 	HoldCommitHookParams,
 	HoldHookParams,
+	InferPluginTypes,
+	PluginApiRequest,
+	PluginApiResponse,
+	PluginEndpoint,
 	SummaHookContext,
 	SummaOperation,
 	SummaPlugin,

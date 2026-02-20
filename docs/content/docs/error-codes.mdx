@@ -1,0 +1,130 @@
+---
+title: Error Codes
+description: Complete reference for all Summa error codes and error handling patterns.
+icon: ExclamationTriangle
+---
+
+## Overview
+
+All Summa errors extend `SummaError` and include a typed error code, HTTP status, and descriptive message.
+
+```ts
+import { SummaError } from "summa/error";
+
+try {
+  await summa.transactions.transfer({
+    sourceHolderId: "user_123",
+    destinationHolderId: "merchant_1",
+    amount: 100_00,
+    reference: "order-001",
+  });
+} catch (error) {
+  if (error instanceof SummaError) {
+    console.log(error.code);    // "INSUFFICIENT_BALANCE"
+    console.log(error.status);  // 400
+    console.log(error.message); // "Insufficient balance: available 5000, requested 10000"
+  }
+}
+```
+
+## Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `INSUFFICIENT_BALANCE` | 400 | Account does not have enough available funds (including pending holds) |
+| `ACCOUNT_FROZEN` | 403 | Account is frozen — all transactions are rejected |
+| `ACCOUNT_CLOSED` | 403 | Account is permanently closed — no operations allowed |
+| `LIMIT_EXCEEDED` | 429 | Transaction exceeds a velocity limit (daily, monthly, or per-transaction) |
+| `NOT_FOUND` | 404 | Requested resource (account, transaction, hold) does not exist |
+| `INVALID_ARGUMENT` | 400 | Invalid input parameter (negative amount, missing required field, etc.) |
+| `DUPLICATE` | 409 | Duplicate idempotency key with different parameters |
+| `CONFLICT` | 409 | Resource version conflict (concurrent modification) |
+| `INTERNAL` | 500 | Unexpected internal error |
+| `HOLD_EXPIRED` | 410 | Hold has passed its expiration time and cannot be committed |
+| `CHAIN_INTEGRITY_VIOLATION` | 500 | Event hash chain is broken — data may have been tampered with |
+| `RATE_LIMITED` | 429 | Too many requests — rate limit exceeded |
+
+## Error Handling Patterns
+
+### Transaction Errors
+
+```ts
+try {
+  await summa.transactions.transfer({ ... });
+} catch (error) {
+  if (!(error instanceof SummaError)) throw error;
+
+  switch (error.code) {
+    case "INSUFFICIENT_BALANCE":
+      // Show "not enough funds" to user
+      break;
+    case "ACCOUNT_FROZEN":
+      // Account is under review
+      break;
+    case "LIMIT_EXCEEDED":
+      // Transaction limit reached
+      break;
+    case "DUPLICATE":
+      // Idempotency key conflict — retry with different params
+      break;
+    default:
+      throw error;
+  }
+}
+```
+
+### Idempotency Handling
+
+```ts
+// First attempt
+const txn = await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "dep-001",
+  idempotencyKey: "dep-001-v1",
+});
+
+// Retry with SAME parameters — returns original result, no error
+const txn2 = await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "dep-001",
+  idempotencyKey: "dep-001-v1",
+});
+// txn2 === txn (no double-posting)
+
+// Retry with DIFFERENT parameters — throws DUPLICATE error
+await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 200_00,  // Different amount!
+  reference: "dep-001",
+  idempotencyKey: "dep-001-v1",
+});
+// Throws: SummaError { code: "DUPLICATE", status: 409 }
+```
+
+### Hold Expiry
+
+```ts
+try {
+  await summa.holds.commit({ holdId: hold.id });
+} catch (error) {
+  if (error instanceof SummaError && error.code === "HOLD_EXPIRED") {
+    // Hold timed out — create a new hold if needed
+  }
+}
+```
+
+## Plugin Error Codes
+
+Plugins can declare additional error codes via `$ERROR_CODES`. These are merged with the base codes at runtime. Check individual [plugin documentation](/docs/plugins) for plugin-specific error codes.
+
+## Importing
+
+```ts
+// Error class
+import { SummaError } from "summa/error";
+
+// Error code constants
+import { BASE_ERROR_CODES } from "summa/error";
+```

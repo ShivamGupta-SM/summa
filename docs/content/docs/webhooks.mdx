@@ -1,0 +1,121 @@
+---
+title: Webhooks
+description: HMAC-signed webhook delivery and verification.
+icon: GlobeAlt
+---
+
+## Overview
+
+Summa provides a webhook system for notifying external services about ledger events. Webhooks use **HMAC-SHA256** signatures for payload verification, preventing tampering and replay attacks.
+
+## Setup
+
+```ts
+import { createWebhookHandler } from "summa/webhooks";
+
+const webhooks = createWebhookHandler({
+  secret: process.env.SUMMA_WEBHOOK_SECRET!,  // HMAC-SHA256 secret
+  signatureHeader: "x-summa-signature",        // Default header name
+  tolerance: 5 * 60 * 1000,                   // 5 minute tolerance (ms)
+});
+```
+
+Generate a secret using the CLI:
+
+```bash
+npx summa secret --env
+# SUMMA_SECRET=a1b2c3d4e5f6...
+```
+
+## Webhook Payload
+
+Every webhook delivers a `WebhookPayload`:
+
+```ts
+interface WebhookPayload {
+  id: string;                       // Unique event ID
+  event: string;                    // Event type (e.g., "transaction.posted")
+  timestamp: string;                // ISO 8601 timestamp
+  data: Record<string, unknown>;    // Event data
+}
+```
+
+## Signing Payloads
+
+When sending webhooks to external services:
+
+```ts
+const payload = JSON.stringify({
+  id: "evt_123",
+  event: "transaction.posted",
+  timestamp: new Date().toISOString(),
+  data: { transactionId: txn.id, amount: 50_00 },
+});
+
+const signature = webhooks.sign(payload);
+// Send payload with signature in the x-summa-signature header
+```
+
+## Verifying Incoming Webhooks
+
+When receiving webhooks from Summa:
+
+```ts
+// Express example
+app.post("/webhooks/summa", (req, res) => {
+  const signature = req.headers["x-summa-signature"] as string;
+  const body = req.body; // raw string or Buffer
+
+  try {
+    const payload = webhooks.receive(body, signature);
+    // payload is verified — process the event
+    console.log(payload.event, payload.data);
+    res.sendStatus(200);
+  } catch (error) {
+    // Invalid signature or expired timestamp
+    res.sendStatus(401);
+  }
+});
+```
+
+### Manual Verification
+
+```ts
+const isValid = webhooks.verify(body, signature);
+if (!isValid) {
+  throw new Error("Invalid webhook signature");
+}
+```
+
+## Using with the Outbox Plugin
+
+The outbox plugin provides reliable webhook delivery with at-least-once semantics:
+
+```ts
+import { outbox } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [
+    outbox({
+      publisher: async (topic, payload) => {
+        const body = JSON.stringify(payload);
+        const signature = webhooks.sign(body);
+
+        await fetch("https://your-service.com/webhooks", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-summa-signature": signature,
+          },
+          body,
+        });
+      },
+      batchSize: 100,
+      maxRetries: 3,
+    }),
+  ],
+});
+```
+
+Events are written to the outbox table inside the same database transaction as the ledger operation, guaranteeing no events are lost.

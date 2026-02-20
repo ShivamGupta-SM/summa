@@ -54,6 +54,11 @@ export async function creditMultiDestinations(
 			`Sum of destination amounts (${explicitSum}) exceeds commit amount (${totalAmount})`,
 		);
 	}
+	if (remainder > 0 && remainderIndex === -1) {
+		throw SummaError.invalidArgument(
+			`Sum of destination amounts (${explicitSum}) is less than total amount (${totalAmount}) and no remainder destination specified`,
+		);
+	}
 
 	const results: CreditDestinationResult[] = [];
 
@@ -112,7 +117,7 @@ export async function creditMultiDestinations(
 				`SELECT id, status FROM account_balance
          WHERE holder_id = $1
          LIMIT 1
-         FOR UPDATE`,
+         ${ctx.dialect.forUpdate()}`,
 				[dest.holderId],
 			);
 

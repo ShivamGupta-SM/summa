@@ -4,10 +4,11 @@
 // Discovers and loads the user's summa config file (e.g. summa.config.ts).
 // Handles named export `summa`, default export, or a plain options object.
 
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { SummaOptions } from "@summa/core";
 import { loadConfig } from "c12";
+import { createJiti } from "jiti";
 import { possibleConfigPaths } from "./config-paths.js";
 
 export interface ResolvedSummaConfig {
@@ -60,8 +61,53 @@ export async function getConfig({
 	return null;
 }
 
+/**
+ * Read tsconfig.json and extract path aliases for jiti.
+ * Returns a Record<alias, resolved path> or null if no aliases found.
+ */
+function getPathAliases(cwd: string): Record<string, string> | null {
+	const tsconfigPath = resolve(cwd, "tsconfig.json");
+	if (!existsSync(tsconfigPath)) return null;
+
+	try {
+		const raw = readFileSync(tsconfigPath, "utf-8");
+		// Strip single-line comments for JSON.parse compatibility
+		const stripped = raw.replace(/\/\/.*$/gm, "");
+		const tsconfig = JSON.parse(stripped);
+		const paths = tsconfig?.compilerOptions?.paths;
+		if (!paths || typeof paths !== "object") return null;
+
+		const baseUrl = tsconfig.compilerOptions?.baseUrl ?? ".";
+		const baseDir = resolve(cwd, baseUrl);
+		const aliases: Record<string, string> = {};
+
+		for (const [alias, targets] of Object.entries(paths)) {
+			const target = (targets as string[])[0];
+			if (!target) continue;
+			// Strip trailing /* from both alias and target
+			const cleanAlias = alias.replace(/\/\*$/, "");
+			const cleanTarget = target.replace(/\/\*$/, "");
+			aliases[cleanAlias] = resolve(baseDir, cleanTarget);
+		}
+
+		return Object.keys(aliases).length > 0 ? aliases : null;
+	} catch {
+		return null;
+	}
+}
+
 async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedSummaConfig | null> {
 	try {
+		const aliases = getPathAliases(cwd);
+
+		// If path aliases exist, create a jiti instance with alias support
+		const jitiImport = aliases
+			? (() => {
+					const jiti = createJiti(cwd, { alias: aliases });
+					return (id: string) => jiti.import(id);
+				})()
+			: undefined;
+
 		const { config } = await loadConfig({
 			configFile,
 			cwd,
@@ -71,6 +117,7 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
 			rcFile: false,
 			packageJson: false,
 			globalRc: false,
+			...(jitiImport ? { jiti: jitiImport } : {}),
 		});
 
 		if (!config || typeof config !== "object") return null;

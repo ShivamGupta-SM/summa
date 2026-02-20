@@ -1,6 +1,7 @@
 import * as p from "@clack/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
+import { getConfig } from "../utils/get-config.js";
 
 export const verifyCommand = new Command("verify")
 	.description("Verify ledger integrity")
@@ -8,11 +9,25 @@ export const verifyCommand = new Command("verify")
 	.option("--balances", "Verify double-entry balance integrity")
 	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
 	.action(async (options: { chain?: boolean; balances?: boolean; url?: string }) => {
+		const parent = verifyCommand.parent;
+		const cwd: string = parent?.opts().cwd ?? process.cwd();
+		const configFlag: string | undefined = parent?.opts().config;
+
 		const runAll = !options.chain && !options.balances;
 
 		p.intro(pc.bgCyan(pc.black(" summa verify ")));
 
-		const dbUrl = options.url ?? process.env.DATABASE_URL;
+		// Try loading config for DATABASE_URL extraction
+		let configDbUrl: string | undefined;
+		const config = await getConfig({ cwd, configPath: configFlag });
+		if (config?.options) {
+			const db = config.options.database;
+			if (typeof db === "object" && "connectionString" in db) {
+				configDbUrl = db.connectionString as string;
+			}
+		}
+
+		const dbUrl = options.url ?? configDbUrl ?? process.env.DATABASE_URL;
 		if (!dbUrl) {
 			p.log.error(`${pc.red("No DATABASE_URL")} ${pc.dim("set DATABASE_URL or use --url")}`);
 			p.outro(pc.dim("Cannot verify without a database connection."));
@@ -31,7 +46,9 @@ export const verifyCommand = new Command("verify")
 		}
 
 		const client = new pg.default.Client({ connectionString: dbUrl });
-		let hasFailure = false;
+		let passed = 0;
+		let failed = 0;
+		let skipped = 0;
 
 		try {
 			await client.connect();
@@ -42,10 +59,10 @@ export const verifyCommand = new Command("verify")
 			if (options.balances || runAll) {
 				p.log.step(pc.bold("Double-Entry Balance Verification"));
 
+				// Check 1: Per-transaction debit == credit
 				const s = p.spinner();
 				s.start("Checking per-transaction debit/credit balance...");
 
-				// Check 1: Per-transaction debit == credit
 				const imbalancedResult = await client.query(`
 					SELECT
 						e.transaction_id,
@@ -60,6 +77,7 @@ export const verifyCommand = new Command("verify")
 
 				if (imbalancedResult.rows.length === 0) {
 					s.stop(`${pc.green("PASS")} All transactions have balanced entries`);
+					passed++;
 				} else {
 					s.stop(
 						`${pc.red("FAIL")} ${imbalancedResult.rows.length} transaction(s) with imbalanced entries`,
@@ -69,7 +87,7 @@ export const verifyCommand = new Command("verify")
 							`  txn ${String(row.transaction_id).slice(0, 8)}... credits=${row.total_credits} debits=${row.total_debits}`,
 						);
 					}
-					hasFailure = true;
+					failed++;
 				}
 
 				// Check 2: Grand total (user + system + hot) == 0
@@ -95,11 +113,12 @@ export const verifyCommand = new Command("verify")
 					s2.stop(
 						`${pc.green("PASS")} Global balance: user(${userTotal}) + system(${systemTotal}) + hot(${hotTotal}) = 0`,
 					);
+					passed++;
 				} else {
 					s2.stop(
 						`${pc.red("FAIL")} Global balance: user(${userTotal}) + system(${systemTotal}) + hot(${hotTotal}) = ${grandTotal}`,
 					);
-					hasFailure = true;
+					failed++;
 				}
 
 				// Check 3: Duplicate entries
@@ -117,9 +136,10 @@ export const verifyCommand = new Command("verify")
 
 				if (dupResult.rows.length === 0) {
 					s3.stop(`${pc.green("PASS")} No duplicate entries found`);
+					passed++;
 				} else {
 					s3.stop(`${pc.red("FAIL")} ${dupResult.rows.length} duplicate entry group(s) found`);
-					hasFailure = true;
+					failed++;
 				}
 			}
 
@@ -146,6 +166,7 @@ export const verifyCommand = new Command("verify")
 					s4.stop(
 						`${pc.yellow("SKIP")} No block checkpoints found ${pc.dim("(run reconciliation first)")}`,
 					);
+					skipped++;
 				} else {
 					for (let i = 1; i < blocks.length; i++) {
 						const curr = blocks[i];
@@ -166,9 +187,10 @@ export const verifyCommand = new Command("verify")
 
 					if (chainBroken) {
 						s4.stop(`${pc.red("FAIL")} Block chain linkage broken`);
-						hasFailure = true;
+						failed++;
 					} else {
 						s4.stop(`${pc.green("PASS")} ${blocks.length} block(s) verified, chain intact`);
+						passed++;
 					}
 				}
 
@@ -215,29 +237,38 @@ export const verifyCommand = new Command("verify")
 
 				if (aggregateResult.rows.length === 0) {
 					s5.stop(`${pc.yellow("SKIP")} No events found`);
+					skipped++;
 				} else if (eventChainErrors === 0) {
 					s5.stop(
 						`${pc.green("PASS")} ${aggregateResult.rows.length} aggregate(s), ${eventsChecked} link(s) verified`,
 					);
+					passed++;
 				} else {
 					s5.stop(
 						`${pc.red("FAIL")} ${eventChainErrors} broken link(s) across ${aggregateResult.rows.length} aggregate(s)`,
 					);
-					hasFailure = true;
+					failed++;
 				}
 			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			p.log.error(`Connection failed: ${pc.dim(message)}`);
-			hasFailure = true;
+			failed++;
 		} finally {
 			await client.end().catch(() => {});
 		}
 
-		if (hasFailure) {
-			p.outro(pc.red("Verification found issues."));
+		// Summary
+		const summary = [
+			pc.green(`${passed} passed`),
+			...(failed > 0 ? [pc.red(`${failed} failed`)] : []),
+			...(skipped > 0 ? [pc.yellow(`${skipped} skipped`)] : []),
+		].join(pc.dim(" / "));
+
+		if (failed > 0) {
+			p.outro(`${pc.red("Verification found issues.")} ${pc.dim(`(${summary})`)}`);
 			process.exitCode = 1;
 		} else {
-			p.outro(pc.green("All verification checks passed."));
+			p.outro(`${pc.green("All checks passed.")} ${pc.dim(`(${summary})`)}`);
 		}
 	});

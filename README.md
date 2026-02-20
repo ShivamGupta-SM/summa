@@ -32,7 +32,7 @@ pnpm add @summa/memory-adapter    # In-memory (testing)
 import { createSumma } from "summa";
 
 const summa = createSumma({
-  adapter: yourAdapter,
+  database: yourAdapter,
   currency: "USD",
 });
 
@@ -73,13 +73,14 @@ Reserve funds before settling:
 const hold = await summa.holds.create({
   holderId: "user-123",
   amount: 5000,
+  reference: "hold-001",
   description: "Pending charge",
 });
 
 // Later — commit or void
-await summa.holds.commit(hold.id);
+await summa.holds.commit({ holdId: hold.id });
 // or
-await summa.holds.void(hold.id);
+await summa.holds.void({ holdId: hold.id });
 ```
 
 ## Event Sourcing & Audit Trail
@@ -88,10 +89,11 @@ Every operation is recorded as an immutable event with hash chain verification:
 
 ```typescript
 // Get all events for an account
-const events = await summa.events.getForAggregate(accountId);
+const events = await summa.events.getForAggregate("account", accountId);
 
 // Verify chain integrity
-const isValid = await summa.events.verifyChain();
+const result = await summa.events.verifyChain("account", accountId);
+console.log(result.valid); // true
 ```
 
 ## Packages
@@ -109,12 +111,17 @@ const isValid = await summa.events.verifyChain();
 ## CLI
 
 ```bash
-pnpm add -g @summa/cli
+pnpm add -D @summa/cli
 
-summa init          # Initialize configuration
-summa migrate       # Run database migrations
-summa status        # Check ledger status
-summa verify        # Verify hash chain integrity
+summa init              # Interactive project setup wizard
+summa generate          # Generate schema for Drizzle/Prisma/Kysely
+summa migrate push      # Push schema directly to PostgreSQL
+summa migrate status    # Show pending schema changes
+summa status            # System dashboard (accounts, integrity, outbox)
+summa verify            # Verify balance integrity & hash chains
+summa info              # Environment & project diagnostics
+summa secret --env      # Generate secrets in .env format
+summa telemetry         # Manage anonymous telemetry
 ```
 
 ## Development

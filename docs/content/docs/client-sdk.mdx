@@ -1,0 +1,234 @@
+---
+title: Client SDK
+description: Type-safe HTTP client for consuming the Summa API from other services.
+icon: CodeBracket
+---
+
+## Overview
+
+The `@summa/client` package provides a **type-safe HTTP client** for consuming the Summa ledger API from other services. It mirrors the entire API surface with full TypeScript types, request/response interceptors, and configurable timeouts.
+
+Use the client SDK when Summa runs as a **standalone service** and your application communicates with it over HTTP.
+
+```
+┌──────────────┐     HTTP      ┌─────────────┐
+│  Your App    │──────────────▶│  Summa API  │
+│  (@summa/    │   (JSON)      │  (Hono/     │
+│   client)    │◀──────────────│   Express)  │
+└──────────────┘               └─────────────┘
+```
+
+## Installation
+
+```bash
+pnpm add @summa/client @summa/core
+```
+
+## Quick Start
+
+```ts
+import { createSummaClient } from "@summa/client";
+
+const client = createSummaClient({
+  baseURL: "http://localhost:3000/api/ledger",
+});
+
+// Create an account
+const account = await client.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+});
+
+// Transfer funds
+const txn = await client.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  reference: "order-001",
+});
+
+// Check balance
+const balance = await client.accounts.getBalance("user_123");
+```
+
+## Configuration
+
+```ts
+interface SummaClientOptions {
+  baseURL: string;
+  headers?: Record<string, string>;
+  fetch?: typeof globalThis.fetch;
+  onRequest?: RequestInterceptor | RequestInterceptor[];
+  onResponse?: ResponseInterceptor | ResponseInterceptor[];
+  timeout?: number;
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `baseURL` | `string` | Required | Base URL of the Summa API |
+| `headers` | `object` | `{}` | Static headers included in every request |
+| `fetch` | `function` | `globalThis.fetch` | Custom fetch implementation |
+| `onRequest` | `function \| function[]` | — | Request interceptor(s) |
+| `onResponse` | `function \| function[]` | — | Response interceptor(s) |
+| `timeout` | `number` | `30000` | Request timeout in milliseconds |
+
+## Authentication
+
+The client SDK does not enforce any authentication scheme — add your auth headers via `headers` or interceptors:
+
+```ts
+// Static API key
+const client = createSummaClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  headers: {
+    "Authorization": `Bearer ${process.env.LEDGER_API_KEY}`,
+  },
+});
+
+// Dynamic token via interceptor
+const client = createSummaClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  onRequest: (url, init) => {
+    const token = getServiceToken(); // your token provider
+    return {
+      ...init,
+      headers: { ...init.headers, Authorization: `Bearer ${token}` },
+    };
+  },
+});
+```
+
+## Available Methods
+
+### Accounts
+
+```ts
+client.accounts.create(params)      // POST /accounts
+client.accounts.get(holderId)       // GET /accounts/:holderId
+client.accounts.getBalance(holderId) // GET /accounts/:holderId/balance
+client.accounts.freeze(params)      // POST /accounts/:holderId/freeze
+client.accounts.unfreeze(params)    // POST /accounts/:holderId/unfreeze
+client.accounts.close(params)       // POST /accounts/:holderId/close
+client.accounts.list(params?)       // GET /accounts
+```
+
+### Transactions
+
+```ts
+client.transactions.credit(params)       // POST /transactions/credit
+client.transactions.debit(params)        // POST /transactions/debit
+client.transactions.transfer(params)     // POST /transactions/transfer
+client.transactions.multiTransfer(params) // POST /transactions/multi-transfer
+client.transactions.refund(params)       // POST /transactions/refund
+client.transactions.get(id)              // GET /transactions/:id
+client.transactions.list(params)         // GET /transactions
+```
+
+### Holds
+
+```ts
+client.holds.create(params)     // POST /holds
+client.holds.commit(params)     // POST /holds/:holdId/commit
+client.holds.void(params)       // POST /holds/:holdId/void
+client.holds.get(id)            // GET /holds/:id
+client.holds.listActive(params) // GET /holds/active
+client.holds.listAll(params)    // GET /holds
+```
+
+### Events
+
+```ts
+client.events.getForAggregate(type, id)    // GET /events/:type/:id
+client.events.getByCorrelation(correlationId) // GET /events/correlation/:id
+client.events.verifyChain(type, id)        // POST /events/verify
+```
+
+### Limits
+
+```ts
+client.limits.set(params)        // POST /limits
+client.limits.get(holderId)      // GET /limits/:holderId
+client.limits.remove(params)     // DELETE /limits/:holderId
+client.limits.getUsage(params)   // GET /limits/:holderId/usage
+```
+
+## Error Handling
+
+The client throws `SummaClientError` for API errors:
+
+```ts
+import { SummaClientError } from "@summa/client";
+
+try {
+  await client.transactions.transfer({ ... });
+} catch (error) {
+  if (error instanceof SummaClientError) {
+    console.log(error.code);    // "INSUFFICIENT_BALANCE"
+    console.log(error.status);  // 400
+    console.log(error.message); // "Insufficient balance: ..."
+  }
+}
+```
+
+## Interceptors
+
+### Request Interceptor
+
+Modify outgoing requests before they are sent:
+
+```ts
+type RequestInterceptor = (
+  url: string,
+  init: RequestInit,
+) => RequestInit | Promise<RequestInit>;
+```
+
+```ts
+const client = createSummaClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  onRequest: (url, init) => {
+    console.log(`→ ${init.method} ${url}`);
+    return init;
+  },
+});
+```
+
+### Response Interceptor
+
+Process responses before they are returned:
+
+```ts
+type ResponseInterceptor = (
+  response: Response,
+  request: { url: string; init: RequestInit },
+) => Response | Promise<Response>;
+```
+
+```ts
+const client = createSummaClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  onResponse: (response, request) => {
+    if (!response.ok) {
+      console.error(`← ${response.status} ${request.url}`);
+    }
+    return response;
+  },
+});
+```
+
+Multiple interceptors can be passed as an array — they execute in order.
+
+## Custom Fetch
+
+Provide a custom `fetch` implementation for environments without a global `fetch`, or for testing:
+
+```ts
+import { fetch as undiciFetch } from "undici";
+
+const client = createSummaClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  fetch: undiciFetch,
+});
+```

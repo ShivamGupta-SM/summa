@@ -39,6 +39,8 @@ export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 	return {
 		id: "hot-accounts",
 
+		$Infer: {} as { HotAccountStats: HotAccountStats },
+
 		workers: [
 			{
 				id: "hot-account-processor",
@@ -83,6 +85,7 @@ interface AggregatedGroup {
 async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Promise<number> {
 	// Use a CTE to lock pending entries and aggregate by account_id in a single query.
 	// FOR UPDATE SKIP LOCKED ensures concurrent workers don't process the same entries.
+	const { dialect } = ctx;
 	const groups = await ctx.adapter.raw<AggregatedGroup>(
 		`WITH locked_entries AS (
        SELECT id, account_id, amount
@@ -90,7 +93,7 @@ async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Pro
        WHERE status = 'pending'
        ORDER BY created_at ASC
        LIMIT $1
-       FOR UPDATE SKIP LOCKED
+       ${dialect.forUpdateSkipLocked()}
      )
      SELECT
        account_id,
@@ -133,7 +136,7 @@ async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Pro
 				// Mark all entries in this group as processed
 				await tx.rawMutate(
 					`UPDATE hot_account_entry
-           SET status = 'processed', processed_at = NOW()
+           SET status = 'processed', processed_at = ${dialect.now()}
            WHERE id = ANY($1::uuid[])`,
 					[entryIds],
 				);
@@ -185,10 +188,11 @@ async function cleanupProcessedHotEntries(
 	ctx: SummaContext,
 	retentionHours: number,
 ): Promise<number> {
+	const { dialect } = ctx;
 	const deleted = await ctx.adapter.rawMutate(
 		`DELETE FROM hot_account_entry
      WHERE processed_at IS NOT NULL
-       AND processed_at < NOW() - INTERVAL '1 hour' * $1`,
+       AND processed_at < ${dialect.now()} - ${dialect.interval("1 hour")} * $1`,
 		[retentionHours],
 	);
 
@@ -204,7 +208,7 @@ export async function getHotAccountStats(ctx: SummaContext): Promise<HotAccountS
 		status: string;
 		count: number;
 	}>(
-		`SELECT status, COUNT(*)::int AS count
+		`SELECT status, ${ctx.dialect.countAsInt()} AS count
      FROM hot_account_entry
      GROUP BY status`,
 		[],
@@ -219,7 +223,7 @@ export async function getHotAccountStats(ctx: SummaContext): Promise<HotAccountS
 
 	// Count failed sequences separately from the dedicated table
 	const failedRows = await ctx.adapter.raw<{ count: number }>(
-		`SELECT COUNT(*)::int AS count FROM hot_account_failed_sequence`,
+		`SELECT ${ctx.dialect.countAsInt()} AS count FROM hot_account_failed_sequence`,
 		[],
 	);
 

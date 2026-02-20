@@ -1,0 +1,51 @@
+---
+title: Reconciliation
+description: Automated balance reconciliation to detect data inconsistencies.
+icon: Scale
+---
+
+## Overview
+
+The reconciliation plugin compares account balances against the sum of their entry records to detect mismatches caused by bugs, race conditions, or data corruption. It performs a comprehensive **5-step verification**.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { reconciliation } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [reconciliation()],
+});
+```
+
+## Verification Steps
+
+The reconciliation process runs these checks:
+
+1. **Per-transaction double-entry balance** — every transaction must have equal total debits and credits
+2. **Duplicate entry detection** — no two entries should be identical
+3. **Lock version monotonicity** — account lock versions must be monotonically increasing
+4. **User account balance verification** — stored balance matches SUM of all entries
+5. **System account balance with hot entries** — includes pending hot account entries in the sum
+
+## Manual Reconciliation
+
+```ts
+const result = await summa.reconciliation.run();
+console.log(result.mismatches); // Array of accounts with balance discrepancies
+```
+
+## CLI Verification
+
+```bash
+# Run all integrity checks
+npx summa verify
+
+# Balance checks only
+npx summa verify --balances
+```
+
+The CLI shows a summary: `5 passed / 0 failed / 0 skipped`.

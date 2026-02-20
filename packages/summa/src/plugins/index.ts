@@ -3,6 +3,7 @@
 // =============================================================================
 // Plugin exports for the "summa/plugins" entry point.
 
+export { type AdminOptions, admin } from "./admin.js";
 export { type AuditLogEntry, type AuditLogOptions, auditLog, queryAuditLog } from "./audit-log.js";
 export {
 	type DlqManagerOptions,
@@ -22,6 +23,7 @@ export {
 	hotAccounts,
 } from "./hot-accounts.js";
 export { type MaintenanceOptions, maintenance } from "./maintenance.js";
+export { type OpenApiOptions, openApi } from "./open-api.js";
 export { getOutboxStats, type OutboxOptions, type OutboxStats, outbox } from "./outbox.js";
 export { getReconciliationStatus, reconciliation } from "./reconciliation.js";
 export {

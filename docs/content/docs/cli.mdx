@@ -1,0 +1,243 @@
+---
+title: CLI Reference
+description: Complete reference for the Summa CLI.
+icon: CommandLine
+---
+
+## Installation
+
+```bash
+pnpm add -D @summa/cli
+```
+
+Or run directly:
+
+```bash
+npx summa <command>
+```
+
+## Global Options
+
+| Option | Description |
+|--------|-------------|
+| `--cwd <dir>` | Working directory (default: `process.cwd()`) |
+| `-c, --config <path>` | Path to summa config file |
+| `-v, --version` | Show CLI version |
+| `-h, --help` | Show help |
+
+## Commands
+
+### `summa init`
+
+Initialize a new Summa project with an interactive wizard.
+
+```bash
+npx summa init
+```
+
+The wizard walks you through:
+
+1. **Database adapter** — Drizzle ORM (recommended), Prisma, Kysely, or In-Memory
+2. **Currency** — ISO 4217 currency code (default: USD)
+3. **Plugins** — multiselect from 12 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI)
+4. **System accounts** — use defaults (@World, @Fees, @Suspense) or customize
+
+Auto-detects your package manager (pnpm/npm/yarn/bun) for install instructions.
+
+| Option | Description |
+|--------|-------------|
+| `-f, --force` | Overwrite existing config file |
+| `-y, --yes` | Skip prompts and use defaults (Drizzle + USD) |
+
+### `summa generate`
+
+Generate database schema files from Summa table definitions. Supports all three ORM adapters.
+
+```bash
+npx summa generate
+npx summa generate --adapter drizzle --out src/db/schema.ts
+```
+
+| Option | Description |
+|--------|-------------|
+| `--adapter <type>` | Target: `drizzle`, `prisma`, or `kysely` |
+| `--out <path>` | Output file path |
+| `-y, --yes` | Skip confirmation prompts |
+
+If `--adapter` is not specified, it is auto-detected from your config file or you are prompted interactively. If the output file already exists and content hasn't changed, it reports "already up to date". Otherwise, it asks for overwrite confirmation (skip with `--yes`).
+
+### `summa migrate`
+
+Manage database schema and migrations. Has three subcommands:
+
+#### `summa migrate push`
+
+Push the Summa schema directly to your PostgreSQL database. Compares your table definitions against the actual database schema via `information_schema` and applies the diff.
+
+```bash
+npx summa migrate push
+npx summa migrate push --url postgres://user:pass@localhost:5432/mydb
+npx summa migrate push --yes
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+| `-y, --yes` | Skip confirmation prompt |
+
+Shows a migration preview before applying:
+- Tables to create
+- Columns to add to existing tables
+- Indexes to create
+
+#### `summa migrate status`
+
+Show pending schema changes without applying them.
+
+```bash
+npx summa migrate status
+npx summa migrate status --url postgres://...
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+
+#### `summa migrate generate`
+
+Shows instructions for generating migrations through your ORM of choice (Drizzle Kit, Prisma, etc.).
+
+```bash
+npx summa migrate generate
+```
+
+### `summa status`
+
+Show a comprehensive system status dashboard including configuration, database connectivity, ledger statistics, and integrity checks.
+
+```bash
+npx summa status
+npx summa status --url postgres://...
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+
+Displays:
+- **Configuration** — config file, adapter, currency, system accounts, plugins, advanced options
+- **Database** — connection status
+- **Ledger Statistics** — account count, system accounts, transactions, active holds, events
+- **Integrity** — last block checkpoint, double-entry balance check (user + system + hot = 0), last reconciliation status, outbox/DLQ queue
+
+### `summa verify`
+
+Verify ledger integrity with comprehensive checks. Can run all checks or specific subsets.
+
+```bash
+npx summa verify
+npx summa verify --balances
+npx summa verify --chain
+```
+
+| Option | Description |
+|--------|-------------|
+| `--chain` | Verify event hash chain integrity only |
+| `--balances` | Verify double-entry balance integrity only |
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+
+**Balance checks:**
+- Per-transaction debit/credit balance (every transaction must have equal debits and credits)
+- Global balance invariant (user + system + hot accounts = 0)
+- Duplicate entry detection
+
+**Hash chain checks:**
+- Block checkpoint chain linkage (prev_block_hash matches)
+- Event hash chain per aggregate (samples up to 50 aggregates)
+
+Shows a summary at the end: `3 passed / 0 failed / 1 skipped`
+
+### `summa info`
+
+Display detailed environment and project information for diagnostics and bug reports.
+
+```bash
+npx summa info
+npx summa info --json
+npx summa info --copy
+```
+
+| Option | Description |
+|--------|-------------|
+| `--json` | Output as JSON (machine-readable) |
+| `--copy` | Copy output to clipboard |
+
+Shows:
+- **System** — OS, CPU, memory, Node.js version, package manager
+- **Summa** — version, config file path, adapter, currency, plugins, system accounts, installed adapter packages, database URL (redacted)
+
+### `summa secret`
+
+Generate a cryptographically secure random secret.
+
+```bash
+npx summa secret
+npx summa secret --length 64 --base64
+npx summa secret --env
+npx summa secret --env --copy
+```
+
+| Option | Description |
+|--------|-------------|
+| `-l, --length <n>` | Length in bytes (default: 32) |
+| `--base64` | Output base64 instead of hex |
+| `--env` | Output in `.env` format (`SUMMA_SECRET=...`) |
+| `--copy` | Copy to clipboard |
+
+### `summa telemetry`
+
+Manage anonymous telemetry preferences.
+
+```bash
+npx summa telemetry status
+npx summa telemetry on
+npx summa telemetry off
+```
+
+When enabled, Summa collects:
+- CLI command usage (which commands are run)
+- Adapter type (drizzle, prisma, kysely)
+- Plugin usage (which plugins are enabled)
+- Error counts (no error details or stack traces)
+
+**Not collected:** database URLs, secrets, transaction data, account info, source code, or any PII.
+
+Telemetry is opt-in and disabled by default. Set `SUMMA_TELEMETRY_DISABLED=1` or `DO_NOT_TRACK=1` to disable globally.
+
+## Config File Discovery
+
+The CLI searches for your config file in this order:
+
+1. Explicit `--config` flag
+2. Auto-discovery across common project paths
+
+**Base filenames:** `summa.config`, `summa`, `ledger`
+
+**Extensions:** `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, `.mjs`
+
+**Directory prefixes:** root, `lib/`, `server/`, `config/`, `src/`, `src/lib/`, `src/server/`, `src/config/`, `app/`, `app/lib/`, `app/server/`
+
+The config file should export a `summa` instance or options:
+
+```ts
+// Named export (recommended)
+export const summa = createSumma({ ... });
+
+// Default export
+export default createSumma({ ... });
+
+// Plain options object
+export const summa = { database: ..., currency: "USD" };
+```
+
+The CLI uses [c12](https://github.com/unjs/c12) + [jiti](https://github.com/unjs/jiti) for runtime TypeScript transpilation, supporting path aliases from your `tsconfig.json`.

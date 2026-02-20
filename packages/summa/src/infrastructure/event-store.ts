@@ -12,6 +12,7 @@ import type {
 	SummaTransactionAdapter,
 } from "@summa/core";
 import { computeHash } from "@summa/core";
+import { runWithTransactionContext } from "@summa/core/db";
 
 // =============================================================================
 // TRANSACTION TIMEOUT WRAPPER
@@ -26,17 +27,22 @@ export async function withTransactionTimeout<T>(
 	const statementTimeout = options?.statementTimeoutMs ?? ctx.options.advanced.transactionTimeoutMs;
 	const lockTimeout = options?.lockTimeoutMs ?? ctx.options.advanced.lockTimeoutMs;
 
-	return await ctx.adapter.transaction(async (tx) => {
-		// SET doesn't support parameterized queries — validate and interpolate
-		const safeStatementTimeout = Number(statementTimeout);
-		const safeLockTimeout = Number(lockTimeout);
-		if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
-			throw new Error("Invalid timeout value");
-		}
-		await tx.raw(`SET LOCAL statement_timeout = '${safeStatementTimeout}'`, []);
-		await tx.raw(`SET LOCAL lock_timeout = '${safeLockTimeout}'`, []);
-		return await operation(tx);
-	});
+	const { dialect } = ctx;
+
+	return await runWithTransactionContext(() =>
+		ctx.adapter.transaction(async (tx) => {
+			const safeStatementTimeout = Number(statementTimeout);
+			const safeLockTimeout = Number(lockTimeout);
+			if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
+				throw new Error("Invalid timeout value");
+			}
+			const stmtTimeoutSql = dialect.setStatementTimeout(safeStatementTimeout);
+			const lockTimeoutSql = dialect.setLockTimeout(safeLockTimeout);
+			if (stmtTimeoutSql) await tx.raw(`SET LOCAL ${stmtTimeoutSql.replace(/^SET\s+/i, "")}`, []);
+			if (lockTimeoutSql) await tx.raw(`SET LOCAL ${lockTimeoutSql.replace(/^SET\s+/i, "")}`, []);
+			return await operation(tx);
+		}),
+	);
 }
 
 // =============================================================================

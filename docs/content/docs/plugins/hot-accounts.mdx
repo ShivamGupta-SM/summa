@@ -1,0 +1,69 @@
+---
+title: Hot Accounts
+description: Optimistic concurrency for high-traffic accounts.
+icon: Fire
+---
+
+## Overview
+
+The hot accounts plugin uses **optimistic concurrency control** to reduce contention on accounts that receive many concurrent transactions (e.g., platform fee accounts, treasury accounts, marketplace settlement accounts).
+
+Instead of pessimistic row-level locks, hot accounts use a `lock_version` counter. When a concurrent update detects a version mismatch, it retries with the latest state. This dramatically reduces lock wait times.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { hotAccounts } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [hotAccounts()],
+});
+```
+
+## Configuration
+
+```ts
+hotAccounts({
+  batchSize: 1000,          // Entries processed per aggregation batch (default: 1000)
+  retentionHours: 24,       // Keep processed entries for 24 hours (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `batchSize` | `number` | `1000` | Hot entries processed per aggregation batch |
+| `retentionHours` | `number` | `24` | Hours to retain processed hot account entries |
+
+## How It Works
+
+1. Transactions to hot accounts write to a `hot_account_entry` staging table instead of directly updating the account balance
+2. This avoids row-level lock contention — many concurrent transactions can write simultaneously
+3. A background worker periodically aggregates pending entries and applies the net balance change to the account
+4. The reconciliation plugin includes hot entries in its balance verification
+
+## Marking an Account as Hot
+
+```ts
+await summa.hotAccounts.mark({ accountId: account.id });
+```
+
+Accounts receiving more than `advanced.hotAccountThreshold` transactions per minute are candidates for hot account treatment.
+
+## Type Inference
+
+```ts
+type Stats = typeof summa.$Infer.HotAccountStats;
+// { pending: number, processed: number, failedSequences: number }
+```
+
+## When to Use
+
+Use hot accounts for:
+- **Platform fee accounts** — every transaction on your platform credits this account
+- **Treasury/float accounts** — high-volume settlement accounts
+- **Marketplace escrow** — accounts receiving thousands of concurrent payments
+
+Don't use hot accounts for regular user accounts — the overhead isn't worth it for accounts with low concurrency.

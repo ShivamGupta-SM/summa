@@ -1,0 +1,247 @@
+---
+title: Getting Started
+description: Set up Summa in your TypeScript project in under 5 minutes.
+icon: RocketLaunch
+---
+
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+## Prerequisites
+
+<Callout type="info" title="Before you begin">
+  You need **Node.js 22+**, a **PostgreSQL** database (or use the memory adapter for local dev), and a **TypeScript** project with `"moduleResolution": "bundler"` or `"nodenext"`.
+</Callout>
+
+## Setup
+
+<Steps>
+
+<Step>
+
+### Install packages
+
+<Tabs items={["pnpm", "npm", "yarn"]}>
+<Tab value="pnpm">
+```bash
+pnpm add summa @summa/core @summa/drizzle-adapter drizzle-orm
+pnpm add -D @summa/cli
+```
+</Tab>
+<Tab value="npm">
+```bash
+npm install summa @summa/core @summa/drizzle-adapter drizzle-orm
+npm install -D @summa/cli
+```
+</Tab>
+<Tab value="yarn">
+```bash
+yarn add summa @summa/core @summa/drizzle-adapter drizzle-orm
+yarn add -D @summa/cli
+```
+</Tab>
+</Tabs>
+
+Summa also supports [Prisma](/docs/adapters/prisma), [Kysely](/docs/adapters/kysely), and an [in-memory adapter](/docs/adapters/memory) for testing.
+
+</Step>
+
+<Step>
+
+### Create your Summa instance
+
+```ts title="src/summa.ts"
+import { createSumma } from "summa";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+export const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation()],
+});
+```
+
+The `database` field accepts any Summa adapter instance. The `currency` sets the default ISO 4217 currency code for the ledger.
+
+</Step>
+
+<Step>
+
+### Run migrations
+
+<Tabs items={["Direct push", "Generate + ORM migrate"]}>
+<Tab value="Direct push">
+```bash
+npx summa migrate push
+```
+
+Compares your table definitions against the database via `information_schema` and applies the diff. Shows a preview before executing — use `--yes` to skip confirmation.
+</Tab>
+<Tab value="Generate + ORM migrate">
+```bash
+npx summa generate --adapter drizzle --out src/db/summa-schema.ts
+npx drizzle-kit generate
+npx drizzle-kit push
+```
+
+Generates the Summa schema for your ORM, then uses its native migration tooling.
+</Tab>
+</Tabs>
+
+</Step>
+
+<Step>
+
+### Create your first account
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+});
+
+console.log(account.id);      // UUID
+console.log(account.status);  // "active"
+console.log(account.balance); // 0
+```
+
+Every account is identified by a `holderId` (your external user/entity ID) and tracks separate credit, debit, and pending balances. See [Accounts](/docs/accounts) for all options.
+
+</Step>
+
+<Step>
+
+### Post transactions
+
+```ts
+// Credit $100 from the system (e.g., a deposit)
+await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00, // $100.00 in cents
+  reference: "deposit-001",
+  description: "Bank transfer deposit",
+});
+
+// Transfer $50 to another user
+const txn = await summa.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  reference: "order-001",
+  description: "Payment for Order #001",
+});
+
+console.log(txn.type);   // "transfer"
+console.log(txn.status); // "posted"
+```
+
+<Callout type="info" title="Amounts">
+  All amounts are in the **smallest currency unit** (cents for USD, paise for INR). A `reference` is required for every transaction.
+</Callout>
+
+</Step>
+
+<Step>
+
+### Check balance
+
+```ts
+const balance = await summa.accounts.getBalance("user_123");
+
+console.log(balance.balance);          // 5000 ($50.00)
+console.log(balance.availableBalance); // 5000 (balance minus pending holds)
+console.log(balance.creditBalance);    // 10000 (total lifetime credits)
+console.log(balance.debitBalance);     // 5000 (total lifetime debits)
+console.log(balance.pendingDebit);     // 0 (amount held but not yet committed)
+console.log(balance.currency);         // "USD"
+```
+
+`availableBalance` is the balance minus any pending holds — this is what users can actually spend.
+
+</Step>
+
+<Step>
+
+### Start background workers
+
+If you're using plugins with background tasks (hold expiry, outbox, reconciliation, etc.), start the worker system:
+
+```ts
+await summa.workers.start();
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  await summa.workers.stop();
+  process.exit(0);
+});
+```
+
+Workers use **distributed leases** — in a multi-instance deployment, only one instance runs each worker.
+
+</Step>
+
+<Step>
+
+### Configuration file (for CLI)
+
+For CLI commands (`summa status`, `summa verify`, etc.), create a config file:
+
+```ts title="summa.config.ts"
+import { defineSummaConfig } from "summa/config";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+export default defineSummaConfig({
+  database: drizzleAdapter(db),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation()],
+});
+```
+
+Or use the interactive wizard:
+
+```bash
+npx summa init
+```
+
+The CLI auto-discovers config files named `summa.config.ts`, `summa.ts`, or `ledger.ts`. See [CLI Reference](/docs/cli) for the full discovery path.
+
+</Step>
+
+</Steps>
+
+## Next steps
+
+<Cards>
+  <Card title="Configuration" href="/docs/configuration">
+    System accounts, advanced options, logger, secondary storage.
+  </Card>
+  <Card title="Accounts" href="/docs/accounts">
+    Freeze, close, overdrafts, indicators, listing.
+  </Card>
+  <Card title="Transactions" href="/docs/transactions">
+    Transfers, credits, debits, refunds, multi-destination, filtering.
+  </Card>
+  <Card title="Holds" href="/docs/holds">
+    Two-phase commits with partial capture and multi-destination.
+  </Card>
+  <Card title="Events" href="/docs/events">
+    Event sourcing, hash chain verification, aggregate events.
+  </Card>
+  <Card title="Plugins" href="/docs/plugins">
+    All 12 built-in plugins with lifecycle hooks and workers.
+  </Card>
+  <Card title="Client SDK" href="/docs/client-sdk">
+    Type-safe HTTP client for service-to-service calls.
+  </Card>
+  <Card title="CLI Reference" href="/docs/cli">
+    Migrations, schema generation, integrity checks, diagnostics.
+  </Card>
+</Cards>

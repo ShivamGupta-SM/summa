@@ -1,4 +1,10 @@
 import { source } from "@/lib/source";
+import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
+import { Callout } from "fumadocs-ui/components/callout";
+import { File, Files, Folder } from "fumadocs-ui/components/files";
+import { Step, Steps } from "fumadocs-ui/components/steps";
+import { Tab, Tabs } from "fumadocs-ui/components/tabs";
+import { TypeTable } from "fumadocs-ui/components/type-table";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import {
 	DocsBody,
@@ -22,7 +28,7 @@ export default async function Page(props: {
 			<DocsTitle>{page.data.title}</DocsTitle>
 			<DocsDescription>{page.data.description}</DocsDescription>
 			<DocsBody>
-				<MDX components={{ ...defaultMdxComponents }} />
+				<MDX components={{ ...defaultMdxComponents, Accordion, Accordions, Callout, File, Files, Folder, Step, Steps, Tab, Tabs, TypeTable }} />
 			</DocsBody>
 		</DocsPage>
 	);

@@ -1,64 +1,209 @@
 ---
 title: Transactions
-description: Post transfers, reversals, and multi-destination credits.
+description: Transfer, credit, debit, refund, and multi-destination payments.
+icon: ArrowsRightLeft
 ---
 
-## Posting a Transaction
+## Overview
 
-Every transaction moves funds between two accounts using double-entry
-bookkeeping — one debit, one credit:
+Transactions are the core operation in Summa. Every transaction uses **double-entry bookkeeping** — for every debit, there is an equal and opposite credit. The sum of all entries in the ledger is always zero.
+
+## Transaction Object
+
+Every transaction returns:
 
 ```ts
-const txn = await summa.transactions.post({
-  sourceHolderId: "user_123",
-  destinationHolderId: "merchant_1",
-  amount: 50_00, // $50.00 in cents
-  currency: "USD",
-  reference: "order_abc",
-  description: "Payment for Order #ABC",
-});
+interface LedgerTransaction {
+  id: string;                       // UUID
+  reference: string;                // Your business reference
+  type: TransactionType;            // "credit" | "debit" | "transfer"
+  status: TransactionStatus;        // "posted" | "reversed" | etc.
+  amount: number;                   // Smallest currency unit (cents/paise)
+  amountDecimal: string;            // Display format: "254.90"
+  currency: string;
+  description: string;
+  sourceAccountId: string | null;
+  destinationAccountId: string | null;
+  correlationId: string;            // Groups related events
+  isReversal: boolean;
+  parentId: string | null;          // Parent transaction (for refunds)
+  metadata: Record<string, unknown>;
+  createdAt: string;
+  postedAt: string | null;
+}
 ```
 
-## Reversals
+**Transaction types:** `"credit"` | `"debit"` | `"transfer"`
 
-Reverse a posted transaction to undo the balance changes:
+**Transaction statuses:** `"pending"` | `"inflight"` | `"posted"` | `"expired"` | `"voided"` | `"reversed"`
 
-```ts
-const reversal = await summa.transactions.reverse({
-  transactionId: txn.id,
-  reason: "Customer refund",
-});
-```
+## Operations
 
-## Idempotency
-
-Use idempotency keys to safely retry operations:
+<Tabs items={["Transfer", "Credit", "Debit", "Multi-destination"]}>
+<Tab value="Transfer">
+Move funds between two user accounts:
 
 ```ts
-const txn = await summa.transactions.post({
+const txn = await summa.transactions.transfer({
   sourceHolderId: "user_123",
   destinationHolderId: "merchant_1",
   amount: 50_00,
-  currency: "USD",
+  reference: "order_abc",
+  description: "Payment for Order #ABC",
+  category: "payment",
+  metadata: { orderId: "abc" },
+  idempotencyKey: "pay_abc_v1",
+});
+```
+
+Creates two entry records: a DEBIT on the source account and a CREDIT on the destination.
+</Tab>
+<Tab value="Credit">
+Add funds to a user account. Funds come from a system account (default: `@World`):
+
+```ts
+const txn = await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "deposit_001",
+  description: "Bank transfer deposit",
+  sourceSystemAccount: "@Revenue",  // Optional — defaults to @World
+  idempotencyKey: "dep_001",
+});
+```
+</Tab>
+<Tab value="Debit">
+Remove funds from a user account. Funds go to a system account (default: `@World`):
+
+```ts
+const txn = await summa.transactions.debit({
+  holderId: "user_123",
+  amount: 5_00,
+  reference: "fee_001",
+  description: "Monthly platform fee",
+  destinationSystemAccount: "@Fees",  // Optional — defaults to @World
+  allowOverdraft: false,
+  idempotencyKey: "fee_001",
+});
+```
+</Tab>
+<Tab value="Multi-destination">
+Split a payment across multiple recipients in a single atomic transaction:
+
+```ts
+const txn = await summa.transactions.multiTransfer({
+  sourceHolderId: "user_123",
+  amount: 100_00,
+  destinations: [
+    { holderId: "merchant_1", amount: 90_00 },
+    { holderId: "affiliate_1", amount: 5_00 },
+    { systemAccount: "@Fees", amount: 5_00 },
+  ],
+  reference: "marketplace_pay_001",
+  description: "Marketplace order payout",
+});
+```
+
+Each destination can be a `holderId` (user account) or `systemAccount` (platform account). If one destination omits `amount`, it receives the remainder.
+</Tab>
+</Tabs>
+
+## Refunds
+
+Refund a posted transaction to reverse the balance changes:
+
+<Tabs items={["Full refund", "Partial refund"]}>
+<Tab value="Full refund">
+```ts
+const refund = await summa.transactions.refund({
+  transactionId: txn.id,
+  reason: "Customer refund — item not received",
+});
+```
+</Tab>
+<Tab value="Partial refund">
+```ts
+const partial = await summa.transactions.refund({
+  transactionId: txn.id,
+  reason: "Partial refund — 1 of 3 items returned",
+  amount: 25_00,
+  idempotencyKey: "refund_abc_partial",
+});
+```
+</Tab>
+</Tabs>
+
+Refunds create a new transaction with `isReversal: true` and `parentId` pointing to the original.
+
+## Idempotency
+
+Use idempotency keys to safely retry operations across network failures:
+
+```ts
+const txn = await summa.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
   reference: "order_abc",
   idempotencyKey: "pay_order_abc_v1",
 });
 ```
 
-Retrying with the same key returns the original result without double-posting.
+<Callout type="info" title="How idempotency works">
+  If you retry with the same `idempotencyKey`, Summa returns the original result without executing the transaction again. Keys expire after `advanced.idempotencyTTL` (default: 24 hours).
+</Callout>
 
-## System Accounts
+<Callout type="warn" title="Duplicate key with different params">
+  A duplicate key with *different* parameters throws a `DUPLICATE` error (HTTP 409).
+</Callout>
 
-System accounts represent your platform's own accounts (revenue, fees,
-float, etc.):
+## Listing Transactions
 
 ```ts
-// Transactions can reference system accounts
-const txn = await summa.transactions.post({
+const result = await summa.transactions.list({
+  holderId: "user_123",
+  page: 1,
+  perPage: 20,
+  type: "transfer",
+  status: "posted",
+  category: "payment",
+  dateFrom: "2025-01-01",
+  dateTo: "2025-01-31",
+  amountMin: 10_00,
+  amountMax: 500_00,
+  sortBy: "createdAt",
+});
+
+// result.transactions — LedgerTransaction[]
+// result.hasMore      — boolean
+// result.total        — number (optional)
+```
+
+## Getting a Transaction
+
+```ts
+const txn = await summa.transactions.get(transactionId);
+```
+
+## Categories
+
+Categories let you segment transactions for reporting and velocity limits:
+
+```ts
+// Tag transactions with a category
+await summa.transactions.transfer({
   sourceHolderId: "user_123",
-  destinationSystemAccountId: "platform_fees",
-  amount: 2_50, // $2.50 fee
-  currency: "USD",
-  reference: "fee_order_abc",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  reference: "order_001",
+  category: "marketplace",
+});
+
+// Set velocity limits per category
+await summa.limits.set({
+  holderId: "user_123",
+  limitType: "daily",
+  maxAmount: 500_00,
+  category: "marketplace",  // Only applies to marketplace transactions
 });
 ```

@@ -9,21 +9,11 @@ import type {
 	ResolvedSummaOptions,
 	SummaAdapter,
 	SummaContext,
-	SummaLogger,
 	SummaOptions,
 	SystemAccountDefinition,
 } from "@summa/core";
-
-// =============================================================================
-// DEFAULT LOGGER (console-based)
-// =============================================================================
-
-const defaultLogger: SummaLogger = {
-	info(_message: string, _data?: Record<string, unknown>) {},
-	warn(_message: string, _data?: Record<string, unknown>) {},
-	error(_message: string, _data?: Record<string, unknown>) {},
-	debug(_message: string, _data?: Record<string, unknown>) {},
-};
+import { postgresDialect } from "@summa/core/db";
+import { createConsoleLogger } from "@summa/core/logger";
 
 // =============================================================================
 // DEFAULT CONFIG VALUES
@@ -49,7 +39,7 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 		typeof options.database === "function" ? options.database() : options.database;
 
 	// Resolve logger
-	const logger: SummaLogger = options.logger ?? defaultLogger;
+	const logger = options.logger ?? createConsoleLogger();
 
 	// Resolve system accounts — normalize to Record<string, string>
 	const systemAccounts: Record<string, string> = { world: "@World" };
@@ -75,8 +65,12 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 		advanced,
 	};
 
+	// Resolve dialect from adapter options, default to postgres
+	const dialect = adapter.options?.dialect ?? postgresDialect;
+
 	return {
 		adapter,
+		dialect,
 		options: resolvedOptions,
 		logger,
 		plugins: options.plugins ?? [],

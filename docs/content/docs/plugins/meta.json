@@ -1,0 +1,18 @@
+{
+	"title": "Plugins",
+	"icon": "PuzzlePiece",
+	"pages": [
+		"audit-log",
+		"reconciliation",
+		"snapshots",
+		"velocity-limits",
+		"outbox",
+		"hot-accounts",
+		"scheduled-transactions",
+		"hold-expiry",
+		"maintenance",
+		"dlq-manager",
+		"admin",
+		"open-api"
+	]
+}

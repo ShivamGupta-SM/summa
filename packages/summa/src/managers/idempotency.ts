@@ -49,13 +49,7 @@ export async function checkIdempotencyKeyInTx(
 			if (new Date(existing.expires_at) < new Date()) {
 				// Key expired -- skip it (cleanup handled by cron, not hot path)
 			} else {
-				// Key is valid
-				if (existing.reference !== params.reference) {
-					throw SummaError.invalidArgument(
-						`Idempotency key '${params.idempotencyKey}' was used for a different transaction`,
-					);
-				}
-				// Legitimate retry -- return cached response
+				// Key is valid -- return cached response regardless of reference
 				return {
 					alreadyProcessed: true,
 					cachedResult: existing.result_data,
@@ -65,8 +59,7 @@ export async function checkIdempotencyKeyInTx(
 	}
 
 	// Check reference (permanent duplicate detection).
-	// Return as cached result instead of error -- client may be retrying
-	// after idempotency key expired but the original request succeeded.
+	// A duplicate reference without a matching idempotency key is an error.
 	const existingTxRows = await tx.raw<Record<string, unknown>>(
 		`SELECT * FROM transaction_record
      WHERE reference = $1
@@ -76,10 +69,7 @@ export async function checkIdempotencyKeyInTx(
 
 	const existingTx = existingTxRows[0];
 	if (existingTx) {
-		return {
-			alreadyProcessed: true,
-			cachedResult: existingTx,
-		};
+		throw SummaError.conflict(`Transaction with reference '${params.reference}' already exists`);
 	}
 
 	return { alreadyProcessed: false };
@@ -121,7 +111,7 @@ export async function saveIdempotencyKeyInTx(
  */
 export async function cleanupExpiredKeys(ctx: SummaContext): Promise<{ deleted: number }> {
 	const deleted = await ctx.adapter.rawMutate(
-		`DELETE FROM idempotency_key WHERE expires_at < NOW()`,
+		`DELETE FROM idempotency_key WHERE expires_at < ${ctx.dialect.now()}`,
 		[],
 	);
 

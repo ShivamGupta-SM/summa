@@ -70,7 +70,7 @@ export function reconciliation(): SummaPlugin {
 			await ctx.adapter.rawMutate(
 				`INSERT INTO reconciliation_watermark (id, last_entry_created_at, last_run_date, last_mismatches)
 				 VALUES (1, NULL, NULL, 0)
-				 ON CONFLICT (id) DO NOTHING`,
+				 ${ctx.dialect.onConflictDoNothing(["id"])}`,
 				[],
 			);
 			ctx.logger.info("Reconciliation plugin initialized");

@@ -1,0 +1,228 @@
+---
+title: Configuration
+description: All Summa configuration options, system accounts, and advanced settings.
+icon: Cog
+---
+
+## Overview
+
+Summa is configured through `createSumma()` which accepts a `SummaOptions` object:
+
+```ts
+import { createSumma } from "summa";
+
+const summa = createSumma({
+  database: adapter,          // Required — database adapter
+  currency: "USD",            // Default currency (ISO 4217)
+  systemAccounts: { ... },    // System account definitions
+  plugins: [ ... ],           // Plugin instances
+  advanced: { ... },          // Performance and safety tuning
+  logger: customLogger,       // Custom logger implementation
+  secondaryStorage: redis,    // Optional Redis/KV for rate limiting
+});
+```
+
+## `database` (required)
+
+The database adapter instance. Summa supports four adapters:
+
+```ts
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { prismaAdapter } from "@summa/prisma-adapter";
+import { kyselyAdapter } from "@summa/kysely-adapter";
+import { memoryAdapter } from "@summa/memory-adapter";
+
+// Pass a constructed adapter
+database: drizzleAdapter(db)
+
+// Or a factory function (lazy initialization)
+database: () => drizzleAdapter(drizzle(process.env.DATABASE_URL!))
+```
+
+See [Adapters](/docs/adapters/drizzle) for adapter-specific setup.
+
+## `currency`
+
+Default ISO 4217 currency code. Defaults to `"USD"`. This is used when creating accounts without an explicit currency.
+
+```ts
+currency: "INR"  // Indian Rupees — amounts in paise
+currency: "EUR"  // Euros — amounts in cents
+currency: "JPY"  // Japanese Yen — amounts in yen (no subdivision)
+```
+
+All amounts throughout Summa are in the **smallest currency unit** (cents, paise, etc.).
+
+## `systemAccounts`
+
+System accounts represent your platform's internal accounts. They are created automatically on startup and used as the counterparty for credits and debits.
+
+```ts
+// Use string shorthand (identifier = name)
+systemAccounts: {
+  World: "@World",
+  Fees: "@Fees",
+  Suspense: "@Suspense",
+}
+
+// Or use the full definition
+systemAccounts: {
+  World: { identifier: "@World", name: "World Account" },
+  Fees: { identifier: "@Fees", name: "Platform Fee Account" },
+  Revenue: { identifier: "@Revenue", name: "Revenue Account" },
+  Suspense: { identifier: "@Suspense", name: "Suspense Account" },
+}
+```
+
+When you call `transactions.credit()`, funds come from the `@World` system account by default. You can specify a different source:
+
+```ts
+await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "deposit-001",
+  sourceSystemAccount: "@Revenue",  // Specific system account
+});
+```
+
+## `plugins`
+
+Array of plugin instances. Plugins extend Summa with additional functionality through lifecycle hooks and background workers.
+
+```ts
+import {
+  auditLog,
+  reconciliation,
+  snapshots,
+  velocityLimits,
+  holdExpiry,
+  outbox,
+  dlqManager,
+  hotAccounts,
+  scheduledTransactions,
+  maintenance,
+} from "summa/plugins";
+
+plugins: [
+  auditLog(),
+  reconciliation(),
+  snapshots(),
+  velocityLimits(),
+  holdExpiry(),
+  outbox({ publisher: myPublisher }),
+  dlqManager(),
+  hotAccounts(),
+  scheduledTransactions(),
+  maintenance(),
+]
+```
+
+See [Plugins](/docs/plugins) for details on each plugin.
+
+## `advanced`
+
+Performance and safety tuning options:
+
+```ts
+advanced: {
+  hotAccountThreshold: 1000,       // Txns/min before hot account kicks in
+  idempotencyTTL: 86_400_000,      // 24 hours (ms) — idempotency key expiry
+  transactionTimeoutMs: 5000,      // Database transaction timeout
+  lockTimeoutMs: 3000,             // Advisory lock acquisition timeout
+  maxTransactionAmount: 1_000_000_000_00,  // $10M max per transaction
+  enableEventSourcing: true,       // Enable/disable event log
+  enableHashChain: true,           // Enable/disable hash chain verification
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `hotAccountThreshold` | `number` | `1000` | Transactions per minute before an account is treated as "hot" |
+| `idempotencyTTL` | `number` | `86400000` | Idempotency key expiry in milliseconds (24 hours) |
+| `transactionTimeoutMs` | `number` | `5000` | Maximum time for a database transaction |
+| `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
+| `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
+| `enableEventSourcing` | `boolean` | `true` | Write events to the event log |
+| `enableHashChain` | `boolean` | `true` | Compute SHA-256 hash chains for events |
+
+## `logger`
+
+Custom logger implementation. Defaults to `console`. Must implement:
+
+```ts
+interface SummaLogger {
+  info(message: string, data?: Record<string, unknown>): void;
+  warn(message: string, data?: Record<string, unknown>): void;
+  error(message: string, data?: Record<string, unknown>): void;
+  debug(message: string, data?: Record<string, unknown>): void;
+}
+```
+
+Example with Pino:
+
+```ts
+import pino from "pino";
+
+const pinoLogger = pino({ level: "info" });
+
+const summa = createSumma({
+  database: adapter,
+  logger: {
+    info: (msg, data) => pinoLogger.info(data, msg),
+    warn: (msg, data) => pinoLogger.warn(data, msg),
+    error: (msg, data) => pinoLogger.error(data, msg),
+    debug: (msg, data) => pinoLogger.debug(data, msg),
+  },
+});
+```
+
+## `secondaryStorage`
+
+Optional key-value store for rate limiting and caching. Used by the rate limiter when `storage: "secondary"` is configured.
+
+```ts
+interface SecondaryStorage {
+  get(key: string): Promise<string | null>;
+  set(key: string, value: string, ttl?: number): Promise<void>;
+  delete(key: string): Promise<void>;
+  increment(key: string, amount?: number): Promise<number>;
+}
+```
+
+Example with Redis:
+
+```ts
+import { createClient } from "redis";
+
+const redis = createClient({ url: process.env.REDIS_URL });
+await redis.connect();
+
+const summa = createSumma({
+  database: adapter,
+  secondaryStorage: {
+    get: (key) => redis.get(key),
+    set: (key, value, ttl) =>
+      ttl ? redis.setEx(key, ttl, value) : redis.set(key, value),
+    delete: (key) => redis.del(key).then(() => {}),
+    increment: (key, amount = 1) => redis.incrBy(key, amount),
+  },
+});
+```
+
+## CLI Configuration File
+
+For CLI commands, export your config from a file:
+
+```ts title="summa.config.ts"
+import { defineSummaConfig } from "summa/config";
+
+export default defineSummaConfig({
+  database: drizzleAdapter(db),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation()],
+});
+```
+
+The `defineSummaConfig` helper is a no-op identity function that provides TypeScript autocompletion. You can also export a `summa` named export or a `createSumma()` instance directly.
+
+See [CLI Reference](/docs/cli#config-file-discovery) for the full config discovery path.

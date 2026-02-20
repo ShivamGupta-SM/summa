@@ -6,125 +6,19 @@
 // and avoids the complexity of dynamically mapping Where[] to Kysely's
 // type-safe query builder across many tables.
 
-import type { SortBy, SummaAdapter, SummaTransactionAdapter, Where } from "@summa/core/db";
+import {
+	buildWhereClause,
+	keysToCamel,
+	keysToSnake,
+	postgresDialect,
+	type SortBy,
+	type SummaAdapter,
+	type SummaTransactionAdapter,
+	toSnakeCase,
+	type Where,
+} from "@summa/core/db";
 import type { Kysely, Transaction } from "kysely";
 import { sql } from "kysely";
-
-// =============================================================================
-// INTERNAL HELPERS
-// =============================================================================
-
-/**
- * Convert a camelCase field name to snake_case for PostgreSQL column names.
- */
-function toSnakeCase(str: string): string {
-	return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
-}
-
-/**
- * Convert a snake_case column name to camelCase for returning data.
- */
-function toCamelCase(str: string): string {
-	return str.replace(/_([a-z])/g, (_, letter: string) => letter.toUpperCase());
-}
-
-/**
- * Convert all keys in a record from camelCase to snake_case.
- */
-function keysToSnake(obj: Record<string, unknown>): Record<string, unknown> {
-	const result: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(obj)) {
-		result[toSnakeCase(key)] = value;
-	}
-	return result;
-}
-
-/**
- * Convert all keys in a record from snake_case to camelCase.
- */
-function keysToCamel(obj: Record<string, unknown>): Record<string, unknown> {
-	const result: Record<string, unknown> = {};
-	for (const [key, value] of Object.entries(obj)) {
-		result[toCamelCase(key)] = value;
-	}
-	return result;
-}
-
-/**
- * Build a SQL WHERE clause from an array of Where conditions.
- * Returns the clause string (without the WHERE keyword) and parameter values.
- * Parameter numbering starts at startIndex (for $1, $2, etc.).
- */
-function buildWhereClause(
-	where: Where[],
-	startIndex: number = 1,
-): { clause: string; params: unknown[] } {
-	if (where.length === 0) {
-		return { clause: "TRUE", params: [] };
-	}
-
-	const conditions: string[] = [];
-	const params: unknown[] = [];
-	let paramIdx = startIndex;
-
-	for (const w of where) {
-		const col = toSnakeCase(w.field);
-
-		switch (w.operator) {
-			case "eq":
-				conditions.push(`"${col}" = $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "ne":
-				conditions.push(`"${col}" != $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "gt":
-				conditions.push(`"${col}" > $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "gte":
-				conditions.push(`"${col}" >= $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "lt":
-				conditions.push(`"${col}" < $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "lte":
-				conditions.push(`"${col}" <= $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "in": {
-				const values = w.value as unknown[];
-				const placeholders = values.map((_, i) => `$${paramIdx + i}`).join(", ");
-				conditions.push(`"${col}" IN (${placeholders})`);
-				params.push(...values);
-				paramIdx += values.length;
-				break;
-			}
-			case "like":
-				conditions.push(`"${col}" LIKE $${paramIdx}`);
-				params.push(w.value);
-				paramIdx++;
-				break;
-			case "is_null":
-				conditions.push(`"${col}" IS NULL`);
-				break;
-			case "is_not_null":
-				conditions.push(`"${col}" IS NOT NULL`);
-				break;
-		}
-	}
-
-	return { clause: conditions.join(" AND "), params };
-}
 
 /**
  * Build a Kysely sql template from a raw query string with $N placeholders and params.
@@ -372,6 +266,7 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 						supportsForUpdate: true,
 						supportsReturning: true,
 						dialectName: "postgres",
+						dialect: postgresDialect,
 					},
 				};
 				return fn(txAdapter);
@@ -383,6 +278,7 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 			supportsForUpdate: true,
 			supportsReturning: true,
 			dialectName: "postgres",
+			dialect: postgresDialect,
 		},
 	};
 }

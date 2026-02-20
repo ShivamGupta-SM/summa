@@ -7,6 +7,7 @@
 import { randomUUID } from "node:crypto";
 import type { Hold, HoldDestination, HoldStatus, SummaContext } from "@summa/core";
 import { AGGREGATE_TYPES, HOLD_EVENTS, minorToDecimal, SummaError } from "@summa/core";
+import { runAfterHoldCommitHooks, runBeforeHoldCreateHooks } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { getAccountByHolder, resolveAccountForUpdate } from "./account-manager.js";
 import { checkIdempotencyKeyInTx, saveIdempotencyKeyInTx } from "./idempotency.js";
@@ -53,6 +54,8 @@ export async function createHold(
 			"Amount must be a positive integer (in smallest currency units) and not exceed maximum limit",
 		);
 	}
+
+	await runBeforeHoldCreateHooks(ctx, { holderId, amount, reference, ctx });
 
 	return await withTransactionTimeout(ctx, async (tx) => {
 		// Idempotency check INSIDE transaction
@@ -371,7 +374,7 @@ export async function commitHold(
 ): Promise<{ holdId: string; committedAmount: number; originalAmount: number }> {
 	const { holdId } = params;
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const result = await withTransactionTimeout(ctx, async (tx) => {
 		// Lock the hold record with FOR UPDATE to prevent cron race
 		const holdRows = await tx.raw<RawTransactionRow>(
 			`SELECT * FROM transaction_record
@@ -394,14 +397,7 @@ export async function commitHold(
 
 			if (!existing) throw SummaError.notFound("Hold not found");
 			if (existing.status === "expired") throw SummaError.conflict("Hold has expired");
-			if (existing.status === "posted") {
-				// Idempotent retry -- return cached committed result
-				return {
-					holdId,
-					committedAmount: Number(existing.committed_amount ?? existing.amount),
-					originalAmount: Number(existing.amount),
-				};
-			}
+			if (existing.status === "posted") throw SummaError.conflict("Hold already committed");
 			if (existing.status === "voided") throw SummaError.conflict("Hold was voided");
 			throw SummaError.conflict(`Invalid hold status: ${existing.status}`);
 		}
@@ -516,6 +512,28 @@ export async function commitHold(
          VALUES ($1, $2, $3, $4, $5, $6)`,
 				[hold.id, hold.destination_system_account_id, "CREDIT", commitAmount, hold.currency, true],
 			);
+		} else {
+			// No explicit destination -- credit the @World system account to maintain double-entry invariant
+			const worldIdentifier = ctx.options.systemAccounts.world ?? "@World";
+			const worldRows = await tx.raw<{ id: string }>(
+				`SELECT id FROM system_account WHERE identifier = $1 LIMIT 1`,
+				[worldIdentifier],
+			);
+			if (!worldRows[0]) {
+				throw SummaError.internal(`System account not found: ${worldIdentifier}`);
+			}
+			const worldId = worldRows[0].id;
+
+			await tx.raw(
+				`INSERT INTO hot_account_entry (account_id, amount, entry_type, transaction_id, status)
+         VALUES ($1, $2, $3, $4, $5)`,
+				[worldId, commitAmount, "CREDIT", hold.id, "pending"],
+			);
+			await tx.raw(
+				`INSERT INTO entry_record (transaction_id, system_account_id, entry_type, amount, currency, is_hot_account)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+				[hold.id, worldId, "CREDIT", commitAmount, hold.currency, true],
+			);
 		}
 
 		// Update hold status
@@ -560,6 +578,14 @@ export async function commitHold(
 			originalAmount: holdAmount,
 		};
 	});
+
+	await runAfterHoldCommitHooks(ctx, {
+		holdId,
+		committedAmount: result.committedAmount,
+		originalAmount: result.originalAmount,
+		ctx,
+	});
+	return result;
 }
 
 // =============================================================================
@@ -596,9 +622,7 @@ export async function voidHold(
 			const existing = existingRows[0];
 
 			if (!existing) throw SummaError.notFound("Hold not found");
-			if (existing.status === "voided") {
-				return { holdId, amount: Number(existing.amount) };
-			}
+			if (existing.status === "voided") throw SummaError.conflict("Hold already voided");
 			if (existing.status === "posted") throw SummaError.conflict("Hold already committed");
 			throw SummaError.conflict(`Invalid hold status: ${existing.status}`);
 		}
@@ -673,8 +697,8 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
            FROM transaction_record
            WHERE id = $1
              AND status = 'inflight'
-             AND hold_expires_at < NOW()
-           FOR UPDATE SKIP LOCKED`,
+             AND hold_expires_at < ${ctx.dialect.now()}
+           ${ctx.dialect.forUpdateSkipLocked()}`,
 					[candidate.id],
 				);
 

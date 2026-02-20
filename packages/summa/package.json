@@ -31,6 +31,51 @@
       "dev-source": "./src/db/index.ts",
       "types": "./dist/db/index.d.mts",
       "default": "./dist/db/index.mjs"
+    },
+    "./config": {
+      "dev-source": "./src/config/index.ts",
+      "types": "./dist/config/index.d.mts",
+      "default": "./dist/config/index.mjs"
+    },
+    "./error": {
+      "dev-source": "./src/error/index.ts",
+      "types": "./dist/error/index.d.mts",
+      "default": "./dist/error/index.mjs"
+    },
+    "./api": {
+      "dev-source": "./src/api/index.ts",
+      "types": "./dist/api/index.d.mts",
+      "default": "./dist/api/index.mjs"
+    },
+    "./api/hono": {
+      "dev-source": "./src/api/hono.ts",
+      "types": "./dist/api/hono.d.mts",
+      "default": "./dist/api/hono.mjs"
+    },
+    "./api/express": {
+      "dev-source": "./src/api/express.ts",
+      "types": "./dist/api/express.d.mts",
+      "default": "./dist/api/express.mjs"
+    },
+    "./api/fetch": {
+      "dev-source": "./src/api/fetch.ts",
+      "types": "./dist/api/fetch.d.mts",
+      "default": "./dist/api/fetch.mjs"
+    },
+    "./api/next": {
+      "dev-source": "./src/api/next.ts",
+      "types": "./dist/api/next.d.mts",
+      "default": "./dist/api/next.mjs"
+    },
+    "./api/fastify": {
+      "dev-source": "./src/api/fastify.ts",
+      "types": "./dist/api/fastify.d.mts",
+      "default": "./dist/api/fastify.mjs"
+    },
+    "./webhooks": {
+      "dev-source": "./src/webhooks/index.ts",
+      "types": "./dist/webhooks/index.d.mts",
+      "default": "./dist/webhooks/index.mjs"
     }
   },
   "files": [

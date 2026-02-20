@@ -20,6 +20,7 @@ export interface LedgerTransaction {
 	description: string;
 	sourceAccountId: string | null;
 	destinationAccountId: string | null;
+	correlationId: string;
 	isReversal: boolean;
 	parentId: string | null;
 	metadata: Record<string, unknown>;

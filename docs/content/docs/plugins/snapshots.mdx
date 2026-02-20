@@ -1,0 +1,50 @@
+---
+title: Snapshots
+description: Point-in-time account balance snapshots for historical reporting.
+icon: Camera
+---
+
+## Overview
+
+The snapshots plugin periodically captures the balance state of all accounts, enabling historical balance queries and end-of-month reporting.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { snapshots } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [snapshots()],
+});
+```
+
+## Querying Snapshots
+
+```ts
+// Get balance at a specific point in time
+const snapshot = await summa.snapshots.getAt({
+  accountId: account.id,
+  date: new Date("2025-01-15"),
+});
+
+// Get end-of-month balance
+const eom = await summa.snapshots.getEndOfMonth({
+  accountId: account.id,
+  year: 2025,
+  month: 1,
+});
+```
+
+## How It Works
+
+A background worker runs daily (configurable) and captures the current balance of all accounts that had recent activity. Snapshots are stored in a dedicated table and can be queried for any historical date.
+
+## Use Cases
+
+- **Monthly statements** — get account balance at end of each month
+- **Regulatory reporting** — point-in-time balance for compliance
+- **Analytics** — track balance trends over time
+- **Dispute resolution** — prove what the balance was at a specific date

@@ -1,7 +1,7 @@
 import * as p from "@clack/prompts";
 import { Command } from "commander";
 import pc from "picocolors";
-import { findConfigFile, getConfig } from "../utils/get-config.js";
+import { findConfigFile, getConfig, type ResolvedSummaConfig } from "../utils/get-config.js";
 
 export const statusCommand = new Command("status")
 	.description("Show current summa system status")
@@ -25,12 +25,70 @@ export const statusCommand = new Command("status")
 			);
 		}
 
-		// Try loading config for DATABASE_URL extraction
+		// Load config for DATABASE_URL extraction, plugin info, etc.
 		let configDbUrl: string | undefined;
+		let loaded: ResolvedSummaConfig | null = null;
+
 		if (configFile) {
-			const loaded = await getConfig({ cwd, configPath: configFlag });
+			loaded = await getConfig({ cwd, configPath: configFlag });
 			if (loaded) {
 				p.log.success(`  Config loaded: ${pc.green("ok")}`);
+
+				// Extract adapter info
+				const db = loaded.options.database;
+				const adapterId = typeof db === "object" && "id" in db ? (db as { id: string }).id : null;
+				if (adapterId) {
+					p.log.info(`  Adapter:       ${pc.cyan(adapterId)}`);
+				}
+
+				// Currency
+				p.log.info(`  Currency:      ${pc.cyan(loaded.options.currency ?? "USD")}`);
+
+				// System accounts from config
+				const sysAccts = loaded.options.systemAccounts;
+				if (sysAccts && typeof sysAccts === "object") {
+					const entries = Object.entries(sysAccts);
+					if (entries.length > 0) {
+						const labels = entries
+							.map(([key, val]) => {
+								const identifier =
+									typeof val === "string"
+										? val
+										: ((val as { identifier?: string })?.identifier ?? key);
+								return `${key}(${pc.dim(identifier)})`;
+							})
+							.join(", ");
+						p.log.info(`  Sys accounts:  ${labels}`);
+					}
+				}
+
+				// Plugins
+				const plugins = loaded.options.plugins ?? [];
+				if (plugins.length > 0) {
+					const pluginNames = plugins.map((pl) => pc.cyan(pl.id)).join(", ");
+					p.log.info(`  Plugins:       ${pluginNames}`);
+				} else {
+					p.log.info(`  Plugins:       ${pc.dim("none")}`);
+				}
+
+				// Advanced options (only if non-default)
+				const adv = loaded.options.advanced;
+				if (adv) {
+					const advParts: string[] = [];
+					if (adv.hotAccountThreshold != null)
+						advParts.push(`hotThreshold=${adv.hotAccountThreshold}`);
+					if (adv.idempotencyTTL != null) advParts.push(`idempotencyTTL=${adv.idempotencyTTL}ms`);
+					if (adv.enableEventSourcing === false) advParts.push("eventSourcing=off");
+					if (adv.enableHashChain === false) advParts.push("hashChain=off");
+					if (advParts.length > 0) {
+						p.log.info(`  Advanced:      ${pc.dim(advParts.join(", "))}`);
+					}
+				}
+
+				// Try to extract DB URL from config database object
+				if (typeof db === "object" && "connectionString" in db) {
+					configDbUrl = db.connectionString as string;
+				}
 			} else {
 				p.log.warning(
 					`  Config loaded: ${pc.yellow("failed")} ${pc.dim("could not resolve summa options")}`,

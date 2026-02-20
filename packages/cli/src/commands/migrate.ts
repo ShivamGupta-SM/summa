@@ -1,54 +1,747 @@
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import * as p from "@clack/prompts";
+import type { ColumnDefinition, TableDefinition } from "@summa/core";
 import { Command } from "commander";
 import pc from "picocolors";
+import { getConfig } from "../utils/get-config.js";
 
-const generateCommand = new Command("generate")
-	.description("Generate SQL migration files from the summa Drizzle schema")
-	.option("-o, --out <dir>", "Output directory for migrations", "./drizzle")
-	.action((options: { out: string }) => {
-		p.intro(pc.bgCyan(pc.black(" summa migrate generate ")));
+// =============================================================================
+// SQL GENERATION HELPERS
+// =============================================================================
 
-		p.note(
-			[
-				"Summa uses Drizzle ORM for database schema management.",
-				"",
-				`${pc.bold("1.")} Ensure your ${pc.cyan("drizzle.config.ts")} includes the summa schema:`,
-				"",
-				`   ${pc.dim('import { schema } from "@summa/drizzle-adapter/schema";')}`,
-				"",
-				`${pc.bold("2.")} Generate migrations:`,
-				"",
-				`   ${pc.cyan(`npx drizzle-kit generate --out ${options.out}`)}`,
-				"",
-				`${pc.bold("3.")} Apply migrations:`,
-				"",
-				`   ${pc.cyan("npx drizzle-kit push")}`,
-				`   ${pc.dim("# or: npx drizzle-kit migrate")}`,
-			].join("\n"),
-			"Migration guide",
+function toSnakeCase(str: string): string {
+	return str.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`);
+}
+
+function pgType(col: ColumnDefinition): string {
+	switch (col.type) {
+		case "uuid":
+			return "UUID";
+		case "text":
+			return "TEXT";
+		case "bigint":
+			return "BIGINT";
+		case "integer":
+			return "INTEGER";
+		case "boolean":
+			return "BOOLEAN";
+		case "timestamp":
+			return "TIMESTAMPTZ";
+		case "jsonb":
+			return "JSONB";
+		case "serial":
+			return "SERIAL";
+		default:
+			return "TEXT";
+	}
+}
+
+function columnSQL(colName: string, col: ColumnDefinition): string {
+	const parts = [colName, pgType(col)];
+	if (col.primaryKey) parts.push("PRIMARY KEY");
+	if (col.notNull && !col.primaryKey) parts.push("NOT NULL");
+	if (col.default) {
+		const def = col.default === "NOW()" ? "NOW()" : col.default;
+		parts.push(`DEFAULT ${def}`);
+	}
+	return `  ${parts.join(" ")}`;
+}
+
+function createTableSQL(tableName: string, def: TableDefinition): string {
+	const sqlTableName = toSnakeCase(tableName);
+	const colLines: string[] = [];
+
+	for (const [colName, col] of Object.entries(def.columns)) {
+		colLines.push(columnSQL(colName, col));
+	}
+
+	let sql = `CREATE TABLE IF NOT EXISTS ${sqlTableName} (\n${colLines.join(",\n")}\n);\n`;
+
+	if (def.indexes) {
+		for (const idx of def.indexes) {
+			const cols = idx.columns.join(", ");
+			const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
+			sql += `CREATE ${kind} IF NOT EXISTS ${idx.name} ON ${sqlTableName} (${cols});\n`;
+		}
+	}
+
+	return sql;
+}
+
+function dropTableSQL(tableName: string): string {
+	return `DROP TABLE IF EXISTS ${toSnakeCase(tableName)} CASCADE;\n`;
+}
+
+function dropIndexSQL(indexName: string): string {
+	return `DROP INDEX IF EXISTS ${indexName};\n`;
+}
+
+interface MigrationPlan {
+	tablesToCreate: Array<{ name: string; sqlName: string; def: TableDefinition }>;
+	tablesToAlter: Array<{
+		name: string;
+		sqlName: string;
+		columnsToAdd: Array<{ name: string; col: ColumnDefinition }>;
+	}>;
+	indexesToCreate: Array<{ sql: string; name: string }>;
+}
+
+async function buildMigrationPlan(
+	client: import("pg").Client,
+	tables: Record<string, TableDefinition>,
+): Promise<MigrationPlan> {
+	const plan: MigrationPlan = {
+		tablesToCreate: [],
+		tablesToAlter: [],
+		indexesToCreate: [],
+	};
+
+	for (const [tableName, def] of Object.entries(tables)) {
+		const sqlName = toSnakeCase(tableName);
+
+		const tableExists = await client.query(
+			`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
+			[sqlName],
 		);
 
-		p.outro(pc.dim("Run these commands to generate and apply your schema changes."));
+		if (tableExists.rows.length === 0) {
+			plan.tablesToCreate.push({ name: tableName, sqlName, def });
+		} else {
+			const existingCols = await client.query(
+				`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
+				[sqlName],
+			);
+			const existingColNames = new Set(existingCols.rows.map((r) => String(r.column_name)));
+
+			const columnsToAdd: Array<{ name: string; col: ColumnDefinition }> = [];
+			for (const [colName, col] of Object.entries(def.columns)) {
+				if (!existingColNames.has(colName)) {
+					columnsToAdd.push({ name: colName, col });
+				}
+			}
+
+			if (columnsToAdd.length > 0) {
+				plan.tablesToAlter.push({ name: tableName, sqlName, columnsToAdd });
+			}
+
+			if (def.indexes) {
+				const existingIndexes = await client.query(
+					`SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1`,
+					[sqlName],
+				);
+				const existingIdxNames = new Set(existingIndexes.rows.map((r) => String(r.indexname)));
+
+				for (const idx of def.indexes) {
+					if (!existingIdxNames.has(idx.name)) {
+						const cols = idx.columns.join(", ");
+						const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
+						plan.indexesToCreate.push({
+							sql: `CREATE ${kind} IF NOT EXISTS ${idx.name} ON ${sqlName} (${cols});`,
+							name: idx.name,
+						});
+					}
+				}
+			}
+		}
+	}
+
+	return plan;
+}
+
+function planIsEmpty(plan: MigrationPlan): boolean {
+	return (
+		plan.tablesToCreate.length === 0 &&
+		plan.tablesToAlter.length === 0 &&
+		plan.indexesToCreate.length === 0
+	);
+}
+
+// =============================================================================
+// MIGRATION TRACKING HELPERS
+// =============================================================================
+
+const MIGRATIONS_TABLE = "_summa_migrations";
+
+async function ensureMigrationsTable(client: import("pg").Client): Promise<void> {
+	await client.query(`
+		CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
+			id SERIAL PRIMARY KEY,
+			name TEXT NOT NULL,
+			hash TEXT NOT NULL,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			CONSTRAINT uq_summa_migration_name UNIQUE (name)
+		);
+	`);
+}
+
+function hashSQL(sql: string): string {
+	return createHash("sha256").update(sql).digest("hex").slice(0, 16);
+}
+
+function planToUpSQL(plan: MigrationPlan): string {
+	const parts: string[] = [];
+
+	for (const table of plan.tablesToCreate) {
+		parts.push(createTableSQL(table.name, table.def));
+	}
+
+	for (const alter of plan.tablesToAlter) {
+		for (const col of alter.columnsToAdd) {
+			const colType = pgType(col.col);
+			const notNull = col.col.notNull ? " NOT NULL" : "";
+			const def = col.col.default
+				? ` DEFAULT ${col.col.default === "NOW()" ? "NOW()" : col.col.default}`
+				: "";
+			parts.push(
+				`ALTER TABLE ${alter.sqlName} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
+			);
+		}
+	}
+
+	for (const idx of plan.indexesToCreate) {
+		parts.push(idx.sql);
+	}
+
+	return parts.join("\n\n");
+}
+
+function planToDownSQL(plan: MigrationPlan): string {
+	const parts: string[] = [];
+
+	// Reverse order: drop indexes first, then columns, then tables
+	for (const idx of plan.indexesToCreate) {
+		parts.push(dropIndexSQL(idx.name));
+	}
+
+	for (const alter of plan.tablesToAlter) {
+		for (const col of alter.columnsToAdd) {
+			parts.push(`ALTER TABLE ${alter.sqlName} DROP COLUMN IF EXISTS ${col.name};`);
+		}
+	}
+
+	for (const table of [...plan.tablesToCreate].reverse()) {
+		parts.push(dropTableSQL(table.name));
+	}
+
+	return parts.join("\n\n");
+}
+
+interface LoadedContext {
+	dbUrl: string;
+	pg: typeof import("pg");
+	tables: Record<string, TableDefinition>;
+}
+
+async function loadContext(command: Command, urlOption?: string): Promise<LoadedContext | null> {
+	const parent = command.parent?.parent;
+	const cwd: string = parent?.opts().cwd ?? process.cwd();
+	const configFlag: string | undefined = parent?.opts().config;
+
+	let configDbUrl: string | undefined;
+	const config = await getConfig({ cwd, configPath: configFlag });
+	if (config?.options) {
+		const db = config.options.database;
+		if (typeof db === "object" && "connectionString" in db) {
+			configDbUrl = db.connectionString as string;
+		}
+	}
+
+	const dbUrl = urlOption ?? configDbUrl ?? process.env.DATABASE_URL;
+	if (!dbUrl) {
+		p.log.error(`${pc.red("No DATABASE_URL")} ${pc.dim("set DATABASE_URL or use --url")}`);
+		process.exitCode = 1;
+		return null;
+	}
+
+	let pg: typeof import("pg");
+	try {
+		pg = await import("pg");
+	} catch {
+		p.log.error(`${pc.red("pg not installed")} ${pc.dim("run: pnpm add -D pg")}`);
+		process.exitCode = 1;
+		return null;
+	}
+
+	let tables: Record<string, TableDefinition>;
+	try {
+		const mod = await import("summa/db" as string);
+		const getSummaTables = mod.getSummaTables as (opts?: {
+			plugins?: unknown[];
+		}) => Record<string, TableDefinition>;
+		tables = getSummaTables(config?.options ? { plugins: config.options.plugins } : undefined);
+	} catch {
+		p.log.error(
+			`${pc.red("Could not load summa schema.")} ${pc.dim("Ensure summa is installed.")}`,
+		);
+		process.exitCode = 1;
+		return null;
+	}
+
+	return { dbUrl, pg, tables };
+}
+
+// =============================================================================
+// PUSH COMMAND — apply schema directly to database
+// =============================================================================
+
+const pushCommand = new Command("push")
+	.description("Push summa schema directly to the database")
+	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
+	.option("-y, --yes", "Skip confirmation prompt")
+	.action(async (options: { url?: string; yes?: boolean }) => {
+		p.intro(pc.bgCyan(pc.black(" summa migrate push ")));
+
+		const ctx = await loadContext(pushCommand, options.url);
+		if (!ctx) return;
+
+		const s = p.spinner();
+		s.start("Loading schema definitions...");
+		s.stop(`Loaded ${pc.cyan(String(Object.keys(ctx.tables).length))} table definitions`);
+
+		const client = new ctx.pg.default.Client({ connectionString: ctx.dbUrl });
+
+		try {
+			await client.connect();
+
+			// Ensure migrations table exists
+			await ensureMigrationsTable(client);
+
+			const s2 = p.spinner();
+			s2.start("Analyzing database schema...");
+			const plan = await buildMigrationPlan(client, ctx.tables);
+			s2.stop("Schema analysis complete");
+
+			if (planIsEmpty(plan)) {
+				p.log.success(`${pc.green("Schema is up to date.")} No changes needed.`);
+				p.outro(pc.dim("Database schema matches summa definitions."));
+				return;
+			}
+
+			// Show plan
+			p.log.step(pc.bold("Migration Plan"));
+
+			if (plan.tablesToCreate.length > 0) {
+				p.log.info(
+					`  ${pc.green("CREATE")} ${plan.tablesToCreate.map((t) => pc.cyan(t.sqlName)).join(", ")}`,
+				);
+			}
+
+			for (const alter of plan.tablesToAlter) {
+				const cols = alter.columnsToAdd.map((c) => pc.magenta(c.name)).join(", ");
+				p.log.info(`  ${pc.yellow("ALTER")}  ${pc.cyan(alter.sqlName)} add columns: ${cols}`);
+			}
+
+			if (plan.indexesToCreate.length > 0) {
+				p.log.info(`  ${pc.blue("INDEX")}  ${plan.indexesToCreate.length} index(es) to create`);
+			}
+
+			// Confirm
+			if (!options.yes) {
+				const confirmed = await p.confirm({
+					message: "Apply these changes to the database?",
+					initialValue: false,
+				});
+
+				if (p.isCancel(confirmed) || !confirmed) {
+					p.cancel("Migration cancelled.");
+					process.exit(0);
+				}
+			}
+
+			// Execute
+			const s3 = p.spinner();
+			s3.start("Applying migrations...");
+
+			let statementsRun = 0;
+
+			for (const table of plan.tablesToCreate) {
+				const sql = createTableSQL(table.name, table.def);
+				for (const stmt of sql.split(";\n").filter(Boolean)) {
+					await client.query(`${stmt};`);
+					statementsRun++;
+				}
+			}
+
+			for (const alter of plan.tablesToAlter) {
+				for (const col of alter.columnsToAdd) {
+					const colType = pgType(col.col);
+					const notNull = col.col.notNull ? " NOT NULL" : "";
+					const def = col.col.default
+						? ` DEFAULT ${col.col.default === "NOW()" ? "NOW()" : col.col.default}`
+						: "";
+					await client.query(
+						`ALTER TABLE ${alter.sqlName} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
+					);
+					statementsRun++;
+				}
+			}
+
+			for (const idx of plan.indexesToCreate) {
+				await client.query(idx.sql);
+				statementsRun++;
+			}
+
+			// Record migration in tracking table
+			const upSQL = planToUpSQL(plan);
+			const migrationName = `push_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+			await client.query(`INSERT INTO ${MIGRATIONS_TABLE} (name, hash) VALUES ($1, $2)`, [
+				migrationName,
+				hashSQL(upSQL),
+			]);
+
+			s3.stop(`Applied ${pc.cyan(String(statementsRun))} statement(s)`);
+			p.outro(pc.green("Migration completed successfully!"));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			p.log.error(`${pc.red("Migration failed:")} ${pc.dim(message)}`);
+			process.exitCode = 1;
+		} finally {
+			await client.end().catch(() => {});
+		}
 	});
 
-const statusSubCommand = new Command("status").description("Show pending migrations").action(() => {
-	p.intro(pc.bgCyan(pc.black(" summa migrate status ")));
+// =============================================================================
+// GENERATE SUBCOMMAND — produce SQL migration files
+// =============================================================================
 
-	p.note(
-		[
-			"To check migration status, use drizzle-kit directly:",
-			"",
-			`  ${pc.cyan("npx drizzle-kit check")}`,
-			"",
-			pc.dim("This will show any pending schema changes that need to be migrated."),
-		].join("\n"),
-		"Migration status",
-	);
+const generateSubCommand = new Command("generate")
+	.description("Generate SQL migration files")
+	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
+	.option("-o, --out <dir>", "Output directory for migrations", "./summa/migrations")
+	.action(async (options: { url?: string; out: string }) => {
+		p.intro(pc.bgCyan(pc.black(" summa migrate generate ")));
 
-	p.outro(pc.dim("Run the command above to see pending changes."));
-});
+		const ctx = await loadContext(generateSubCommand, options.url);
+		if (!ctx) return;
+
+		const client = new ctx.pg.default.Client({ connectionString: ctx.dbUrl });
+
+		try {
+			await client.connect();
+			await ensureMigrationsTable(client);
+
+			const s = p.spinner();
+			s.start("Analyzing database schema...");
+			const plan = await buildMigrationPlan(client, ctx.tables);
+			s.stop("Analysis complete");
+
+			if (planIsEmpty(plan)) {
+				p.log.success(`${pc.green("Schema is up to date.")} No migration needed.`);
+				p.outro(pc.dim("Nothing to generate."));
+				return;
+			}
+
+			const upSQL = planToUpSQL(plan);
+			const downSQL = planToDownSQL(plan);
+
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const migrationName = `${timestamp}_summa_migration`;
+			const fileName = `${migrationName}.sql`;
+
+			const outDir = resolve(process.cwd(), options.out);
+			if (!existsSync(outDir)) {
+				mkdirSync(outDir, { recursive: true });
+			}
+
+			const content = [
+				`-- Summa Migration: ${migrationName}`,
+				`-- Generated at: ${new Date().toISOString()}`,
+				`-- Hash: ${hashSQL(upSQL)}`,
+				"",
+				"-- Up",
+				upSQL,
+				"",
+				"-- Down",
+				downSQL,
+			].join("\n");
+
+			const filePath = resolve(outDir, fileName);
+			writeFileSync(filePath, content, "utf-8");
+
+			p.log.success(`Generated migration: ${pc.cyan(fileName)}`);
+
+			if (plan.tablesToCreate.length > 0) {
+				p.log.info(
+					`  ${pc.green("CREATE")} ${plan.tablesToCreate.map((t) => pc.cyan(t.sqlName)).join(", ")}`,
+				);
+			}
+			for (const alter of plan.tablesToAlter) {
+				const cols = alter.columnsToAdd.map((c) => pc.magenta(c.name)).join(", ");
+				p.log.info(`  ${pc.yellow("ALTER")}  ${pc.cyan(alter.sqlName)} add columns: ${cols}`);
+			}
+			if (plan.indexesToCreate.length > 0) {
+				p.log.info(`  ${pc.blue("INDEX")}  ${plan.indexesToCreate.length} index(es)`);
+			}
+
+			p.outro(
+				`${pc.dim("Apply with:")} ${pc.cyan(`npx summa migrate push`)} ${pc.dim("or run the SQL file directly.")}`,
+			);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			p.log.error(`${pc.red("Generate failed:")} ${pc.dim(message)}`);
+			process.exitCode = 1;
+		} finally {
+			await client.end().catch(() => {});
+		}
+	});
+
+// =============================================================================
+// STATUS SUBCOMMAND — show pending schema changes
+// =============================================================================
+
+const statusSubCommand = new Command("status")
+	.description("Show pending schema changes")
+	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
+	.action(async (options: { url?: string }) => {
+		p.intro(pc.bgCyan(pc.black(" summa migrate status ")));
+
+		const ctx = await loadContext(statusSubCommand, options.url);
+		if (!ctx) return;
+
+		const client = new ctx.pg.default.Client({ connectionString: ctx.dbUrl });
+
+		try {
+			await client.connect();
+			await ensureMigrationsTable(client);
+
+			const s = p.spinner();
+			s.start("Checking schema...");
+			const plan = await buildMigrationPlan(client, ctx.tables);
+			s.stop("Analysis complete");
+
+			if (planIsEmpty(plan)) {
+				p.log.success(`${pc.green("Schema is up to date.")} No pending changes.`);
+			} else {
+				p.log.step(pc.bold("Pending Changes"));
+
+				if (plan.tablesToCreate.length > 0) {
+					p.log.info(
+						`  ${pc.green("+")} ${plan.tablesToCreate.length} table(s) to create: ${plan.tablesToCreate.map((t) => pc.cyan(t.sqlName)).join(", ")}`,
+					);
+				}
+
+				for (const alter of plan.tablesToAlter) {
+					p.log.info(
+						`  ${pc.yellow("~")} ${pc.cyan(alter.sqlName)}: ${alter.columnsToAdd.length} column(s) to add`,
+					);
+				}
+
+				if (plan.indexesToCreate.length > 0) {
+					p.log.info(`  ${pc.blue("+")} ${plan.indexesToCreate.length} index(es) to create`);
+				}
+
+				p.log.info("");
+				p.log.info(`  Run ${pc.cyan("npx summa migrate push")} to apply these changes.`);
+			}
+
+			// Show migration history summary
+			const history = await client.query(`SELECT COUNT(*) as count FROM ${MIGRATIONS_TABLE}`);
+			const count = Number(history.rows[0].count);
+			if (count > 0) {
+				p.log.info(
+					`\n  ${pc.dim(`${count} migration(s) applied. Run`)} ${pc.cyan("npx summa migrate list")} ${pc.dim("to see history.")}`,
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			p.log.error(`${pc.red("Connection failed:")} ${pc.dim(message)}`);
+			process.exitCode = 1;
+		} finally {
+			await client.end().catch(() => {});
+		}
+
+		p.outro(pc.dim("summa migrate status complete"));
+	});
+
+// =============================================================================
+// LIST SUBCOMMAND — show applied migration history
+// =============================================================================
+
+const listSubCommand = new Command("list")
+	.description("List applied migrations")
+	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
+	.option("-n, --limit <n>", "Number of migrations to show", "20")
+	.action(async (options: { url?: string; limit: string }) => {
+		p.intro(pc.bgCyan(pc.black(" summa migrate list ")));
+
+		const ctx = await loadContext(listSubCommand, options.url);
+		if (!ctx) return;
+
+		const client = new ctx.pg.default.Client({ connectionString: ctx.dbUrl });
+
+		try {
+			await client.connect();
+			await ensureMigrationsTable(client);
+
+			const limit = Math.max(1, Number.parseInt(options.limit, 10) || 20);
+			const result = await client.query(
+				`SELECT id, name, hash, applied_at FROM ${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT $1`,
+				[limit],
+			);
+
+			if (result.rows.length === 0) {
+				p.log.info(`${pc.dim("No migrations have been applied yet.")}`);
+				p.outro(pc.dim("Run npx summa migrate push to apply the schema."));
+				return;
+			}
+
+			p.log.step(pc.bold("Applied Migrations"));
+
+			for (const row of result.rows) {
+				const date = new Date(row.applied_at).toLocaleString();
+				p.log.info(
+					`  ${pc.dim(`#${row.id}`)} ${pc.cyan(row.name)} ${pc.dim(`[${row.hash}]`)} ${pc.dim(date)}`,
+				);
+			}
+
+			const total = await client.query(`SELECT COUNT(*) as count FROM ${MIGRATIONS_TABLE}`);
+			const totalCount = Number(total.rows[0].count);
+			if (totalCount > result.rows.length) {
+				p.log.info(
+					`\n  ${pc.dim(`Showing ${result.rows.length} of ${totalCount} migrations. Use --limit to show more.`)}`,
+				);
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			p.log.error(`${pc.red("Failed:")} ${pc.dim(message)}`);
+			process.exitCode = 1;
+		} finally {
+			await client.end().catch(() => {});
+		}
+
+		p.outro(pc.dim("summa migrate list complete"));
+	});
+
+// =============================================================================
+// ROLLBACK SUBCOMMAND — undo last N migration(s) using SQL files
+// =============================================================================
+
+const rollbackSubCommand = new Command("rollback")
+	.description("Rollback last migration(s) using generated SQL files")
+	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
+	.option("-n, --steps <n>", "Number of migrations to rollback", "1")
+	.option("-d, --dir <dir>", "Directory containing migration SQL files", "./summa/migrations")
+	.option("-y, --yes", "Skip confirmation prompt")
+	.action(async (options: { url?: string; steps: string; dir: string; yes?: boolean }) => {
+		p.intro(pc.bgCyan(pc.black(" summa migrate rollback ")));
+
+		const ctx = await loadContext(rollbackSubCommand, options.url);
+		if (!ctx) return;
+
+		const client = new ctx.pg.default.Client({ connectionString: ctx.dbUrl });
+
+		try {
+			await client.connect();
+			await ensureMigrationsTable(client);
+
+			const steps = Math.max(1, Number.parseInt(options.steps, 10) || 1);
+			const result = await client.query(
+				`SELECT id, name, hash FROM ${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT $1`,
+				[steps],
+			);
+
+			if (result.rows.length === 0) {
+				p.log.info(`${pc.dim("No migrations to rollback.")}`);
+				p.outro(pc.dim("Nothing to do."));
+				return;
+			}
+
+			// Look for corresponding SQL files with -- Down sections
+			const migrationsDir = resolve(process.cwd(), options.dir);
+			let migrationFiles: string[] = [];
+			if (existsSync(migrationsDir)) {
+				migrationFiles = readdirSync(migrationsDir)
+					.filter((f) => f.endsWith(".sql"))
+					.sort();
+			}
+
+			const rollbackPlans: Array<{ row: (typeof result.rows)[0]; downSQL: string | null }> = [];
+
+			for (const row of result.rows) {
+				let downSQL: string | null = null;
+
+				// Try to find the matching SQL file by hash
+				for (const file of migrationFiles) {
+					const content = readFileSync(resolve(migrationsDir, file), "utf-8");
+					if (content.includes(`Hash: ${row.hash}`)) {
+						const downMatch = content.split("-- Down\n");
+						if (downMatch.length > 1 && downMatch[1]) {
+							downSQL = downMatch[1].trim();
+						}
+						break;
+					}
+				}
+
+				rollbackPlans.push({ row, downSQL });
+			}
+
+			// Show what will be rolled back
+			p.log.step(pc.bold("Rollback Plan"));
+
+			for (const { row, downSQL } of rollbackPlans) {
+				if (downSQL) {
+					p.log.info(`  ${pc.red("ROLLBACK")} ${pc.cyan(row.name)} ${pc.dim(`[${row.hash}]`)}`);
+				} else {
+					p.log.info(
+						`  ${pc.red("ROLLBACK")} ${pc.cyan(row.name)} ${pc.yellow("(no SQL file found — record only)")}`,
+					);
+				}
+			}
+
+			if (!options.yes) {
+				const confirmed = await p.confirm({
+					message: `Rollback ${rollbackPlans.length} migration(s)?`,
+					initialValue: false,
+				});
+
+				if (p.isCancel(confirmed) || !confirmed) {
+					p.cancel("Rollback cancelled.");
+					process.exit(0);
+				}
+			}
+
+			const s = p.spinner();
+			s.start("Rolling back...");
+
+			for (const { row, downSQL } of rollbackPlans) {
+				if (downSQL) {
+					// Execute each statement in the down SQL
+					const statements = downSQL
+						.split(";\n")
+						.map((s) => s.trim())
+						.filter((s) => s.length > 0 && !s.startsWith("--"));
+
+					for (const stmt of statements) {
+						const sql = stmt.endsWith(";") ? stmt : `${stmt};`;
+						await client.query(sql);
+					}
+				}
+
+				// Remove from migration tracking
+				await client.query(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = $1`, [row.id]);
+			}
+
+			s.stop(`Rolled back ${pc.cyan(String(rollbackPlans.length))} migration(s)`);
+			p.outro(pc.green("Rollback completed successfully!"));
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			p.log.error(`${pc.red("Rollback failed:")} ${pc.dim(message)}`);
+			process.exitCode = 1;
+		} finally {
+			await client.end().catch(() => {});
+		}
+	});
+
+// =============================================================================
+// MIGRATE PARENT COMMAND
+// =============================================================================
 
 export const migrateCommand = new Command("migrate")
-	.description("Manage summa database migrations (via drizzle-kit)")
-	.addCommand(generateCommand)
-	.addCommand(statusSubCommand);
+	.description("Manage summa database schema and migrations")
+	.addCommand(pushCommand)
+	.addCommand(generateSubCommand)
+	.addCommand(statusSubCommand)
+	.addCommand(listSubCommand)
+	.addCommand(rollbackSubCommand);

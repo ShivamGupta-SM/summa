@@ -1,4 +1,25 @@
 {
 	"title": "Documentation",
-	"pages": ["index", "accounts", "transactions", "holds", "plugins"]
+	"pages": [
+		"index",
+		"getting-started",
+		"configuration",
+		"---Core Concepts---",
+		"accounts",
+		"transactions",
+		"holds",
+		"events",
+		"---Adapters---",
+		"...adapters",
+		"---Plugins---",
+		"plugins",
+		"...plugins",
+		"---Integrations---",
+		"api-reference",
+		"client-sdk",
+		"webhooks",
+		"---Reference---",
+		"cli",
+		"error-codes"
+	]
 }

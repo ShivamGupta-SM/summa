@@ -1,0 +1,76 @@
+---
+title: OpenAPI
+description: Auto-generated OpenAPI 3.1 specification for all Summa endpoints.
+icon: DocumentText
+---
+
+## Overview
+
+The OpenAPI plugin generates and serves an **OpenAPI 3.1** specification covering all core Summa endpoints and any plugin-contributed endpoints. Use it to auto-generate API documentation, client SDKs, or import into tools like Swagger UI, Redoc, or Postman.
+
+## Setup
+
+```ts
+import { openApi } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [openApi()],
+});
+```
+
+Once enabled, the spec is available at `GET /openapi.json`.
+
+## Configuration
+
+```ts
+openApi({
+  title: "My Ledger API",
+  version: "1.0.0",
+  description: "Financial ledger for the marketplace platform",
+  servers: [
+    { url: "https://api.example.com/ledger", description: "Production" },
+    { url: "http://localhost:3000/api/ledger", description: "Local" },
+  ],
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `title` | `string` | `"Summa Ledger API"` | API title in the spec |
+| `version` | `string` | `"0.1.0"` | API version |
+| `description` | `string` | `"Event-sourced double-entry financial ledger API"` | API description |
+| `servers` | `array` | `[]` | Server URLs for the spec |
+
+## Generated Spec
+
+The spec includes all core routes organized by tags:
+
+| Tag | Endpoints |
+|-----|-----------|
+| **System** | `GET /ok` |
+| **Accounts** | 7 endpoints (list, create, get, balance, freeze, unfreeze, close) |
+| **Transactions** | 7 endpoints (list, credit, debit, transfer, multi-transfer, refund, get) |
+| **Holds** | 6 endpoints (list all, list active, create, commit, void, get) |
+| **Limits** | 4 endpoints (set, get, remove, usage) |
+| **Events** | 3 endpoints (by aggregate, by correlation, verify) |
+| **Plugins** | Any endpoints from other plugins (e.g., admin) |
+
+Plugin-contributed endpoints (like those from the admin plugin) are automatically included under the **Plugins** tag.
+
+## Usage with Swagger UI
+
+```ts
+import { Hono } from "hono";
+import { swaggerUI } from "@hono/swagger-ui";
+
+const app = new Hono();
+app.route("/api/ledger", createSummaHono(summa));
+
+// Serve Swagger UI
+app.get("/docs", swaggerUI({ url: "/api/ledger/openapi.json" }));
+```
+
+## Caching
+
+The spec is generated once on first request and cached in memory. Subsequent requests return the cached spec without recomputation.

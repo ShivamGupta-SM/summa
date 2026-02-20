@@ -20,6 +20,7 @@ import {
 	SummaError,
 	TRANSACTION_EVENTS,
 } from "@summa/core";
+import { runAfterAccountCreateHooks, runBeforeAccountCreateHooks } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import type { RawAccountRow, RawBalanceUpdateRow } from "./raw-types.js";
 
@@ -65,6 +66,9 @@ export async function createAccount(
 		);
 	}
 
+	const hookParams = { holderId, holderType, ctx };
+	await runBeforeAccountCreateHooks(ctx, hookParams);
+
 	// Fast path: check if account already exists (no lock needed)
 	const existingRows = await ctx.adapter.raw<RawAccountRow>(
 		`SELECT * FROM account_balance
@@ -80,8 +84,8 @@ export async function createAccount(
 	// Slow path: acquire advisory lock to prevent race conditions.
 	const lockKey = hashLockKey(`${holderId}:${holderType}`);
 
-	return await withTransactionTimeout(ctx, async (tx) => {
-		await tx.raw("SELECT pg_advisory_xact_lock($1)", [lockKey]);
+	const result = await withTransactionTimeout(ctx, async (tx) => {
+		await tx.raw(ctx.dialect.advisoryLock(lockKey), []);
 
 		// Re-check inside lock
 		const existingInLockRows = await tx.raw<RawAccountRow>(
@@ -146,6 +150,9 @@ export async function createAccount(
 
 		return rawRowToAccount(row);
 	});
+
+	await runAfterAccountCreateHooks(ctx, hookParams);
+	return result;
 }
 
 // =============================================================================
@@ -399,7 +406,7 @@ export async function closeAccount(
 
 		// Check for active holds
 		const activeHoldRows = await tx.raw<{ count: number }>(
-			`SELECT COUNT(*)::int AS count FROM transaction_record
+			`SELECT ${ctx.dialect.countAsInt()} AS count FROM transaction_record
        WHERE source_account_id = $1
          AND is_hold = true
          AND status = 'inflight'`,
@@ -656,7 +663,7 @@ export async function listAccounts(
 
 	// Count query
 	const countRows = await ctx.adapter.raw<{ total: number }>(
-		`SELECT COUNT(*)::int as total FROM account_balance ${countWhereClause}`,
+		`SELECT ${ctx.dialect.countAsInt()} as total FROM account_balance ${countWhereClause}`,
 		countParams,
 	);
 
@@ -683,6 +690,7 @@ function rawRowToAccount(row: RawAccountRow): Account {
 		pendingCredit: Number(row.pending_credit),
 		pendingDebit: Number(row.pending_debit),
 		allowOverdraft: row.allow_overdraft,
+		indicator: row.indicator ?? null,
 		freezeReason: row.freeze_reason ?? null,
 		frozenAt: row.frozen_at ? new Date(row.frozen_at) : null,
 		frozenBy: row.frozen_by ?? null,

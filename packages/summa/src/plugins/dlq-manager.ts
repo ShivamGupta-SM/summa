@@ -72,6 +72,8 @@ export function dlqManager(options?: DlqManagerOptions): SummaPlugin {
 	return {
 		id: "dlq-manager",
 
+		$Infer: {} as { FailedEvent: FailedEvent; DlqStats: DlqStats },
+
 		schema: dlqSchema,
 
 		workers: [
@@ -96,7 +98,7 @@ export function dlqManager(options?: DlqManagerOptions): SummaPlugin {
 							// Re-insert into outbox for reprocessing
 							await ctx.adapter.rawMutate(
 								`INSERT INTO outbox (id, topic, payload, status, created_at)
-								 VALUES (gen_random_uuid(), $1, $2, 'pending', NOW())`,
+								 VALUES (${ctx.dialect.generateUuid()}, $1, $2, 'pending', ${ctx.dialect.now()})`,
 								[entry.topic, JSON.stringify(entry.payload)],
 							);
 
@@ -216,7 +218,7 @@ export async function retryEvent(ctx: SummaContext, eventId: string): Promise<vo
 
 	await ctx.adapter.rawMutate(
 		`INSERT INTO outbox (id, topic, payload, status, created_at)
-		 VALUES (gen_random_uuid(), $1, $2, 'pending', NOW())`,
+		 VALUES (${ctx.dialect.generateUuid()}, $1, $2, 'pending', ${ctx.dialect.now()})`,
 		[entry.topic, JSON.stringify(entry.payload)],
 	);
 
@@ -235,7 +237,7 @@ export async function resolveEvent(
 ): Promise<void> {
 	const updated = await ctx.adapter.rawMutate(
 		`UPDATE dead_letter_queue
-		 SET resolved_at = NOW(), resolved_by = $2
+		 SET resolved_at = ${ctx.dialect.now()}, resolved_by = $2
 		 WHERE id = $1 AND resolved_at IS NULL`,
 		[params.eventId, params.resolvedBy],
 	);

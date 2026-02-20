@@ -7,6 +7,7 @@ export default defineConfig({
 		"./src/index.ts",
 		"./src/db/index.ts",
 		"./src/error/index.ts",
+		"./src/logger/index.ts",
 		"./src/utils/index.ts",
 	],
 	sourcemap: true,

@@ -1,0 +1,64 @@
+---
+title: Scheduled Transactions
+description: Schedule future and recurring transactions.
+icon: CalendarDays
+---
+
+## Overview
+
+The scheduled transactions plugin allows you to schedule transactions for future execution, supporting one-time scheduled payments and recurring patterns.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { scheduledTransactions } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [scheduledTransactions()],
+});
+```
+
+## Configuration
+
+```ts
+scheduledTransactions({
+  maxRetries: 3,           // Max execution attempts (default: 3)
+  batchSize: 100,          // Transactions processed per batch (default: 100)
+  maxBatchesPerRun: 50,    // Max batches per worker run (default: 50)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxRetries` | `number` | `3` | Maximum execution retry attempts with exponential backoff |
+| `batchSize` | `number` | `100` | Transactions processed per worker batch |
+| `maxBatchesPerRun` | `number` | `50` | Maximum batches processed per worker execution |
+
+## Scheduling a Transaction
+
+```ts
+await summa.scheduled.create({
+  sourceHolderId: "user_123",
+  destinationHolderId: "landlord",
+  amount: 1500_00,
+  reference: "rent-feb",
+  scheduledAt: new Date("2025-02-01"),
+});
+```
+
+## How It Works
+
+1. Scheduled transactions are stored with a `scheduledAt` timestamp
+2. A background worker periodically checks for transactions whose `scheduledAt` time has passed
+3. Due transactions are executed as regular transfers
+4. Failed transactions are retried with exponential backoff up to `maxRetries` times
+
+## Use Cases
+
+- **Rent payments** — schedule monthly transfers
+- **Subscription billing** — schedule recurring charges
+- **Payroll** — schedule salary disbursements
+- **Loan repayments** — schedule installment payments

@@ -65,6 +65,8 @@ export function auditLog(options?: AuditLogOptions): SummaPlugin {
 	return {
 		id: "audit-log",
 
+		$Infer: {} as { AuditLogEntry: AuditLogEntry },
+
 		schema: auditLogSchema,
 
 		operationHooks: {
@@ -72,9 +74,10 @@ export function auditLog(options?: AuditLogOptions): SummaPlugin {
 				{
 					matcher: (op) => shouldAudit(op.type),
 					handler: async ({ operation, context }) => {
+						const d = context.dialect;
 						await context.adapter.rawMutate(
 							`INSERT INTO audit_log (id, operation, params, created_at)
-							 VALUES (gen_random_uuid(), $1, $2, NOW())`,
+							 VALUES (${d.generateUuid()}, $1, $2, ${d.now()})`,
 							[operation.type, JSON.stringify(operation.params)],
 						);
 					},
@@ -89,7 +92,7 @@ export function auditLog(options?: AuditLogOptions): SummaPlugin {
 				handler: async (ctx: SummaContext) => {
 					const deleted = await ctx.adapter.rawMutate(
 						`DELETE FROM audit_log
-						 WHERE created_at < NOW() - INTERVAL '1 day' * $1`,
+						 WHERE created_at < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 day")} * $1`,
 						[retentionDays],
 					);
 					if (deleted > 0) {

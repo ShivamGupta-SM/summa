@@ -1,0 +1,80 @@
+---
+title: DLQ Manager
+description: Dead letter queue for failed event processing.
+icon: ArchiveBoxXMark
+---
+
+## Overview
+
+The DLQ (Dead Letter Queue) manager plugin captures events that fail processing after all retry attempts, allowing manual inspection, reprocessing, and resolution. Works together with the [outbox plugin](/docs/plugins/outbox).
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { dlqManager } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [dlqManager()],
+});
+```
+
+## Configuration
+
+```ts
+dlqManager({
+  maxDisplayItems: 100,    // Max items returned by list() (default: 100)
+  retryInterval: "30m",    // Auto-retry interval (default: "30m")
+  maxAutoRetries: 3,       // Max automatic retry attempts (default: 3)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxDisplayItems` | `number` | `100` | Maximum items returned by `list()` |
+| `retryInterval` | `string` | `"30m"` | Background auto-retry worker interval |
+| `maxAutoRetries` | `number` | `3` | Maximum automatic retry attempts |
+
+## Inspecting Failed Events
+
+```ts
+const failed = await summa.dlq.list({ limit: 50 });
+for (const event of failed) {
+  console.log(event.id);            // DLQ entry ID
+  console.log(event.topic);         // Event topic
+  console.log(event.error_message); // Why it failed
+  console.log(event.retry_count);   // How many times it's been retried
+  console.log(event.created_at);    // When it first failed
+}
+```
+
+## Reprocessing
+
+```ts
+// Retry a specific event
+await summa.dlq.retry({ eventId: "..." });
+
+// Retry all failed events
+await summa.dlq.retryAll();
+```
+
+## Resolving Events
+
+Mark an event as resolved (won't be retried):
+
+```ts
+await summa.dlq.resolve({
+  eventId: "...",
+  resolvedBy: "admin@example.com",
+});
+```
+
+## Type Inference
+
+```ts
+type Failed = typeof summa.$Infer.FailedEvent;
+type Stats = typeof summa.$Infer.DlqStats;
+// DlqStats: { totalUnresolved, totalResolved, byTopic, oldestUnresolved }
+```

@@ -1,9 +1,11 @@
 import type { SummaAdapter } from "../db/adapter.js";
+import type { SqlDialect } from "../db/dialect.js";
 import type { SummaLogger } from "./config.js";
 import type { SummaPlugin } from "./plugin.js";
 
 export interface SummaContext {
 	adapter: SummaAdapter;
+	dialect: SqlDialect;
 	options: ResolvedSummaOptions;
 	logger: SummaLogger;
 	plugins: SummaPlugin[];

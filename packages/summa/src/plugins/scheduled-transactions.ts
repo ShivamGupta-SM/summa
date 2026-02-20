@@ -133,7 +133,7 @@ async function processSingleScheduledTransaction(
 			const rows = await tx.raw<RawScheduledDetailRow>(
 				`SELECT * FROM scheduled_transaction
          WHERE id = $1 AND status = 'scheduled'
-         FOR UPDATE SKIP LOCKED`,
+         ${ctx.dialect.forUpdateSkipLocked()}`,
 				[scheduledId],
 			);
 
@@ -300,7 +300,7 @@ async function handleExecutionFailure(
 					`UPDATE scheduled_transaction
            SET status = 'failed',
                retry_count = $1,
-               last_retry_at = NOW()
+               last_retry_at = ${ctx.dialect.now()}
            WHERE id = $2`,
 					[currentRetryCount, scheduledId],
 				);
@@ -327,7 +327,7 @@ async function handleExecutionFailure(
 					`UPDATE scheduled_transaction
            SET status = 'scheduled',
                retry_count = $1,
-               last_retry_at = NOW()
+               last_retry_at = ${ctx.dialect.now()}
            WHERE id = $2`,
 					[currentRetryCount, scheduledId],
 				);

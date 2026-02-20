@@ -4,7 +4,12 @@
 // Enforces per-transaction, daily, and monthly limits for compliance.
 // Limits are stored in account_limit table; aggregates from account_transaction_log.
 
-import type { SummaContext, SummaTransactionAdapter } from "@summa/core";
+import type {
+	AccountLimitInfo,
+	LimitType,
+	SummaContext,
+	SummaTransactionAdapter,
+} from "@summa/core";
 import { SummaError } from "@summa/core";
 import { getAccountByHolder } from "./account-manager.js";
 import type { RawLimitRow } from "./raw-types.js";
@@ -13,18 +18,7 @@ import type { RawLimitRow } from "./raw-types.js";
 // TYPES
 // =============================================================================
 
-export type LimitType = "per_transaction" | "daily" | "monthly";
-
-export interface AccountLimitInfo {
-	id: string;
-	accountId: string;
-	limitType: LimitType;
-	maxAmount: number;
-	category: string | null;
-	enabled: boolean;
-	createdAt: Date;
-	updatedAt: Date;
-}
+export type { AccountLimitInfo, LimitType } from "@summa/core";
 
 export interface LimitCheckResult {
 	allowed: boolean;
@@ -319,16 +313,41 @@ export async function setLimit(
 
 	const account = await getAccountByHolder(ctx, holderId);
 
-	const rows = await ctx.adapter.raw<RawLimitRow>(
-		`INSERT INTO account_limit (account_id, limit_type, max_amount, category, enabled)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (account_id, limit_type, category) DO UPDATE
-     SET max_amount = $3,
-         enabled = $5,
-         updated_at = NOW()
-     RETURNING *`,
-		[account.id, limitType, maxAmount, category, enabled],
-	);
+	// Check for existing limit (handles NULL category correctly since NULL != NULL in SQL)
+	const existingRows =
+		category === null
+			? await ctx.adapter.raw<RawLimitRow>(
+					`SELECT * FROM account_limit
+       WHERE account_id = $1 AND limit_type = $2 AND category IS NULL
+       LIMIT 1`,
+					[account.id, limitType],
+				)
+			: await ctx.adapter.raw<RawLimitRow>(
+					`SELECT * FROM account_limit
+       WHERE account_id = $1 AND limit_type = $2 AND category = $3
+       LIMIT 1`,
+					[account.id, limitType, category],
+				);
+
+	let rows: RawLimitRow[];
+	if (existingRows[0]) {
+		// Update existing
+		rows = await ctx.adapter.raw<RawLimitRow>(
+			`UPDATE account_limit
+       SET max_amount = $1, enabled = $2, updated_at = NOW()
+       WHERE id = $3
+       RETURNING *`,
+			[maxAmount, enabled, existingRows[0].id],
+		);
+	} else {
+		// Insert new
+		rows = await ctx.adapter.raw<RawLimitRow>(
+			`INSERT INTO account_limit (account_id, limit_type, max_amount, category, enabled)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+			[account.id, limitType, maxAmount, category, enabled],
+		);
+	}
 
 	return rawRowToLimit(rows[0]!);
 }

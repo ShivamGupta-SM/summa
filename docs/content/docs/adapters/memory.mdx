@@ -1,0 +1,119 @@
+---
+title: Memory Adapter
+description: In-memory adapter for testing and development.
+icon: Beaker
+---
+
+## Installation
+
+```bash
+pnpm add @summa/memory-adapter
+```
+
+## Setup
+
+```ts
+import { memoryAdapter } from "@summa/memory-adapter";
+import { createSumma } from "summa";
+
+export const summa = createSumma({
+  database: memoryAdapter(),
+  currency: "USD",
+});
+```
+
+The `memoryAdapter()` takes no arguments — all data lives in memory and is lost when the process exits.
+
+## When to Use
+
+The memory adapter is designed for:
+
+- **Unit tests** — fast, isolated, no database setup needed
+- **Integration tests** — test Summa logic without PostgreSQL
+- **Development** — prototype quickly before configuring a real database
+- **CI pipelines** — run tests without database infrastructure
+
+Do **not** use the memory adapter in production. It has no durability, no concurrency safety, and no advisory lock support.
+
+## Testing Example
+
+```ts title="tests/ledger.test.ts"
+import { describe, it, expect, beforeEach } from "vitest";
+import { createSumma } from "summa";
+import { memoryAdapter } from "@summa/memory-adapter";
+
+describe("ledger", () => {
+  let summa: ReturnType<typeof createSumma>;
+
+  beforeEach(() => {
+    // Fresh instance per test — completely isolated
+    summa = createSumma({
+      database: memoryAdapter(),
+      currency: "USD",
+    });
+  });
+
+  it("should transfer between accounts", async () => {
+    await summa.accounts.create({
+      holderId: "alice", holderType: "individual", currency: "USD",
+    });
+    await summa.accounts.create({
+      holderId: "bob", holderType: "individual", currency: "USD",
+    });
+
+    // Fund alice's account
+    await summa.transactions.credit({
+      holderId: "alice",
+      amount: 100_00,
+      reference: "deposit",
+    });
+
+    // Transfer
+    await summa.transactions.transfer({
+      sourceHolderId: "alice",
+      destinationHolderId: "bob",
+      amount: 30_00,
+      reference: "payment",
+    });
+
+    const aliceBalance = await summa.accounts.getBalance("alice");
+    const bobBalance = await summa.accounts.getBalance("bob");
+
+    expect(aliceBalance.balance).toBe(70_00);
+    expect(bobBalance.balance).toBe(30_00);
+  });
+});
+```
+
+## Testing with Plugins
+
+```ts
+import { createSumma } from "summa";
+import { memoryAdapter } from "@summa/memory-adapter";
+import { velocityLimits, auditLog } from "summa/plugins";
+
+const summa = createSumma({
+  database: memoryAdapter(),
+  currency: "USD",
+  plugins: [velocityLimits(), auditLog()],
+});
+
+// Plugins work with the memory adapter — velocity limits,
+// audit logging, etc. all function normally
+```
+
+## Limitations
+
+| Capability | Supported |
+|------------|-----------|
+| Advisory locks | No (single-process only) |
+| `FOR UPDATE` row locking | No |
+| `RETURNING *` clause | Yes |
+| `raw()` SQL | No (throws error) |
+| Dialect | sqlite (simulated) |
+
+- **No advisory locks** — concurrent access is not safe
+- **No raw SQL** — `raw()` and `rawMutate()` throw `Error("Not supported in memory adapter")`
+- **No persistence** — all data is lost when the process exits
+- **No concurrency** — not safe for multi-process or multi-threaded use
+- **Transaction support** — uses copy-on-write snapshots with rollback on error (simulated atomicity)

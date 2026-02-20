@@ -1,49 +1,249 @@
 ---
 title: Holds
-description: Reserve funds with optional expiry and partial capture.
+description: Two-phase commits — reserve funds, then capture or void.
+icon: LockClosed
 ---
+
+## Overview
+
+Holds implement **two-phase commits** — reserve funds first, then decide whether to capture or release them. This is the standard pattern for payment authorizations, ride-hailing estimates, hotel reservations, and any scenario where the final amount isn't known upfront.
+
+When a hold is created, the source account's `pendingDebit` increases, reducing `availableBalance` without changing the settled `balance`.
+
+## Hold Object
+
+```ts
+interface Hold {
+  id: string;
+  sourceAccountId: string;
+  destinationAccountId: string | null;
+  amount: number;                  // Original hold amount (cents/paise)
+  amountDecimal: string;           // Display format: "100.00"
+  committedAmount: number | null;  // Null if not yet committed
+  currency: string;
+  status: HoldStatus;              // "inflight" | "posted" | "voided" | "expired"
+  reference: string;
+  description: string;
+  metadata: Record<string, unknown>;
+  expiresAt: string | null;
+  createdAt: string;
+}
+```
+
+**Hold statuses:** `"inflight"` (active) | `"posted"` (committed) | `"voided"` (released) | `"expired"` (timed out)
 
 ## Creating a Hold
 
-Holds reserve funds in a source account without transferring them yet:
-
 ```ts
 const hold = await summa.holds.create({
-  sourceHolderId: "user_123",
-  destinationHolderId: "merchant_1",
-  amount: 100_00, // $100.00
-  currency: "USD",
-  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "auth_001",
+  description: "Hotel reservation hold",
+  destinationHolderId: "hotel_1",
+  expiresInMinutes: 60 * 24 * 7,
+  category: "hotel",
+  metadata: { bookingId: "BK-123" },
+  idempotencyKey: "hold_auth_001",
 });
 ```
 
-The source account's `pendingDebit` increases by the hold amount.
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Source account holder ID.", required: true },
+    amount: { type: "number", description: "Amount to reserve (smallest currency unit).", required: true },
+    reference: { type: "string", description: "Business reference.", required: true },
+    destinationHolderId: { type: "string", description: "Target user account for commit." },
+    destinationSystemAccount: { type: "string", description: "Target system account for commit." },
+    expiresInMinutes: { type: "number", description: "Auto-expire after N minutes." },
+    category: { type: "string", description: "Category for filtering and limits." },
+    metadata: { type: "object", description: "Arbitrary key-value data." },
+    idempotencyKey: { type: "string", description: "Prevent duplicate holds." },
+  }}
+/>
 
-## Capturing a Hold
-
-Capture converts a hold into a posted transaction:
+After creation, the source account's balance reflects the reservation:
 
 ```ts
-// Full capture
-const txn = await summa.holds.capture({ holdId: hold.id });
-
-// Partial capture — only charge what was used
-const txn = await summa.holds.capture({
-  holdId: hold.id,
-  amount: 75_00, // Only capture $75.00 of the $100.00 hold
-});
+const balance = await summa.accounts.getBalance("user_123");
+// balance.balance          = 10000  (settled — unchanged)
+// balance.pendingDebit     = 10000  (reserved by hold)
+// balance.availableBalance = 0      (balance - pendingDebit)
 ```
+
+## Committing a Hold
+
+Commit converts a hold into a posted transaction, settling the funds:
+
+<Tabs items={["Full commit", "Partial commit"]}>
+<Tab value="Full commit">
+```ts
+const result = await summa.holds.commit({ holdId: hold.id });
+// result.holdId          — string
+// result.committedAmount — 10000
+// result.originalAmount  — 10000
+```
+</Tab>
+<Tab value="Partial commit">
+```ts
+const result = await summa.holds.commit({
+  holdId: hold.id,
+  amount: 75_00,  // Only capture $75 of the $100 hold
+});
+// result.committedAmount — 7500
+// result.originalAmount  — 10000
+```
+
+The remaining unreserved amount is automatically released.
+</Tab>
+</Tabs>
 
 ## Voiding a Hold
 
-Void releases the reserved funds without charging:
+Void releases all reserved funds without charging:
 
 ```ts
-await summa.holds.void({ holdId: hold.id });
+const result = await summa.holds.void({
+  holdId: hold.id,
+  reason: "Customer cancelled booking",
+});
+// result.holdId — string
+// result.amount — 10000 (amount released)
 ```
+
+After void, the hold status changes to `"voided"` and `pendingDebit` is reduced.
+
+## Multi-Destination Holds
+
+Reserve funds that will be split across multiple recipients on commit:
+
+```ts
+const hold = await summa.holds.createMultiDest({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "marketplace_hold_001",
+  destinations: [
+    { holderId: "merchant_1", amount: 90_00 },
+    { holderId: "affiliate_1", amount: 5_00 },
+    { systemAccount: "@Fees", amount: 5_00 },
+  ],
+  expiresInMinutes: 60 * 24,
+});
+```
+
+When committed, funds are distributed to all destinations in a single atomic transaction.
+
+## Getting & Listing Holds
+
+<Tabs items={["Get by ID", "Active holds", "All holds"]}>
+<Tab value="Get by ID">
+```ts
+const hold = await summa.holds.get(holdId);
+```
+</Tab>
+<Tab value="Active holds">
+```ts
+const active = await summa.holds.listActive({
+  holderId: "user_123",
+  page: 1,
+  perPage: 20,
+  category: "hotel",
+});
+// result.holds   — Hold[]
+// result.hasMore — boolean
+```
+</Tab>
+<Tab value="All holds">
+```ts
+const all = await summa.holds.listAll({
+  holderId: "user_123",
+  status: "inflight",  // "inflight" | "posted" | "voided" | "expired"
+});
+```
+</Tab>
+</Tabs>
 
 ## Expiry
 
-When a hold expires, it can no longer be captured. The reserved funds are
-automatically released when the hold is next accessed or when the scheduled
-cleanup worker runs.
+Holds with `expiresInMinutes` automatically become non-committable after expiration. To automatically void expired holds and release reserved funds, use the [holdExpiry plugin](/docs/plugins/hold-expiry):
+
+```ts
+import { holdExpiry } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [holdExpiry({ interval: "5m" })],
+});
+```
+
+Or void expired holds manually:
+
+```ts
+const result = await summa.holds.expireAll();
+console.log(result.expired); // Number of holds expired
+```
+
+## Common Patterns
+
+<Tabs items={["Payment authorization", "Ride-hailing estimate"]}>
+<Tab value="Payment authorization">
+
+<Steps>
+<Step>
+### Authorize — reserve funds
+
+```ts
+const hold = await summa.holds.create({
+  holderId: "user_123",
+  amount: 50_00,
+  reference: "auth_order_001",
+  destinationHolderId: "merchant_1",
+  expiresInMinutes: 60 * 24 * 7, // 7 days
+});
+```
+</Step>
+<Step>
+### Capture or void
+
+```ts
+// Capture — charge the customer
+await summa.holds.commit({ holdId: hold.id });
+
+// Or void — release without charging
+await summa.holds.void({ holdId: hold.id, reason: "Order cancelled" });
+```
+</Step>
+</Steps>
+
+</Tab>
+<Tab value="Ride-hailing estimate">
+
+<Steps>
+<Step>
+### Hold estimated fare
+
+```ts
+const hold = await summa.holds.create({
+  holderId: "rider_123",
+  amount: 25_00, // Estimated $25
+  reference: "ride_est_001",
+  destinationHolderId: "driver_456",
+  expiresInMinutes: 120,
+});
+```
+</Step>
+<Step>
+### Capture actual fare (partial)
+
+```ts
+await summa.holds.commit({
+  holdId: hold.id,
+  amount: 18_50, // Actual fare: $18.50
+});
+// Remaining $6.50 is automatically released
+```
+</Step>
+</Steps>
+
+</Tab>
+</Tabs>

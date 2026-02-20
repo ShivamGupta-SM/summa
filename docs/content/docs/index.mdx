@@ -1,61 +1,210 @@
 ---
-title: Getting Started
-description: Install and configure Summa in your TypeScript project.
+title: Summa
+description: Event-sourced double-entry financial ledger for TypeScript.
+icon: BookOpen
 ---
 
-## Installation
+import { Cards, Card } from "fumadocs-ui/components/card";
+
+## What is Summa?
+
+Summa is an **event-sourced double-entry financial ledger** for TypeScript. It provides a complete, production-grade foundation for building fintech applications, marketplaces, wallets, and any system that needs to track money movement with absolute accuracy.
+
+Every mutation in Summa produces an immutable event with a **SHA-256 hash chain** for tamper detection — the same cryptographic verification used in blockchain systems, but without the overhead.
+
+## Why Summa?
+
+| Challenge | How Summa solves it |
+|-----------|-------------------|
+| **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
+| **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
+| **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
+| **High-traffic accounts** | Hot account pattern with optimistic concurrency (no row-level lock contention) |
+| **Network retries** | Built-in idempotency keys prevent duplicate transactions |
+| **Partial failures** | Two-phase holds: reserve first, commit or void later |
+| **Data inconsistency** | Automated reconciliation compares balances against entry records |
+
+## Built Like a Steel Vault
+
+Summa is designed with the same invariants that banks and payment processors rely on. Every layer enforces correctness — not by convention, but by constraint.
+
+<Accordions>
+<Accordion title="Atomic Double-Entry">
+Every transaction produces exactly balanced DEBIT and CREDIT entries inside a single database transaction. If anything fails, nothing is written. The fundamental accounting equation holds at all times: the sum of all entries across the entire ledger is always exactly zero.
+</Accordion>
+<Accordion title="Immutable Event Log">
+Every state change (account created, transaction posted, hold committed) is recorded as an immutable event. Events are never updated or deleted — only appended. This gives you a complete, tamper-proof timeline of every financial operation.
+</Accordion>
+<Accordion title="Cryptographic Hash Chain">
+Each event is linked to its predecessor via SHA-256 hashing, forming a verifiable chain per aggregate. If a single event is modified, reordered, or deleted, the chain breaks — and Summa's `verify` command detects it instantly. The same integrity guarantee as a blockchain, without the consensus overhead.
+</Accordion>
+<Accordion title="Pessimistic Locking">
+Balance checks and mutations happen under PostgreSQL `SELECT ... FOR UPDATE` locks within advisory lock scopes. No race condition can cause a balance to go negative (unless explicitly allowed with `allowOverdraft`). Two concurrent transfers from the same account will never double-spend.
+</Accordion>
+<Accordion title="Idempotency by Default">
+Every mutation accepts an idempotency key. Retrying the same request with the same key and parameters returns the original result. Retrying with different parameters returns a `DUPLICATE_IDEMPOTENCY_KEY` error. Safe retries across network failures, load balancer timeouts, and client crashes.
+</Accordion>
+<Accordion title="Automated Reconciliation">
+The reconciliation plugin independently recalculates every account balance from raw entry records and compares against stored balances. Any discrepancy is flagged immediately. Run it on a schedule, or trigger it manually — it's your financial safety net.
+</Accordion>
+</Accordions>
+
+## Security
+
+Financial systems are high-value targets. Summa bakes security into every layer — from how queries are built to how events are verified.
+
+| Layer | Threat | Defense |
+|-------|--------|---------|
+| **SQL** | Injection attacks | All queries use parameterized placeholders (`$1, $2`). Column names are quoted. No string interpolation ever touches the database. |
+| **Concurrency** | Double-spending, race conditions | PostgreSQL `pg_advisory_xact_lock` + `SELECT ... FOR UPDATE` within atomic transactions. Two concurrent operations on the same account are serialized. |
+| **Replay** | Duplicate transactions from retries | Idempotency keys with configurable TTL (default 24h). Even after key expiry, unique reference constraints prevent re-execution. |
+| **Tampering** | Modified or deleted events | SHA-256 hash chain per aggregate + block-level checkpoints. A single altered event breaks the chain. `summa verify --chain` detects it. |
+| **Webhooks** | Forged payloads, replay attacks | HMAC-SHA256 signatures with timing-safe comparison (`timingSafeEqual`). Configurable tolerance window (default 5 minutes) rejects stale payloads. |
+| **Rate limiting** | Brute force, abuse | Token bucket rate limiter with 3 backends (memory, database, Redis). 4 built-in presets: standard (100/min), strict (20/min), lenient (500/min), burst (10/s). |
+| **Overdraft** | Unauthorized negative balances | `allowOverdraft` defaults to `false`. Balance is checked inside the transaction lock — no TOCTOU gap. |
+| **Account freeze** | Compromised accounts | `freeze()` immediately blocks all credits, debits, and transfers. Records actor and reason. Only `unfreeze()` restores access. |
+| **Audit trail** | Untracked access, compliance gaps | Audit log plugin records every operation with actor, params, result, and timestamp. Configurable retention (default 365 days). |
+
+## Core Architecture
+
+| Layer | Components |
+|-------|-----------|
+| **Your Application** | Your API routes, workers, cron jobs |
+| **Summa API** | `accounts` · `transactions` · `holds` · `events` · `limits` · `workers` |
+| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` |
+| **Database Adapters** | Drizzle · Prisma · Kysely · Memory |
+
+## Key Features
+
+<Cards>
+  <Card title="Double-Entry Bookkeeping" href="/docs/transactions">
+    Every transaction creates balanced DEBIT and CREDIT entries. The sum of all entries is always zero.
+  </Card>
+  <Card title="Event Sourcing" href="/docs/events">
+    Immutable append-only event log with SHA-256 hash chain verification. Full audit trail for every mutation.
+  </Card>
+  <Card title="Two-Phase Holds" href="/docs/holds">
+    Reserve funds before settlement. Supports partial capture, void, expiry, and multi-destination splits.
+  </Card>
+  <Card title="12 Built-in Plugins" href="/docs/plugins">
+    Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI, and more.
+  </Card>
+  <Card title="Idempotency" href="/docs/transactions#idempotency">
+    Built-in idempotency key support. Safe retries with no double-posting, even under network failures.
+  </Card>
+  <Card title="Multi-Destination Transfers" href="/docs/transactions#multi-destination-transfer">
+    Split payments across multiple recipients in a single atomic transaction.
+  </Card>
+  <Card title="Velocity Limits" href="/docs/plugins/velocity-limits">
+    Configurable per-transaction, daily, and monthly limits with category-based segmentation.
+  </Card>
+  <Card title="4 Database Adapters" href="/docs/adapters/drizzle">
+    Drizzle ORM, Prisma, Kysely, or in-memory for testing. Bring your own ORM.
+  </Card>
+</Cards>
+
+## Quick Example
 
 ```bash
-pnpm add summa @summa/core
+pnpm add summa @summa/core @summa/drizzle-adapter drizzle-orm
 ```
 
-You also need a database adapter. Pick one:
-
-```bash
-# Drizzle ORM (recommended)
-pnpm add @summa/drizzle-adapter drizzle-orm
-
-# Prisma
-pnpm add @summa/prisma-adapter @prisma/client
-
-# Kysely
-pnpm add @summa/kysely-adapter kysely
-
-# In-memory (for testing)
-pnpm add @summa/memory-adapter
-```
-
-## Quick Start
-
-```ts
+```ts title="src/summa.ts"
 import { createSumma } from "summa";
 import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { reconciliation, snapshots } from "summa/plugins";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
 
-const summa = createSumma({
-  adapter: drizzleAdapter(db),
+export const summa = createSumma({
+  database: drizzleAdapter(db),
   currency: "USD",
-  plugins: [reconciliation(), snapshots()],
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
 });
 ```
 
-## Core Concepts
+```ts
+// Create accounts
+await summa.accounts.create({
+  holderId: "user_123", holderType: "individual", currency: "USD",
+});
+await summa.accounts.create({
+  holderId: "merchant_1", holderType: "organization", currency: "USD",
+});
 
-Summa is an **event-sourced double-entry financial ledger**. Every mutation
-produces an immutable event with a SHA-256 hash chain for tamper detection.
+// Credit $100 (from system → user)
+await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "deposit-001",
+});
 
-- **Accounts** hold balances with credit/debit tracking
-- **Transactions** move money between accounts with double-entry guarantees
-- **Holds** reserve funds with optional expiry
-- **Events** form an append-only log with hash chain integrity
-- **Plugins** add reconciliation, snapshots, velocity limits, and more
+// Transfer $50 (user → merchant)
+await summa.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  reference: "order-001",
+});
+
+// Check balance
+const balance = await summa.accounts.getBalance("user_123");
+// => { balance: 5000, availableBalance: 5000, currency: "USD", ... }
+```
+
+## Packages
+
+<Files>
+  <File name="summa" />
+  <File name="@summa/core" />
+  <File name="@summa/cli" />
+  <File name="@summa/drizzle-adapter" />
+  <File name="@summa/prisma-adapter" />
+  <File name="@summa/kysely-adapter" />
+  <File name="@summa/memory-adapter" />
+  <File name="@summa/client" />
+</Files>
+
+| Package | Description |
+|---------|-------------|
+| `summa` | Main ledger library with all managers and plugins |
+| `@summa/core` | Core types, adapter interface, plugin interface |
+| `@summa/cli` | CLI for migrations, integrity checks, diagnostics |
+| `@summa/drizzle-adapter` | Drizzle ORM adapter |
+| `@summa/prisma-adapter` | Prisma adapter |
+| `@summa/kysely-adapter` | Kysely adapter |
+| `@summa/memory-adapter` | In-memory adapter for testing |
+| `@summa/client` | Type-safe HTTP client SDK for the Summa API |
 
 ## Next Steps
 
-- [Accounts](/docs/accounts) — create and manage accounts
-- [Transactions](/docs/transactions) — post transfers and reversals
-- [Holds](/docs/holds) — reserve and capture funds
-- [Plugins](/docs/plugins) — extend with reconciliation, snapshots, and more
+<Cards>
+  <Card title="Getting Started" href="/docs/getting-started">
+    Install, configure, and run your first transaction.
+  </Card>
+  <Card title="Configuration" href="/docs/configuration">
+    All options, system accounts, advanced settings.
+  </Card>
+  <Card title="Accounts" href="/docs/accounts">
+    Create, freeze, close, overdraft.
+  </Card>
+  <Card title="Transactions" href="/docs/transactions">
+    Transfer, credit, debit, refund, multi-destination.
+  </Card>
+  <Card title="Holds" href="/docs/holds">
+    Two-phase commits with partial capture.
+  </Card>
+  <Card title="Events" href="/docs/events">
+    Event sourcing and hash chain integrity.
+  </Card>
+  <Card title="Plugins" href="/docs/plugins">
+    Extend with 12 built-in plugins.
+  </Card>
+  <Card title="Client SDK" href="/docs/client-sdk">
+    Type-safe HTTP client for service-to-service calls.
+  </Card>
+  <Card title="CLI Reference" href="/docs/cli">
+    Migrations, integrity checks, diagnostics.
+  </Card>
+</Cards>

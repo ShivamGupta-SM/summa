@@ -1,0 +1,403 @@
+---
+title: HTTP API
+description: Expose Summa as a REST API with Hono, Express, Fastify, Next.js, or any Fetch-compatible runtime.
+icon: Server
+---
+
+## Overview
+
+Summa provides a framework-agnostic HTTP API handler that can be mounted on **Hono**, **Express**, **Fastify**, **Next.js**, or any runtime supporting the **Web Fetch API** (Deno, Bun, Cloudflare Workers). The API exposes all core operations: accounts, transactions, holds, limits, and events.
+
+## Framework Integrations
+
+### Hono
+
+```ts
+import { Hono } from "hono";
+import { createSumma } from "summa";
+import { createSummaHono } from "summa/api/hono";
+
+const summa = createSumma({ ... });
+const app = new Hono();
+
+// Mount Summa API at /api/ledger
+app.route("/api/ledger", createSummaHono(summa));
+
+export default app;
+```
+
+### Express
+
+```ts
+import express from "express";
+import { createSumma } from "summa";
+import { createSummaExpress } from "summa/api/express";
+
+const summa = createSumma({ ... });
+const app = express();
+
+app.use(express.json());
+app.use("/api/ledger", createSummaExpress(summa));
+
+app.listen(3000);
+```
+
+### Fastify
+
+```ts
+import Fastify from "fastify";
+import { createSumma } from "summa";
+import { createSummaFastify } from "summa/api/fastify";
+
+const summa = createSumma({ ... });
+const app = Fastify();
+
+app.register(createSummaFastify(summa), { prefix: "/api/ledger" });
+
+await app.listen({ port: 3000 });
+```
+
+### Next.js (App Router)
+
+```ts title="app/api/ledger/[...path]/route.ts"
+import { createSummaNextHandler } from "summa/api/next";
+import { summa } from "@/lib/summa";
+
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+});
+
+export { GET, POST, PUT, PATCH, DELETE };
+```
+
+### Fetch API (Deno / Bun / Cloudflare Workers)
+
+```ts
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { createSumma } from "summa";
+
+const summa = createSumma({ ... });
+const handler = createSummaFetchHandler(summa, { basePath: "/api/ledger" });
+
+// Deno
+Deno.serve(handler);
+
+// Bun
+export default { fetch: handler };
+
+// Cloudflare Workers
+export default { fetch: handler };
+```
+
+## Handler Options
+
+All framework integrations accept the same options:
+
+```ts
+interface ApiHandlerOptions {
+  rateLimiter?: RateLimiter;
+  rateLimitKeyExtractor?: (req: ApiRequest) => string;
+  trustedOrigins?: string[];
+}
+```
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+
+## API Endpoints
+
+### Health
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/ok` | Health check — returns `{ ok: true }` |
+
+### Accounts
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/accounts` | List accounts with pagination and filtering |
+| `POST` | `/accounts` | Create a new account |
+| `GET` | `/accounts/:holderId` | Get account by holder ID |
+| `GET` | `/accounts/:holderId/balance` | Get account balance |
+| `POST` | `/accounts/:holderId/freeze` | Freeze an account |
+| `POST` | `/accounts/:holderId/unfreeze` | Unfreeze an account |
+| `POST` | `/accounts/:holderId/close` | Close an account (with optional fund sweep) |
+
+**List accounts query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `page` | `number` | Page number (1-based) |
+| `perPage` | `number` | Items per page |
+| `status` | `string` | Filter: `"active"` \| `"frozen"` \| `"closed"` |
+| `holderType` | `string` | Filter: `"individual"` \| `"organization"` \| `"system"` |
+| `search` | `string` | Search by holder ID |
+
+### Transactions
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/transactions` | List transactions with filtering |
+| `POST` | `/transactions/credit` | Credit an account |
+| `POST` | `/transactions/debit` | Debit an account |
+| `POST` | `/transactions/transfer` | Transfer between accounts |
+| `POST` | `/transactions/multi-transfer` | Multi-destination transfer |
+| `POST` | `/transactions/refund` | Refund a transaction (full or partial) |
+| `GET` | `/transactions/:id` | Get transaction by ID |
+
+**List transactions query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `holderId` | `string` | Required — whose transactions to list |
+| `page` | `number` | Page number |
+| `perPage` | `number` | Items per page |
+| `status` | `string` | Filter: `"posted"` \| `"reversed"` \| etc. |
+| `type` | `string` | Filter: `"credit"` \| `"debit"` \| `"transfer"` |
+| `category` | `string` | Filter by category |
+| `dateFrom` | `string` | Filter: created after (ISO date) |
+| `dateTo` | `string` | Filter: created before (ISO date) |
+| `amountMin` | `number` | Filter: minimum amount |
+| `amountMax` | `number` | Filter: maximum amount |
+
+### Holds
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/holds` | List all holds with filtering |
+| `GET` | `/holds/active` | List active (inflight) holds only |
+| `POST` | `/holds` | Create a hold |
+| `POST` | `/holds/:holdId/commit` | Commit a hold (optional partial amount) |
+| `POST` | `/holds/:holdId/void` | Void a hold |
+| `GET` | `/holds/:id` | Get hold by ID |
+
+**List holds query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `holderId` | `string` | Required — whose holds to list |
+| `page` | `number` | Page number |
+| `perPage` | `number` | Items per page |
+| `status` | `string` | Filter: `"inflight"` \| `"posted"` \| `"voided"` \| `"expired"` |
+| `category` | `string` | Filter by category |
+
+### Limits
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/limits` | Set a velocity limit |
+| `GET` | `/limits/:holderId` | Get all limits for a holder |
+| `DELETE` | `/limits/:holderId` | Remove a limit |
+| `GET` | `/limits/:holderId/usage` | Get current usage (daily/monthly breakdown) |
+
+**Set limit request body:**
+
+```json
+{
+  "holderId": "user_123",
+  "limitType": "daily",
+  "maxAmount": 50000,
+  "category": "payments",
+  "enabled": true
+}
+```
+
+**Get usage query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `txnType` | `string` | Filter: `"credit"` \| `"debit"` \| `"hold"` |
+| `category` | `string` | Filter by category |
+
+### Events
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/events/:aggregateType/:aggregateId` | Get all events for an aggregate |
+| `GET` | `/events/correlation/:correlationId` | Get events by correlation ID |
+| `POST` | `/events/verify` | Verify hash chain integrity |
+
+**Verify request body:**
+
+```json
+{
+  "aggregateType": "account",
+  "aggregateId": "uuid-here"
+}
+```
+
+### Plugin Endpoints
+
+Plugins can register additional endpoints via their `endpoints` array. These are routed through the same handler automatically.
+
+**Admin plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/admin/accounts` | List all accounts (admin view) |
+| `GET` | `/admin/accounts/:holderId` | Account detail with balance, recent txns, active holds |
+| `POST` | `/admin/accounts/:holderId/freeze` | Freeze account |
+| `POST` | `/admin/accounts/:holderId/unfreeze` | Unfreeze account |
+| `POST` | `/admin/accounts/:holderId/close` | Close account |
+| `GET` | `/admin/transactions` | List all transactions (cross-account) |
+| `GET` | `/admin/transactions/:id` | Transaction detail with entry records |
+| `POST` | `/admin/transactions/:id/refund` | Refund a transaction |
+| `GET` | `/admin/holds` | List all holds |
+| `GET` | `/admin/reconciliation/status` | Get reconciliation status |
+| `POST` | `/admin/reconciliation/run` | Trigger reconciliation |
+| `GET` | `/admin/system-accounts` | List system accounts with balances |
+| `GET` | `/admin/stats` | Dashboard stats (accounts, transactions, holds) |
+
+**OpenAPI plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/openapi.json` | OpenAPI 3.1 specification |
+
+## Rate Limiting
+
+Summa includes built-in rate limiting with configurable presets:
+
+```ts
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const rateLimiter = createRateLimiter(standardRateLimit);
+
+const handler = createSummaHono(summa, {
+  rateLimiter,
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+});
+```
+
+### Presets
+
+| Preset | Max Requests | Window |
+|--------|-------------|--------|
+| `standardRateLimit` | 100 | 60 seconds |
+| `strictRateLimit` | 20 | 60 seconds |
+| `lenientRateLimit` | 500 | 60 seconds |
+| `burstRateLimit` | 10 | 1 second |
+
+### Custom Configuration
+
+```ts
+const rateLimiter = createRateLimiter({
+  window: 60,         // seconds
+  max: 200,           // max requests
+  storage: "memory",  // "memory" | "database" | "secondary"
+});
+```
+
+Rate limit state can be stored in:
+- **Memory** — in-process token bucket (default, no external dependency)
+- **Database** — PostgreSQL sliding window (shared across instances)
+- **Secondary** — Redis-compatible store with TTL (requires `secondaryStorage` config)
+
+### Response Headers
+
+When rate limiting is enabled, every response includes:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests allowed in window |
+| `X-RateLimit-Remaining` | Remaining requests in current window |
+| `X-RateLimit-Reset` | Unix timestamp when the window resets |
+| `Retry-After` | Seconds to wait (only present when rate limited) |
+
+## CSRF Protection
+
+Enable origin checking for mutating requests:
+
+```ts
+const handler = createSummaHono(summa, {
+  trustedOrigins: ["https://app.example.com", "https://admin.example.com"],
+});
+```
+
+When `trustedOrigins` is set, POST/PUT/PATCH/DELETE requests must include a valid `Origin` header. Server-to-server calls without an `Origin` header are allowed through.
+
+## Request/Response Format
+
+All requests and responses use JSON. Amounts are always in the **smallest currency unit** (cents/paise).
+
+### Example: Create Account
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/accounts \
+  -H "Content-Type: application/json" \
+  -d '{
+    "holderId": "user_123",
+    "holderType": "individual",
+    "currency": "USD"
+  }'
+```
+
+### Example: Transfer
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/transactions/transfer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceHolderId": "user_123",
+    "destinationHolderId": "merchant_1",
+    "amount": 5000,
+    "reference": "order-001"
+  }'
+```
+
+### Example: Set Velocity Limit
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/limits \
+  -H "Content-Type: application/json" \
+  -d '{
+    "holderId": "user_123",
+    "limitType": "daily",
+    "maxAmount": 100000
+  }'
+```
+
+### Example: List Transactions
+
+```bash
+curl "http://localhost:3000/api/ledger/transactions?holderId=user_123&status=posted&dateFrom=2026-01-01"
+```
+
+## Error Responses
+
+All errors return a JSON body with `code` and `message`:
+
+```json
+{
+  "error": {
+    "code": "INSUFFICIENT_BALANCE",
+    "message": "Insufficient balance: available 5000, requested 10000"
+  }
+}
+```
+
+See [Error Codes](/docs/error-codes) for the full list.
+
+## Client SDK
+
+For programmatic access from other services, use the type-safe client SDK:
+
+```ts
+import { createSummaClient } from "@summa/client";
+
+const client = createSummaClient({
+  baseURL: "http://ledger-service:3000/api/ledger",
+});
+
+const account = await client.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+});
+```
+
+See [Client SDK](/docs/client-sdk) for full documentation.

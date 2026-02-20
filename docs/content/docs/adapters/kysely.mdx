@@ -1,0 +1,222 @@
+---
+title: Kysely Adapter
+description: Use Summa with Kysely query builder and PostgreSQL.
+icon: CommandLine
+---
+
+## Installation
+
+```bash
+pnpm add @summa/kysely-adapter kysely pg
+```
+
+## Setup
+
+```ts
+import { kyselyAdapter } from "@summa/kysely-adapter";
+import { createSumma } from "summa";
+import { Kysely, PostgresDialect } from "kysely";
+import { Pool } from "pg";
+
+const db = new Kysely({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+
+export const summa = createSumma({
+  database: kyselyAdapter(db),
+  currency: "USD",
+});
+```
+
+The `kyselyAdapter()` accepts a `Kysely<any>` instance and returns a `SummaAdapter`.
+
+## Schema Generation
+
+Generate TypeScript interfaces for Kysely:
+
+```bash
+npx summa generate --adapter kysely --out src/db/summa-types.ts
+```
+
+This outputs typed interfaces and a `Database` type you can merge with your own Kysely database type. If you have plugins configured in your `summa.config.ts`, the generated types include their tables too.
+
+```ts title="src/db/summa-types.ts (generated)"
+export interface AccountBalanceTable {
+  id: string;
+  holder_id: string;
+  holder_type: string;
+  currency: string;
+  balance: number;
+  // ... more columns
+}
+
+export interface TransactionRecordTable {
+  id: string;
+  source_holder_id: string;
+  destination_holder_id: string;
+  amount: number;
+  // ... more columns
+}
+
+// ... all other table interfaces
+
+export interface Database {
+  account_balance: AccountBalanceTable;
+  transaction_record: TransactionRecordTable;
+  // ... all tables
+}
+```
+
+### Merging with Your Own Types
+
+```ts
+import type { Database as SummaDB } from "./summa-types";
+
+interface UsersTable {
+  id: string;
+  email: string;
+  name: string;
+}
+
+interface Database extends SummaDB {
+  users: UsersTable;
+}
+
+const db = new Kysely<Database>({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+```
+
+## Migrations
+
+### Option 1: Direct Push (Recommended for Getting Started)
+
+```bash
+npx summa migrate push
+```
+
+Reads your config, compares against the database via `information_schema`, and applies changes directly.
+
+### Option 2: Kysely Migrations
+
+Write Kysely migration files using the generated types as reference:
+
+```ts title="migrations/001_add_summa_tables.ts"
+import { Kysely, sql } from "kysely";
+
+export async function up(db: Kysely<any>): Promise<void> {
+  // Use `summa migrate push` instead — it handles
+  // all table creation and index management automatically
+}
+```
+
+For most projects, `summa migrate push` is the simplest approach since Summa manages its own schema.
+
+## Connection Pooling
+
+Kysely uses `pg.Pool` directly, giving you full control over connection management:
+
+```ts
+import { Pool } from "pg";
+import { Kysely, PostgresDialect } from "kysely";
+import { kyselyAdapter } from "@summa/kysely-adapter";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,                    // Maximum connections
+  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  connectionTimeoutMillis: 5000,
+});
+
+const db = new Kysely({
+  dialect: new PostgresDialect({ pool }),
+});
+
+export const summa = createSumma({
+  database: kyselyAdapter(db),
+  currency: "USD",
+});
+```
+
+## How It Works
+
+The Kysely adapter uses **raw SQL** via Kysely's `sql` template — not Kysely's type-safe query builder. This is intentional:
+
+- Summa needs full control over `WHERE` clause generation across 20+ dynamic tables
+- Financial operations require `FOR UPDATE` row-level locking
+- All mutations use `RETURNING *` for atomic read-after-write
+
+The adapter converts `$1, $2` style placeholders to Kysely's `sql` template literals via an internal `buildKyselySql()` utility.
+
+### Adapter Capabilities
+
+| Capability | Supported |
+|------------|-----------|
+| Advisory locks (`pg_advisory_xact_lock`) | Yes |
+| `FOR UPDATE` row locking | Yes |
+| `RETURNING *` clause | Yes |
+| Dialect | PostgreSQL |
+
+### Automatic Case Conversion
+
+- **Database** uses `snake_case` (PostgreSQL convention)
+- **Summa API** uses `camelCase` (JavaScript convention)
+- The adapter converts automatically — you never deal with snake_case in your code
+
+## Transactions
+
+The adapter wraps all operations in Kysely transactions. All Summa operations within a single call execute inside a PostgreSQL transaction:
+
+```ts
+// This is a single atomic operation — debit + credit + event log
+await summa.transactions.transfer({
+  sourceHolderId: "alice",
+  destinationHolderId: "bob",
+  amount: 100_00,
+  reference: "payment-001",
+});
+```
+
+## Why Kysely?
+
+Kysely is a great choice when you want:
+
+- **Full type safety** with your database queries (outside of Summa operations)
+- **No code generation** step — types are inferred from your schema definitions
+- **Minimal abstraction** — Kysely is a query builder, not a full ORM
+- **Direct SQL control** when needed, with parameterized queries
+
+## Full Example
+
+```ts
+import { createSumma } from "summa";
+import { kyselyAdapter } from "@summa/kysely-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { Kysely, PostgresDialect } from "kysely";
+import { Pool } from "pg";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,
+});
+
+const db = new Kysely({
+  dialect: new PostgresDialect({ pool }),
+});
+
+export const summa = createSumma({
+  database: kyselyAdapter(db),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Run migrations
+// npx summa migrate push
+
+// Start background workers
+await summa.workers.start();
+```

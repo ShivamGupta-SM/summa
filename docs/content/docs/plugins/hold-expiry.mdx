@@ -1,0 +1,60 @@
+---
+title: Hold Expiry
+description: Automatic expiration of uncommitted holds.
+icon: Clock
+---
+
+## Overview
+
+The hold expiry plugin automatically voids holds that have passed their expiration time, releasing reserved funds back to the account's available balance.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { holdExpiry } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [holdExpiry()],
+});
+```
+
+## Configuration
+
+```ts
+holdExpiry({
+  interval: "5m",  // Check for expired holds every 5 minutes (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `interval` | `string` | `"5m"` | Background worker check interval |
+
+## How It Works
+
+1. You create a hold with `expiresInMinutes`:
+
+```ts
+const hold = await summa.holds.create({
+  holderId: "user_123",
+  amount: 50_00,
+  reference: "auth_001",
+  expiresInMinutes: 60 * 24, // 24 hours
+});
+```
+
+2. The background worker periodically scans for holds past their expiration time
+3. Expired holds are automatically voided, releasing reserved funds
+4. A `HoldExpired` event is emitted
+
+## Manual Expiry
+
+You can also expire holds manually without the plugin:
+
+```ts
+const result = await summa.holds.expireAll();
+console.log(result.expired); // Number of holds expired
+```

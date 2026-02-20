@@ -13,6 +13,7 @@ export interface Account {
 	pendingCredit: number;
 	pendingDebit: number;
 	allowOverdraft: boolean;
+	indicator: string | null;
 	freezeReason: string | null;
 	frozenAt: Date | null;
 	frozenBy: string | null;

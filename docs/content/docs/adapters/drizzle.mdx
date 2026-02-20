@@ -1,0 +1,170 @@
+---
+title: Drizzle Adapter
+description: Use Summa with Drizzle ORM and PostgreSQL.
+icon: Drizzle
+---
+
+## Installation
+
+```bash
+pnpm add @summa/drizzle-adapter drizzle-orm pg
+```
+
+## Setup
+
+```ts
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "summa";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+export const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+```
+
+The `drizzleAdapter()` accepts any Drizzle database instance and returns a `SummaAdapter`.
+
+## Schema Generation
+
+Generate Drizzle-compatible `pgTable()` definitions for all Summa tables:
+
+```bash
+npx summa generate --adapter drizzle --out src/db/summa-schema.ts
+```
+
+This outputs `pgTable(...)` definitions you can import alongside your own Drizzle schema. If you have plugins configured in your `summa.config.ts`, the generated schema will include their tables too.
+
+```ts title="src/db/summa-schema.ts (generated)"
+import { pgTable, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+
+export const accountBalance = pgTable("account_balance", {
+  id: uuid("id").primaryKey(),
+  holderId: text("holder_id").notNull(),
+  holderType: text("holder_type").notNull(),
+  currency: text("currency").notNull(),
+  balance: bigint("balance", { mode: "number" }).notNull(),
+  // ... more columns
+}, (table) => ({
+  holderIdIdx: index("account_balance_holder_id_idx").on(table.holderId),
+}));
+
+// ... all other tables
+```
+
+## Migrations
+
+### Option 1: Direct Push (Recommended for Getting Started)
+
+```bash
+npx summa migrate push
+```
+
+This reads your config, compares against the database, and applies changes directly via `information_schema` introspection.
+
+### Option 2: Drizzle Kit Migrations
+
+```bash
+# 1. Generate Summa schema
+npx summa generate --adapter drizzle --out src/db/summa-schema.ts
+
+# 2. Generate migration files
+npx drizzle-kit generate
+
+# 3. Apply migrations
+npx drizzle-kit push
+```
+
+This gives you version-controlled migration files for production deployments.
+
+## Connection Pooling
+
+For production, always use connection pooling. The adapter works with any Drizzle instance, so configure pooling at the `drizzle()` level:
+
+```ts
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,                    // Maximum connections
+  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  connectionTimeoutMillis: 5000,
+});
+
+const db = drizzle(pool);
+
+export const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+```
+
+## How It Works
+
+Under the hood, the Drizzle adapter uses **raw SQL** via Drizzle's `sql` template — not Drizzle's type-safe query builder. This is intentional:
+
+- Summa needs full control over `WHERE` clause generation across 20+ dynamic tables
+- Financial operations require `FOR UPDATE` row-level locking
+- All mutations use `RETURNING *` for atomic read-after-write
+
+### Adapter Capabilities
+
+| Capability | Supported |
+|------------|-----------|
+| Advisory locks (`pg_advisory_xact_lock`) | Yes |
+| `FOR UPDATE` row locking | Yes |
+| `RETURNING *` clause | Yes |
+| Dialect | PostgreSQL |
+
+### Automatic Case Conversion
+
+- **Database** uses `snake_case` (PostgreSQL convention)
+- **Summa API** uses `camelCase` (JavaScript convention)
+- The adapter converts automatically — you never deal with snake_case in your code
+
+## Transactions
+
+All Summa operations execute inside a PostgreSQL transaction automatically. The adapter uses Drizzle's built-in transaction support:
+
+```ts
+// This is a single atomic operation — debit + credit + event log
+await summa.transactions.transfer({
+  sourceHolderId: "alice",
+  destinationHolderId: "bob",
+  amount: 100_00,
+  reference: "payment-001",
+});
+```
+
+## Full Example
+
+```ts
+import { createSumma } from "summa";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  max: 20,
+});
+
+const db = drizzle(pool);
+
+export const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Run migrations
+// npx summa migrate push
+
+// Start background workers
+await summa.workers.start();
+```

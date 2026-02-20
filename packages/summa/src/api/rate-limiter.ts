@@ -23,6 +23,8 @@ export interface RateLimitResult {
 	allowed: boolean;
 	remaining: number;
 	resetAt: Date;
+	/** Max operations allowed in window */
+	limit: number;
 }
 
 export interface RateLimiter {
@@ -120,19 +122,26 @@ function createMemoryRateLimiter(config: RateLimitConfig): RateLimiter {
 				allowed: bucket.tokens > 0,
 				remaining: Math.max(0, bucket.tokens),
 				resetAt: new Date(bucket.resetAt),
+				limit: config.max,
 			};
 		},
 
 		async consume(key: string): Promise<RateLimitResult> {
 			const bucket = getBucket(key);
 			if (bucket.tokens <= 0) {
-				return { allowed: false, remaining: 0, resetAt: new Date(bucket.resetAt) };
+				return {
+					allowed: false,
+					remaining: 0,
+					resetAt: new Date(bucket.resetAt),
+					limit: config.max,
+				};
 			}
 			bucket.tokens--;
 			return {
 				allowed: true,
 				remaining: bucket.tokens,
 				resetAt: new Date(bucket.resetAt),
+				limit: config.max,
 			};
 		},
 
@@ -165,6 +174,7 @@ function createDatabaseRateLimiter(config: RateLimitConfig, adapter: SummaAdapte
 				allowed: remaining > 0,
 				remaining,
 				resetAt: new Date(Date.now() + config.window * 1000),
+				limit: config.max,
 			};
 		},
 
@@ -175,6 +185,7 @@ function createDatabaseRateLimiter(config: RateLimitConfig, adapter: SummaAdapte
 					allowed: false,
 					remaining: 0,
 					resetAt: new Date(Date.now() + config.window * 1000),
+					limit: config.max,
 				};
 			}
 			await adapter.rawMutate(`INSERT INTO rate_limit_log (key, created_at) VALUES ($1, NOW())`, [
@@ -185,6 +196,7 @@ function createDatabaseRateLimiter(config: RateLimitConfig, adapter: SummaAdapte
 				allowed: true,
 				remaining,
 				resetAt: new Date(Date.now() + config.window * 1000),
+				limit: config.max,
 			};
 		},
 
@@ -213,6 +225,7 @@ function createSecondaryRateLimiter(
 				allowed: remaining > 0,
 				remaining,
 				resetAt: new Date(Date.now() + config.window * 1000),
+				limit: config.max,
 			};
 		},
 
@@ -228,6 +241,7 @@ function createSecondaryRateLimiter(
 				allowed: newCount <= config.max,
 				remaining,
 				resetAt: new Date(Date.now() + config.window * 1000),
+				limit: config.max,
 			};
 		},
 

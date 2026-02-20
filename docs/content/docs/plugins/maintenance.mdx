@@ -1,0 +1,63 @@
+---
+title: Maintenance
+description: Automated cleanup of expired data.
+icon: WrenchScrewdriver
+---
+
+## Overview
+
+The maintenance plugin runs periodic cleanup tasks: purging expired idempotency keys, removing old processed events, cleaning up stale worker leases, and other housekeeping operations.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { maintenance } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [maintenance()],
+});
+```
+
+## Configuration
+
+```ts
+maintenance({
+  idempotencyCleanupInterval: "1h",          // Clean expired keys every hour (default)
+  leaseCleanupInterval: "6h",                // Clean stale leases every 6 hours (default)
+  processedEventRetentionHours: 168,         // Keep processed events for 7 days (default)
+  processedEventCleanupInterval: "1d",       // Clean old events daily (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `idempotencyCleanupInterval` | `string` | `"1h"` | How often to purge expired idempotency keys |
+| `leaseCleanupInterval` | `string` | `"6h"` | How often to clean stale worker leases |
+| `processedEventRetentionHours` | `number` | `168` | Hours to keep processed events (7 days) |
+| `processedEventCleanupInterval` | `string` | `"1d"` | How often to purge old processed events |
+
+## What Gets Cleaned
+
+| Data | Condition | Default Retention |
+|------|-----------|-------------------|
+| Idempotency keys | Past `expires_at` | Cleaned on expiry (default TTL: 24h) |
+| Processed events | Older than retention period | 7 days |
+| Stale worker leases | Past lease expiry | Cleaned on detection |
+
+## Manual Run
+
+```ts
+await summa.maintenance.run();
+```
+
+## Why You Need This
+
+Without maintenance:
+- **Idempotency keys** accumulate forever, slowing down duplicate lookups
+- **Processed events** grow unbounded in the outbox table
+- **Stale leases** from crashed workers prevent new workers from acquiring them
+
+The maintenance plugin keeps your database lean and performant.

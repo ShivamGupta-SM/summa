@@ -48,7 +48,7 @@ export function maintenance(options?: MaintenanceOptions): SummaPlugin {
 				description: "Remove expired worker leases from dead instances",
 				handler: async (ctx) => {
 					const deleted = await ctx.adapter.rawMutate(
-						`DELETE FROM worker_lease WHERE lease_until < NOW() - INTERVAL '1 hour'`,
+						`DELETE FROM worker_lease WHERE lease_until < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")}`,
 						[],
 					);
 					if (deleted > 0) {
@@ -64,7 +64,7 @@ export function maintenance(options?: MaintenanceOptions): SummaPlugin {
 				handler: async (ctx) => {
 					const deleted = await ctx.adapter.rawMutate(
 						`DELETE FROM processed_event
-						 WHERE processed_at < NOW() - INTERVAL '1 hour' * $1`,
+						 WHERE processed_at < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")} * $1`,
 						[processedEventRetentionHours],
 					);
 					if (deleted > 0) {
