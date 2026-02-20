@@ -1,0 +1,49 @@
+---
+title: Holds
+description: Reserve funds with optional expiry and partial capture.
+---
+
+## Creating a Hold
+
+Holds reserve funds in a source account without transferring them yet:
+
+```ts
+const hold = await summa.holds.create({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 100_00, // $100.00
+  currency: "USD",
+  expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days
+});
+```
+
+The source account's `pendingDebit` increases by the hold amount.
+
+## Capturing a Hold
+
+Capture converts a hold into a posted transaction:
+
+```ts
+// Full capture
+const txn = await summa.holds.capture({ holdId: hold.id });
+
+// Partial capture — only charge what was used
+const txn = await summa.holds.capture({
+  holdId: hold.id,
+  amount: 75_00, // Only capture $75.00 of the $100.00 hold
+});
+```
+
+## Voiding a Hold
+
+Void releases the reserved funds without charging:
+
+```ts
+await summa.holds.void({ holdId: hold.id });
+```
+
+## Expiry
+
+When a hold expires, it can no longer be captured. The reserved funds are
+automatically released when the hold is next accessed or when the scheduled
+cleanup worker runs.

@@ -1,0 +1,94 @@
+---
+title: Plugins
+description: Extend Summa with reconciliation, snapshots, velocity limits, and more.
+---
+
+## Available Plugins
+
+Summa ships with six built-in plugins:
+
+```ts
+import {
+  reconciliation,
+  snapshots,
+  velocityLimits,
+  outbox,
+  hotAccounts,
+  scheduledTransactions,
+} from "summa/plugins";
+```
+
+## Reconciliation
+
+Runs daily balance reconciliation to detect mismatches between account
+balances and their entry records:
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [reconciliation({ schedule: "0 2 * * *" })], // 2 AM daily
+});
+```
+
+## Snapshots
+
+Takes daily snapshots of all account balances for historical reporting:
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [snapshots()],
+});
+```
+
+## Velocity Limits
+
+Enforce transaction limits per account (daily, monthly, per-transaction):
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [velocityLimits()],
+});
+
+// Set limits on an account
+await summa.limits.set({
+  accountId: account.id,
+  limitType: "daily",
+  maxAmount: 10_000_00, // $10,000/day
+});
+```
+
+## Outbox
+
+Transactional outbox pattern for reliable event publishing:
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [outbox()],
+});
+```
+
+## Hot Accounts
+
+Optimistic concurrency for high-traffic accounts that would otherwise bottleneck
+on row-level locks:
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [hotAccounts()],
+});
+```
+
+## Scheduled Transactions
+
+Schedule future or recurring transactions:
+
+```ts
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  plugins: [scheduledTransactions()],
+});
+```

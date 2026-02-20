@@ -1,0 +1,64 @@
+---
+title: Transactions
+description: Post transfers, reversals, and multi-destination credits.
+---
+
+## Posting a Transaction
+
+Every transaction moves funds between two accounts using double-entry
+bookkeeping — one debit, one credit:
+
+```ts
+const txn = await summa.transactions.post({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00, // $50.00 in cents
+  currency: "USD",
+  reference: "order_abc",
+  description: "Payment for Order #ABC",
+});
+```
+
+## Reversals
+
+Reverse a posted transaction to undo the balance changes:
+
+```ts
+const reversal = await summa.transactions.reverse({
+  transactionId: txn.id,
+  reason: "Customer refund",
+});
+```
+
+## Idempotency
+
+Use idempotency keys to safely retry operations:
+
+```ts
+const txn = await summa.transactions.post({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  currency: "USD",
+  reference: "order_abc",
+  idempotencyKey: "pay_order_abc_v1",
+});
+```
+
+Retrying with the same key returns the original result without double-posting.
+
+## System Accounts
+
+System accounts represent your platform's own accounts (revenue, fees,
+float, etc.):
+
+```ts
+// Transactions can reference system accounts
+const txn = await summa.transactions.post({
+  sourceHolderId: "user_123",
+  destinationSystemAccountId: "platform_fees",
+  amount: 2_50, // $2.50 fee
+  currency: "USD",
+  reference: "fee_order_abc",
+});
+```

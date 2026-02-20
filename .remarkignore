@@ -1,0 +1,5 @@
+packages/**/CHANGELOG.md
+**/dist/**
+**/node_modules/**
+CODE_OF_CONDUCT.md
+CONTRIBUTING.md

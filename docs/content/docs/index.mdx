@@ -1,0 +1,61 @@
+---
+title: Getting Started
+description: Install and configure Summa in your TypeScript project.
+---
+
+## Installation
+
+```bash
+pnpm add summa @summa/core
+```
+
+You also need a database adapter. Pick one:
+
+```bash
+# Drizzle ORM (recommended)
+pnpm add @summa/drizzle-adapter drizzle-orm
+
+# Prisma
+pnpm add @summa/prisma-adapter @prisma/client
+
+# Kysely
+pnpm add @summa/kysely-adapter kysely
+
+# In-memory (for testing)
+pnpm add @summa/memory-adapter
+```
+
+## Quick Start
+
+```ts
+import { createSumma } from "summa";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { reconciliation, snapshots } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  adapter: drizzleAdapter(db),
+  currency: "USD",
+  plugins: [reconciliation(), snapshots()],
+});
+```
+
+## Core Concepts
+
+Summa is an **event-sourced double-entry financial ledger**. Every mutation
+produces an immutable event with a SHA-256 hash chain for tamper detection.
+
+- **Accounts** hold balances with credit/debit tracking
+- **Transactions** move money between accounts with double-entry guarantees
+- **Holds** reserve funds with optional expiry
+- **Events** form an append-only log with hash chain integrity
+- **Plugins** add reconciliation, snapshots, velocity limits, and more
+
+## Next Steps
+
+- [Accounts](/docs/accounts) — create and manage accounts
+- [Transactions](/docs/transactions) — post transfers and reversals
+- [Holds](/docs/holds) — reserve and capture funds
+- [Plugins](/docs/plugins) — extend with reconciliation, snapshots, and more

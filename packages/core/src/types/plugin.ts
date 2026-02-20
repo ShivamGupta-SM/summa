@@ -92,7 +92,7 @@ export interface SummaPlugin {
 	operationHooks?: {
 		before?: Array<{
 			matcher: (op: SummaOperation) => boolean;
-			handler: (params: SummaHookContext) => Promise<void | { cancel: true; reason: string }>;
+			handler: (params: SummaHookContext) => Promise<undefined | { cancel: true; reason: string }>;
 		}>;
 		after?: Array<{
 			matcher: (op: SummaOperation) => boolean;

@@ -46,9 +46,12 @@ export async function createTestSchema(): Promise<void> {
 
 		// Create all tables via raw SQL since drizzle-orm doesn't have a
 		// programmatic "create table" API. Use the schema definitions to generate DDL.
-		await client.query(`
-			CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+		// Create extension in a separate statement to avoid parallel conflicts
+		await client.query(`CREATE EXTENSION IF NOT EXISTS "pgcrypto"`).catch(() => {
+			// Extension already exists — safe to ignore
+		});
 
+		await client.query(`
 			CREATE TABLE ledger_event (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				sequence_number BIGSERIAL UNIQUE NOT NULL,

@@ -1,0 +1,84 @@
+---
+title: Accounts
+description: Create, freeze, close, and query accounts.
+---
+
+## Creating an Account
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "customer",
+  currency: "USD",
+});
+```
+
+Every account tracks:
+
+- `balance` — net balance (credits minus debits)
+- `creditBalance` / `debitBalance` — running totals
+- `pendingCredit` / `pendingDebit` — reserved amounts from holds
+- `status` — `active`, `frozen`, or `closed`
+
+## Account Indicators
+
+You can assign a unique indicator for human-friendly lookups:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "customer",
+  currency: "USD",
+  indicator: "ACC-001",
+});
+
+// Look up by indicator
+const found = await summa.accounts.getByIndicator("ACC-001");
+```
+
+## Freezing an Account
+
+Frozen accounts reject all transactions but preserve their state:
+
+```ts
+await summa.accounts.freeze({
+  accountId: account.id,
+  reason: "Suspicious activity",
+  frozenBy: "admin@example.com",
+});
+```
+
+## Unfreezing
+
+```ts
+await summa.accounts.unfreeze({ accountId: account.id });
+```
+
+## Closing an Account
+
+Closed accounts are permanent. If there's a remaining balance, you must sweep
+funds to another account:
+
+```ts
+await summa.accounts.close({
+  accountId: account.id,
+  closedBy: "admin@example.com",
+  reason: "Customer request",
+  transferToHolderId: "treasury",
+});
+```
+
+## Overdrafts
+
+By default, accounts reject transactions that would result in a negative
+balance. Enable overdrafts per account:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "merchant_1",
+  holderType: "merchant",
+  currency: "USD",
+  allowOverdraft: true,
+  overdraftLimit: 100_00, // $100.00 in cents
+});
+```

@@ -27,8 +27,14 @@ export async function withTransactionTimeout<T>(
 	const lockTimeout = options?.lockTimeoutMs ?? ctx.options.advanced.lockTimeoutMs;
 
 	return await ctx.adapter.transaction(async (tx) => {
-		await tx.raw("SET LOCAL statement_timeout = $1", [String(statementTimeout)]);
-		await tx.raw("SET LOCAL lock_timeout = $1", [String(lockTimeout)]);
+		// SET doesn't support parameterized queries — validate and interpolate
+		const safeStatementTimeout = Number(statementTimeout);
+		const safeLockTimeout = Number(lockTimeout);
+		if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
+			throw new Error("Invalid timeout value");
+		}
+		await tx.raw(`SET LOCAL statement_timeout = '${safeStatementTimeout}'`, []);
+		await tx.raw(`SET LOCAL lock_timeout = '${safeLockTimeout}'`, []);
 		return await operation(tx);
 	});
 }

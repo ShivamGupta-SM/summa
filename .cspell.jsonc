@@ -1,0 +1,50 @@
+{
+	"$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+	"useGitignore": true,
+	"ignoreRandomStrings": true,
+	"allowCompoundWords": true,
+	"dictionaryDefinitions": [
+		{
+			"name": "tech-terms",
+			"path": "./.cspell/tech-terms.txt",
+			"addWords": true
+		},
+		{
+			"name": "finance-terms",
+			"path": "./.cspell/finance-terms.txt",
+			"addWords": true
+		},
+		{
+			"name": "third-party",
+			"path": "./.cspell/third-party.txt",
+			"addWords": true
+		},
+		{
+			"name": "custom-words",
+			"path": "./.cspell/custom-words.txt",
+			"addWords": true
+		}
+	],
+	"dictionaries": [
+		"tech-terms",
+		"finance-terms",
+		"third-party",
+		"custom-words"
+	],
+	"ignoreRegExpList": [
+		"@[a-zA-Z0-9-_]+",
+		"\\[[^\\]]+\\]\\(https://github\\.com/\\w+\\)",
+		"toBe\\([^\\)]*\\)",
+		"%[0-9A-Fa-f]{2}(?:%[0-9A-Fa-f]{2})*"
+	],
+	"ignorePaths": [
+		"pnpm-workspace.yaml",
+		"pnpm-lock.yaml",
+		"*.config.js",
+		"*.config.ts",
+		"*.json",
+		"**/dist/**",
+		"**/coverage/**",
+		"**/.turbo/**"
+	]
+}

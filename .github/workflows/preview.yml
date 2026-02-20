@@ -1,0 +1,31 @@
+name: Preview
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    name: Publish Preview Packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish preview
+        run: pnpx pkg-pr-new publish --compact --pnpm './packages/core' './packages/summa' './packages/drizzle-adapter' './packages/kysely-adapter' './packages/prisma-adapter' './packages/memory-adapter' './packages/cli' './packages/test-utils'

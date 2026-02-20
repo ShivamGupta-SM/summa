@@ -1,32 +1,52 @@
 {
-  "$schema": "https://unpkg.com/knip@5/schema.json",
-  "workspaces": {
-    ".": {
-      "ignoreDependencies": ["@changesets/changelog-github", "husky", "lint-staged"]
-    },
-    "packages/core": {
-      "entry": ["src/index.ts", "src/db/index.ts", "src/error/index.ts", "src/utils/index.ts"]
-    },
-    "packages/summa": {
-      "entry": ["src/index.ts", "src/plugins/index.ts", "src/types/index.ts"]
-    },
-    "packages/drizzle-adapter": {
-      "entry": ["src/index.ts", "src/schema.ts"]
-    },
-    "packages/prisma-adapter": {
-      "entry": ["src/index.ts"]
-    },
-    "packages/kysely-adapter": {
-      "entry": ["src/index.ts"]
-    },
-    "packages/memory-adapter": {
-      "entry": ["src/index.ts"]
-    },
-    "packages/cli": {
-      "entry": ["src/index.ts"]
-    },
-    "packages/test-utils": {
-      "entry": ["src/index.ts"]
-    }
-  }
+	"$schema": "https://unpkg.com/knip@5/schema.json",
+	"ignoreDependencies": ["@changesets/changelog-github"],
+	"ignoreWorkspaces": ["packages/integration-tests"],
+	"workspaces": {
+		".": {
+			"ignoreDependencies": ["remark-preset-wooorm"]
+		},
+		"packages/core": {
+			"entry": [
+				"src/index.ts",
+				"src/db/index.ts",
+				"src/error/index.ts",
+				"src/utils/index.ts"
+			],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/summa": {
+			"entry": [
+				"src/index.ts",
+				"src/plugins/index.ts",
+				"src/types/index.ts",
+				"src/db/index.ts"
+			],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/drizzle-adapter": {
+			"entry": ["src/index.ts", "src/schema.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/prisma-adapter": {
+			"entry": ["src/index.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/kysely-adapter": {
+			"entry": ["src/index.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/memory-adapter": {
+			"entry": ["src/index.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/cli": {
+			"entry": ["src/index.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		},
+		"packages/test-utils": {
+			"entry": ["src/index.ts"],
+			"ignoreDependencies": ["@arethetypeswrong/cli"]
+		}
+	}
 }

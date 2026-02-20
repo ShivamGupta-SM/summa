@@ -29,6 +29,12 @@ jobs:
       - name: Biome check
         run: pnpm lint
 
+      - name: Spell check
+        run: pnpm lint:spell
+
+      - name: Markdown lint
+        run: pnpm format:md:check
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

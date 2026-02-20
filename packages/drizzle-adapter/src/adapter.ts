@@ -7,7 +7,7 @@
 // type-safe column API across 20+ tables.
 
 import type { SortBy, SummaAdapter, SummaTransactionAdapter, Where } from "@summa/core/db";
-import { sql } from "drizzle-orm";
+import { type SQL, sql } from "drizzle-orm";
 
 // =============================================================================
 // INTERNAL HELPERS
@@ -130,9 +130,13 @@ function buildWhereClause(
  * This converts $1, $2 style placeholders + params into a drizzle sql`` tagged template.
  */
 function buildDrizzleSql(query: string, params: unknown[]) {
+	// If no params, return raw SQL directly
+	if (params.length === 0) {
+		return sql.raw(query);
+	}
+
 	// Split the query by $N placeholders and interleave with params
-	// We need to build a sql template that drizzle understands
-	const chunks: unknown[] = [];
+	const chunks: SQL[] = [];
 	let lastIdx = 0;
 	const regex = /\$(\d+)/g;
 	let match: RegExpExecArray | null = regex.exec(query);
@@ -154,12 +158,12 @@ function buildDrizzleSql(query: string, params: unknown[]) {
 		chunks.push(sql.raw(query.slice(lastIdx)));
 	}
 
-	// Join all chunks into a single sql template
 	if (chunks.length === 0) {
 		return sql.raw(query);
 	}
 
-	return chunks.reduce((acc, chunk) => sql`${acc}${chunk}`);
+	// Use sql.join with empty separator to avoid nested template issues
+	return sql.join(chunks, sql.raw(""));
 }
 
 // =============================================================================
