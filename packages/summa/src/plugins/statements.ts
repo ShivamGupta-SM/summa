@@ -10,6 +10,7 @@
 
 import type { PluginApiResponse, PluginEndpoint, SummaContext, SummaPlugin } from "@summa/core";
 import { minorToDecimal } from "@summa/core";
+import PDFDocument from "pdfkit";
 
 // =============================================================================
 // TYPES
@@ -438,6 +439,168 @@ export async function generateStatementCsv(
 	return lines.join("\n");
 }
 
+/**
+ * Generate a PDF buffer for an account statement.
+ * Fetches all entries in batches and renders a formatted PDF document.
+ */
+export async function generateStatementPdf(
+	ctx: SummaContext,
+	holderId: string,
+	options?: { dateFrom?: string; dateTo?: string },
+): Promise<Buffer | null> {
+	const account = await resolveAccount(ctx, holderId);
+	if (!account) return null;
+
+	const now = new Date().toISOString();
+	const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	const dateFrom = resolveDate(options?.dateFrom, thirtyDaysAgo);
+	const dateTo = resolveDate(options?.dateTo, now);
+	const currency = account.currency;
+
+	const [aggregates, openingBalance] = await Promise.all([
+		queryAggregates(ctx, account.id, dateFrom, dateTo),
+		queryOpeningBalance(ctx, account.id, dateFrom),
+	]);
+
+	const closingBalance = await queryClosingBalance(
+		ctx,
+		account.id,
+		dateFrom,
+		dateTo,
+		openingBalance,
+	);
+
+	// Fetch all entries
+	const allEntries: StatementEntry[] = [];
+	const BATCH_SIZE = 500;
+	let batchOffset = 0;
+
+	while (true) {
+		const batch = await queryEntries(ctx, account.id, dateFrom, dateTo, BATCH_SIZE, batchOffset);
+		if (batch.length === 0) break;
+		for (const row of batch) {
+			allEntries.push(mapEntryRow(row, currency));
+		}
+		if (batch.length < BATCH_SIZE) break;
+		batchOffset += BATCH_SIZE;
+	}
+
+	// Build PDF
+	return new Promise<Buffer>((resolve, reject) => {
+		const doc = new PDFDocument({ size: "A4", margin: 50 });
+		const chunks: Buffer[] = [];
+
+		doc.on("data", (chunk: Buffer) => chunks.push(chunk));
+		doc.on("end", () => resolve(Buffer.concat(chunks)));
+		doc.on("error", reject);
+
+		const fmt = (amount: number) => minorToDecimal(amount, currency);
+		const pageWidth = doc.page.width - 100; // margins
+
+		// --- Header ---
+		doc.fontSize(20).font("Helvetica-Bold").text("Account Statement", { align: "center" });
+		doc.moveDown(0.5);
+		doc.fontSize(9).font("Helvetica").fillColor("#666666");
+		doc.text(`Holder: ${holderId}    Account: ${account.id}`, { align: "center" });
+		doc.text(
+			`Period: ${dateFrom.slice(0, 10)} to ${dateTo.slice(0, 10)}    Currency: ${currency}`,
+			{ align: "center" },
+		);
+		doc.moveDown(1);
+
+		// --- Summary Box ---
+		const summaryY = doc.y;
+		doc.rect(50, summaryY, pageWidth, 70).fillAndStroke("#f8f9fa", "#e0e0e0");
+
+		doc.fillColor("#333333").fontSize(10).font("Helvetica-Bold");
+		doc.text("Opening Balance", 65, summaryY + 10);
+		doc.text("Closing Balance", 200, summaryY + 10);
+		doc.text("Total Credits", 335, summaryY + 10);
+		doc.text("Total Debits", 460, summaryY + 10);
+
+		doc.fontSize(12).font("Helvetica");
+		doc.text(fmt(openingBalance), 65, summaryY + 28);
+		doc.text(fmt(closingBalance), 200, summaryY + 28);
+		doc.fillColor("#16a34a").text(fmt(aggregates.total_credits), 335, summaryY + 28);
+		doc.fillColor("#dc2626").text(fmt(aggregates.total_debits), 460, summaryY + 28);
+
+		doc.fillColor("#666666").fontSize(8).font("Helvetica");
+		doc.text(
+			`Net Change: ${fmt(aggregates.total_credits - aggregates.total_debits)}    Transactions: ${aggregates.transaction_count}    Entries: ${aggregates.entry_count}`,
+			65,
+			summaryY + 50,
+		);
+
+		doc.y = summaryY + 80;
+
+		// --- Table Header ---
+		const COL = { date: 50, ref: 130, desc: 220, type: 340, amount: 390, balance: 470 };
+
+		function drawTableHeader() {
+			const y = doc.y;
+			doc.rect(50, y, pageWidth, 18).fill("#333333");
+			doc.fillColor("#ffffff").fontSize(8).font("Helvetica-Bold");
+			doc.text("Date", COL.date + 4, y + 4);
+			doc.text("Reference", COL.ref + 4, y + 4);
+			doc.text("Description", COL.desc + 4, y + 4);
+			doc.text("Type", COL.type + 4, y + 4);
+			doc.text("Amount", COL.amount + 4, y + 4);
+			doc.text("Balance After", COL.balance + 4, y + 4);
+			doc.fillColor("#333333").font("Helvetica");
+			doc.y = y + 20;
+		}
+
+		drawTableHeader();
+
+		// --- Table Rows ---
+		for (let i = 0; i < allEntries.length; i++) {
+			const entry = allEntries[i] as StatementEntry;
+
+			// Check page break
+			if (doc.y > doc.page.height - 80) {
+				doc.addPage();
+				drawTableHeader();
+			}
+
+			const y = doc.y;
+			const isEven = i % 2 === 0;
+
+			if (isEven) {
+				doc.rect(50, y, pageWidth, 16).fill("#f8f9fa");
+			}
+
+			doc.fillColor("#333333").fontSize(7).font("Helvetica");
+			doc.text(entry.date.slice(0, 10), COL.date + 4, y + 4, { width: 76 });
+			doc.text(entry.transactionRef.slice(0, 14), COL.ref + 4, y + 4, { width: 86 });
+			doc.text((entry.description ?? "").slice(0, 18), COL.desc + 4, y + 4, { width: 116 });
+
+			const typeColor = entry.entryType === "CREDIT" ? "#16a34a" : "#dc2626";
+			doc.fillColor(typeColor).font("Helvetica-Bold");
+			doc.text(entry.entryType, COL.type + 4, y + 4, { width: 46 });
+
+			doc.fillColor("#333333").font("Helvetica");
+			doc.text(entry.amountDecimal, COL.amount + 4, y + 4, { width: 76 });
+			doc.text(entry.balanceAfter != null ? fmt(entry.balanceAfter) : "-", COL.balance + 4, y + 4, {
+				width: 76,
+			});
+
+			doc.y = y + 16;
+		}
+
+		// --- Footer ---
+		doc.moveDown(1);
+		doc.fillColor("#999999").fontSize(7).font("Helvetica");
+		doc.text(
+			`Generated on ${new Date().toISOString().slice(0, 10)} — Summa Financial Ledger`,
+			50,
+			doc.y,
+			{ align: "center" },
+		);
+
+		doc.end();
+	});
+}
+
 // =============================================================================
 // PLUGIN FACTORY
 // =============================================================================
@@ -472,13 +635,13 @@ export function statements(options?: StatementOptions): SummaPlugin {
 				if (!holderId) return json(400, { error: "holderId is required" });
 
 				const format = req.query.format ?? "json";
+				const dateOpts = {
+					dateFrom: req.query.dateFrom,
+					dateTo: req.query.dateTo,
+				};
 
 				if (format === "csv") {
-					const csv = await generateStatementCsv(ctx, holderId, {
-						dateFrom: req.query.dateFrom,
-						dateTo: req.query.dateTo,
-					});
-
+					const csv = await generateStatementCsv(ctx, holderId, dateOpts);
 					if (!csv) return json(404, { error: "Account not found" });
 
 					const from = (req.query.dateFrom ?? "start").slice(0, 10);
@@ -490,6 +653,23 @@ export function statements(options?: StatementOptions): SummaPlugin {
 							format: "csv",
 							filename: `statement-${holderId}-${from}-${to}.csv`,
 							content: csv,
+						},
+					};
+				}
+
+				if (format === "pdf") {
+					const pdf = await generateStatementPdf(ctx, holderId, dateOpts);
+					if (!pdf) return json(404, { error: "Account not found" });
+
+					const from = (req.query.dateFrom ?? "start").slice(0, 10);
+					const to = (req.query.dateTo ?? "now").slice(0, 10);
+
+					return {
+						status: 200,
+						body: {
+							format: "pdf",
+							filename: `statement-${holderId}-${from}-${to}.pdf`,
+							content: pdf.toString("base64"),
 						},
 					};
 				}

@@ -34,6 +34,7 @@ export {
 export { getEndOfMonthBalance, getHistoricalBalance, snapshots } from "./snapshots.js";
 export {
 	generateStatementCsv,
+	generateStatementPdf,
 	getAccountStatement,
 	getStatementSummary,
 	type StatementEntry,

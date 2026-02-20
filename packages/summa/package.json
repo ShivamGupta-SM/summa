@@ -93,14 +93,16 @@
   },
   "dependencies": {
     "@summa/core": "workspace:*",
+    "pdfkit": "^0.17.2",
     "safe-stable-stringify": "^2.5.0"
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.18.0",
-    "@types/node": "^22.0.0",
-    "publint": "^0.3.0",
+    "@arethetypeswrong/cli": "catalog:",
+    "@types/node": "catalog:",
+    "@types/pdfkit": "^0.17.5",
+    "publint": "catalog:",
     "tsdown": "catalog:",
-    "typescript": "^5.8.0",
-    "vitest": "^3.0.0"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
