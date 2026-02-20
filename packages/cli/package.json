@@ -3,6 +3,12 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "summa": "./dist/index.js"
   },
