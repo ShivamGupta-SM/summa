@@ -1,6 +1,6 @@
 <h1 align="center">
   <br/>
-  <img src="https://raw.githubusercontent.com/ShivamGupta-SM/summa/main/.github/logo.svg" alt="Summa" width="48" height="48" />
+  <img src="https://raw.githubusercontent.com/summa-ledger/summa/main/.github/logo.svg" alt="Summa" width="48" height="48" />
   <br/>
   Summa
   <br/>
@@ -18,14 +18,14 @@
 <p align="center">
   <a href="https://www.npmjs.com/package/summa"><img src="https://img.shields.io/npm/v/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Version"></a>
   <a href="https://www.npmjs.com/package/summa"><img src="https://img.shields.io/npm/dm/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Downloads"></a>
-  <a href="https://github.com/ShivamGupta-SM/summa/blob/main/LICENSE"><img src="https://img.shields.io/github/license/ShivamGupta-SM/summa?style=flat&colorA=18181b&colorB=10b981" alt="License"></a>
+  <a href="https://github.com/summa-ledger/summa/blob/main/LICENSE"><img src="https://img.shields.io/github/license/summa-ledger/summa?style=flat&colorA=18181b&colorB=10b981" alt="License"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-strict-blue?style=flat&colorA=18181b&colorB=10b981" alt="TypeScript"></a>
 </p>
 
 <p align="center">
   <a href="https://summa-docs.vercel.app/docs">Documentation</a> &nbsp;·&nbsp;
   <a href="https://summa-docs.vercel.app/docs/getting-started">Getting Started</a> &nbsp;·&nbsp;
-  <a href="https://github.com/ShivamGupta-SM/summa/issues">Issues</a> &nbsp;·&nbsp;
+  <a href="https://github.com/summa-ledger/summa/issues">Issues</a> &nbsp;·&nbsp;
   <a href="https://www.npmjs.com/package/summa">npm</a>
 </p>
 
@@ -43,13 +43,13 @@ Every mutation produces an immutable event with a **SHA-256 hash chain** for tam
 
 | Challenge | How Summa solves it |
 |---|---|
-| :no_entry_sign: **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
-| :wastebasket: **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
-| :mag: **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
-| :zap: **High-traffic accounts** | Hot account pattern with optimistic concurrency |
-| :repeat: **Network retries** | Built-in idempotency keys prevent duplicate transactions |
-| :warning: **Partial failures** | Two-phase holds: reserve first, commit or void later |
-| :bar_chart: **Data inconsistency** | Automated reconciliation compares balances against entry records |
+| **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
+| **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
+| **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
+| **High-traffic accounts** | Hot account pattern with optimistic concurrency |
+| **Network retries** | Built-in idempotency keys prevent duplicate transactions |
+| **Partial failures** | Two-phase holds: reserve first, commit or void later |
+| **Data inconsistency** | Automated reconciliation compares balances against entry records |
 
 <br/>
 
@@ -59,14 +59,14 @@ Every mutation produces an immutable event with a **SHA-256 hash chain** for tam
 <tr>
 <td width="50%" valign="top">
 
-### :balance_scale: &nbsp; Double-Entry Bookkeeping
+### Double-Entry Bookkeeping
 
 Every transaction creates balanced DEBIT and CREDIT entries. The sum of all entries is always zero. Enforced at the database level — no silent rounding errors, no unbalanced books.
 
 </td>
 <td width="50%" valign="top">
 
-### :scroll: &nbsp; Event Sourcing
+### Event Sourcing
 
 Immutable append-only event log with SHA-256 hash chain. Every state change recorded. Rebuild account state from any point in time. Full audit trail for every mutation.
 
@@ -75,14 +75,14 @@ Immutable append-only event log with SHA-256 hash chain. Every state change reco
 <tr>
 <td width="50%" valign="top">
 
-### :lock: &nbsp; Two-Phase Holds
+### Two-Phase Holds
 
 Reserve funds before settlement. Supports partial capture, void, expiry, and multi-destination splits. Perfect for payment pre-auth, hotel bookings, and ride-hailing.
 
 </td>
 <td width="50%" valign="top">
 
-### :electric_plug: &nbsp; 12 Built-in Plugins
+### 12 Built-in Plugins
 
 Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI — compose what you need.
 
@@ -91,14 +91,14 @@ Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts
 <tr>
 <td width="50%" valign="top">
 
-### :key: &nbsp; Idempotency
+### Idempotency
 
 Built-in idempotency keys with configurable TTL. Safe retries with no double-posting, even under network failures or load balancer timeouts.
 
 </td>
 <td width="50%" valign="top">
 
-### :shield: &nbsp; Security Hardened
+### Security Hardened
 
 Parameterized queries, advisory locks, HMAC-SHA256 webhooks, timing-safe comparison, token bucket rate limiting. Every layer is hardened.
 
@@ -107,14 +107,14 @@ Parameterized queries, advisory locks, HMAC-SHA256 webhooks, timing-safe compari
 <tr>
 <td width="50%" valign="top">
 
-### :twisted_rightwards_arrows: &nbsp; Multi-Destination Transfers
+### Multi-Destination Transfers
 
 Split payments across multiple recipients in a single atomic transaction. One idempotency key, one event, fully balanced entries.
 
 </td>
 <td width="50%" valign="top">
 
-### :floppy_disk: &nbsp; 4 Database Adapters
+### 4 Database Adapters
 
 Drizzle ORM, Prisma, Kysely, or in-memory for testing. Swap adapters without changing business logic. All backed by PostgreSQL.
 
@@ -281,18 +281,18 @@ Extend Summa with composable, type-safe plugins:
 
 | Plugin | What it does |
 |---|---|
-| `auditLog` | :clipboard: Structured audit trail for compliance |
-| `reconciliation` | :mag_right: Balance reconciliation and drift detection |
-| `snapshots` | :camera: Point-in-time balance snapshots |
-| `velocityLimits` | :traffic_light: Daily/monthly transaction limits |
-| `holdExpiry` | :hourglass_flowing_sand: Auto-expire stale authorization holds |
-| `outbox` | :outbox_tray: Transactional outbox for reliable event publishing |
-| `dlqManager` | :rotating_light: Dead letter queue for failed event processing |
-| `hotAccounts` | :zap: High-throughput account optimizations |
-| `scheduledTransactions` | :calendar: Recurring and future-dated transactions |
-| `maintenance` | :wrench: Database maintenance and cleanup tasks |
-| `admin` | :gear: Administrative operations and controls |
-| `openApi` | :page_facing_up: Auto-generated OpenAPI spec |
+| `auditLog` | Structured audit trail for compliance |
+| `reconciliation` | Balance reconciliation and drift detection |
+| `snapshots` | Point-in-time balance snapshots |
+| `velocityLimits` | Daily/monthly transaction limits |
+| `holdExpiry` | Auto-expire stale authorization holds |
+| `outbox` | Transactional outbox for reliable event publishing |
+| `dlqManager` | Dead letter queue for failed event processing |
+| `hotAccounts` | High-throughput account optimizations |
+| `scheduledTransactions` | Recurring and future-dated transactions |
+| `maintenance` | Database maintenance and cleanup tasks |
+| `admin` | Administrative operations and controls |
+| `openApi` | Auto-generated OpenAPI spec |
 
 <br/>
 
@@ -302,14 +302,14 @@ Every layer is hardened — from parameterized queries to cryptographic audit tr
 
 | Layer | Threat | Defense |
 |---|---|---|
-| :syringe: **SQL** | Injection | Parameterized placeholders (`$1, $2`). Column names quoted. No string interpolation. |
-| :arrows_counterclockwise: **Concurrency** | Double-spending | `pg_advisory_xact_lock` + `SELECT ... FOR UPDATE` in atomic transactions. |
-| :repeat: **Replay** | Duplicates | Idempotency keys with configurable TTL. Unique reference constraints. |
-| :chains: **Tampering** | Modified events | SHA-256 hash chain per aggregate + block-level checkpoints. |
-| :incoming_envelope: **Webhooks** | Forged payloads | HMAC-SHA256 with timing-safe comparison. Configurable tolerance window. |
-| :octagonal_sign: **Rate Limiting** | Brute force | Token bucket with 3 backends. 4 presets: standard, strict, lenient, burst. |
-| :money_with_wings: **Overdraft** | Negative balances | Balance checked inside transaction lock — no TOCTOU gap. |
-| :snowflake: **Freeze** | Compromised accounts | `freeze()` blocks all operations. Records actor and reason. |
+| **SQL** | Injection | Parameterized placeholders (`$1, $2`). Column names quoted. No string interpolation. |
+| **Concurrency** | Double-spending | `pg_advisory_xact_lock` + `SELECT ... FOR UPDATE` in atomic transactions. |
+| **Replay** | Duplicates | Idempotency keys with configurable TTL. Unique reference constraints. |
+| **Tampering** | Modified events | SHA-256 hash chain per aggregate + block-level checkpoints. |
+| **Webhooks** | Forged payloads | HMAC-SHA256 with timing-safe comparison. Configurable tolerance window. |
+| **Rate Limiting** | Brute force | Token bucket with 3 backends. 4 presets: standard, strict, lenient, burst. |
+| **Overdraft** | Negative balances | Balance checked inside transaction lock — no TOCTOU gap. |
+| **Freeze** | Compromised accounts | `freeze()` blocks all operations. Records actor and reason. |
 
 <br/>
 

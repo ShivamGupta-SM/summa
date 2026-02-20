@@ -43,8 +43,9 @@ export const NavbarMobileBtn: React.FC = () => {
 
 	return (
 		<button
+			type="button"
 			aria-label="Toggle navigation menu"
-			className="flex items-center justify-center size-8 navbar:hidden"
+			className="flex items-center justify-center size-10 mr-1 navbar:hidden"
 			onClick={() => {
 				toggleNavbar();
 			}}
@@ -55,9 +56,9 @@ export const NavbarMobileBtn: React.FC = () => {
 };
 
 const navMenu = [
-	{ name: "home", path: "/" },
-	{ name: "docs", path: "/docs" },
-	{ name: "GitHub", path: "https://github.com/ShivamGupta-SM/summa", external: true },
+	{ name: "Home", path: "/" },
+	{ name: "Docs", path: "/docs" },
+	{ name: "GitHub", path: "https://github.com/summa-ledger/summa", external: true },
 ];
 
 export const NavbarMobile = () => {
@@ -66,22 +67,22 @@ export const NavbarMobile = () => {
 	return (
 		<div
 			className={cn(
-				"fixed top-[50px] inset-x-0 transform-gpu z-[100] bg-background grid grid-rows-[0fr] duration-300 transition-all navbar:hidden",
+				"fixed top-14 inset-x-0 transform-gpu z-100 bg-background/95 backdrop-blur-lg grid grid-rows-[0fr] duration-300 transition-all navbar:hidden",
 				isOpen &&
-					"shadow-lg border-b border-[rgba(255,255,255,.1)] grid-rows-[1fr]",
+					"shadow-lg border-b border-border grid-rows-[1fr]",
 			)}
 		>
 			<div
 				className={cn(
-					"px-9 min-h-0 overflow-y-auto max-h-[80vh] divide-y [mask-image:linear-gradient(to_top,transparent,white_40px)] transition-all duration-300",
-					isOpen ? "py-5" : "invisible",
+					"px-6 min-h-0 overflow-y-auto max-h-[80vh] divide-y divide-border transition-all duration-300",
+					isOpen ? "py-4" : "invisible",
 				)}
 			>
 				{navMenu.map((menu) => (
 					<Link
 						key={menu.name}
 						href={menu.path}
-						className="group flex items-center gap-2.5 first:pt-0 last:pb-0 text-2xl py-4"
+						className="group flex items-center gap-2.5 first:pt-0 last:pb-0 text-lg font-medium py-3.5 text-muted-foreground hover:text-foreground transition-colors"
 						onClick={toggleNavbar}
 						{...(menu.external
 							? { target: "_blank", rel: "noopener noreferrer" }

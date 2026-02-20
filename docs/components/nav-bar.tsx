@@ -17,34 +17,31 @@ export const navMenu = [
 
 export const Navbar = () => {
 	return (
-		<div className="flex flex-col sticky top-0 bg-background backdrop-blur-md z-30">
-			<nav className="md:grid grid-cols-12 border-b top-0 flex items-center justify-between">
+		<div className="flex flex-col sticky top-0 z-30">
+			<nav className="flex items-center justify-between border-b bg-background/80 backdrop-blur-xl supports-backdrop-filter:bg-background/60">
 				<Link
 					href="/"
-					className="min-navbar:border-r md:px-5 px-2.5 py-4 text-foreground md:col-span-2 shrink-0 transition-colors md:w-[268px] lg:w-[286px]"
+					className="flex items-center gap-2.5 px-4 navbar:px-6 h-14 text-foreground shrink-0 transition-colors navbar:border-r"
 				>
-					<div className="flex items-center gap-2">
-						<Logo />
-						<p className="select-none">SUMMA.</p>
-					</div>
+					<Logo />
+					<span className="text-sm font-medium tracking-tight select-none">SUMMA.</span>
 				</Link>
-				<div className="md:col-span-10 flex items-center justify-end relative">
-					<ul className="navbar:flex items-center gap-1 w-max hidden shrink-0">
+				<div className="flex items-center">
+					<ul className="navbar:flex items-center hidden">
 						{navMenu.map((menu) => (
 							<NavLink key={menu.name} href={menu.path}>
 								{menu.name}
 							</NavLink>
 						))}
 						<NavLink
-							href="https://github.com/ShivamGupta-SM/summa"
-							className="bg-muted/20"
+							href="https://github.com/summa-ledger/summa"
 							external
 							aria-label="View Summa repository on GitHub"
 						>
 							<svg
 								xmlns="http://www.w3.org/2000/svg"
-								width="1.4em"
-								height="1.4em"
+								width="1.2em"
+								height="1.2em"
 								viewBox="0 0 496 512"
 								aria-hidden="true"
 							>
