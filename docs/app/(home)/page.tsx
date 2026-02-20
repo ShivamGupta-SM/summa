@@ -110,7 +110,7 @@ export default function HomePage() {
 						<span className="font-medium">Summa is now open source</span>
 						<span className="text-muted-foreground hidden md:inline">|</span>
 						<Link
-							href="https://github.com/summa-ledger/summa"
+							href="https://github.com/ShivamGupta-SM/summa"
 							target="_blank"
 							rel="noopener noreferrer"
 							className="font-semibold text-brand hover:text-brand/80 transition-colors inline-flex items-center gap-1"
@@ -226,7 +226,7 @@ export default function HomePage() {
 													</svg>
 												</Link>
 												<Link
-													href="https://github.com/summa-ledger/summa"
+													href="https://github.com/ShivamGupta-SM/summa"
 													target="_blank"
 													rel="noopener noreferrer"
 													className="text-muted-foreground hover:text-foreground transition-colors"
@@ -258,7 +258,7 @@ export default function HomePage() {
 											Get Started
 										</Link>
 										<Link
-											href="https://github.com/summa-ledger/summa"
+											href="https://github.com/ShivamGupta-SM/summa"
 											target="_blank"
 											rel="noopener noreferrer"
 											className="flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"

@@ -36,7 +36,7 @@ export const Navbar = () => {
 							</NavLink>
 						))}
 						<NavLink
-							href="https://github.com/summa-ledger/summa"
+							href="https://github.com/ShivamGupta-SM/summa"
 							className="bg-muted/20"
 							external
 							aria-label="View Summa repository on GitHub"

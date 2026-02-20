@@ -6,7 +6,7 @@
 	"packageManager": "pnpm@10.6.2",
 	"repository": {
 		"type": "git",
-		"url": "https://github.com/summa-ledger/summa.git"
+		"url": "https://github.com/ShivamGupta-SM/summa.git"
 	},
 	"engines": {
 		"node": ">=22.0.0"

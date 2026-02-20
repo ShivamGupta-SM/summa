@@ -437,6 +437,6 @@ export const initCommand = new Command("init")
 		p.note(nextSteps.join("\n"), "Next steps");
 
 		p.outro(
-			`${pc.green("You're all set!")} ${pc.dim("Read more at https://github.com/summa-ledger/summa")}`,
+			`${pc.green("You're all set!")} ${pc.dim("Read more at https://github.com/ShivamGupta-SM/summa")}`,
 		);
 	});

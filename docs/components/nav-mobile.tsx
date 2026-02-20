@@ -57,7 +57,7 @@ export const NavbarMobileBtn: React.FC = () => {
 const navMenu = [
 	{ name: "home", path: "/" },
 	{ name: "docs", path: "/docs" },
-	{ name: "GitHub", path: "https://github.com/summa-ledger/summa", external: true },
+	{ name: "GitHub", path: "https://github.com/ShivamGupta-SM/summa", external: true },
 ];
 
 export const NavbarMobile = () => {

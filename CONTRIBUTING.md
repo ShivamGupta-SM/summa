@@ -15,7 +15,7 @@ Thank you for your interest in contributing to Summa! This guide will help you g
 1. Fork and clone the repository:
 
 ```bash
-git clone https://github.com/your-username/summa.git
+git clone https://github.com/ShivamGupta-SM/summa.git
 cd summa
 ```
 
@@ -122,7 +122,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/):
 
 ## Reporting Issues
 
-- Use [GitHub Issues](https://github.com/your-org/summa/issues) for bug reports and feature requests
+- Use [GitHub Issues](https://github.com/ShivamGupta-SM/summa/issues) for bug reports and feature requests
 - Search existing issues before creating a new one
 - Include reproduction steps for bugs
 
