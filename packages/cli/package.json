@@ -31,20 +31,26 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@babel/preset-react": "^7.28.5",
-    "@babel/preset-typescript": "^7.28.5",
     "@clack/prompts": "^1.0.1",
     "@summa/core": "workspace:*",
     "@summa/telemetry": "workspace:*",
-    "c12": "4.0.0-beta.3",
+    "c12": "^4.0.0",
     "commander": "^12.1.0",
     "dotenv": "^17.3.1",
     "jiti": "^2.6.1",
     "picocolors": "^1.1.1"
   },
+  "peerDependencies": {
+    "pg": "^8.0.0"
+  },
+  "peerDependenciesMeta": {
+    "pg": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",
-    "@types/node": "^25.3.0",
+    "@types/node": "catalog:",
     "@types/pg": "^8.16.0",
     "pg": "^8.18.0",
     "publint": "catalog:",

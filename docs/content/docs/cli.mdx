@@ -40,12 +40,14 @@ The wizard walks you through:
 1. **Database adapter** — Drizzle ORM (recommended), Prisma, Kysely, or In-Memory
 2. **Framework** — auto-detected from `package.json` dependencies (Next.js, Hono, Express, Fastify, SvelteKit) or manual selection
 3. **Currency** — ISO 4217 currency code (default: USD)
-4. **Plugins** — multiselect from 14 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI, observability, statements)
+4. **Plugins** — multiselect from 25 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, freeze expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI, observability, statements, i18n, MCP, and more)
 5. **System accounts** — use defaults (@World, @Fees, @Suspense) or customize
 
 The init wizard also:
 
-- **Auto-detects your package manager** (pnpm/npm/yarn/bun) for install instructions
+- **Auto-detects your package manager** (pnpm/npm/yarn/bun)
+- **Auto-installs dependencies** — prompts to run `pnpm add` / `npm install` automatically after config generation
+- **Generates a client SDK file** — creates `src/summa.client.ts` with full type inference from your server-side Summa instance
 - **Generates `.env.example`** with `DATABASE_URL` placeholder
 - **Scaffolds an API route** based on the detected framework:
   - **Next.js**: `app/api/ledger/[...path]/route.ts`
@@ -94,7 +96,10 @@ npx summa migrate push --yes
 | `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
 | `-y, --yes` | Skip confirmation prompt |
 
+If your config uses a non-public schema (default: `"summa"`), the command automatically runs `CREATE SCHEMA IF NOT EXISTS` before applying migrations. All tables are created in the configured schema namespace.
+
 Shows a migration preview before applying:
+- Schema creation (if needed)
 - Tables to create
 - Columns to add to existing tables
 - Indexes to create
@@ -162,7 +167,7 @@ npx summa verify --chain
 
 **Hash chain checks:**
 - Block checkpoint chain linkage (prev_block_hash matches)
-- Event hash chain per aggregate (samples up to 50 aggregates)
+- Event hash chain per aggregate (samples up to 50 aggregates; warns if the total aggregate count exceeds the sample size)
 
 Shows a summary at the end: `3 passed / 0 failed / 1 skipped`
 

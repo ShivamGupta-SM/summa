@@ -62,9 +62,10 @@ export interface TransactionRecordTable {
 
 // ... all other table interfaces
 
+// Keys are schema-qualified when using a non-public schema (default: "summa")
 export interface Database {
-  account_balance: AccountBalanceTable;
-  transaction_record: TransactionRecordTable;
+  "summa.account_balance": AccountBalanceTable;
+  "summa.transaction_record": TransactionRecordTable;
   // ... all tables
 }
 ```
@@ -118,7 +119,72 @@ For most projects, `summa migrate push` is the simplest approach since Summa man
 
 ## Connection Pooling
 
-Kysely uses `pg.Pool` directly, giving you full control over connection management:
+For production, use connection pooling with `RECOMMENDED_POOL_CONFIG` and `createPooledAdapter()` for pool monitoring and graceful shutdown.
+
+### Recommended Setup
+
+```ts
+import { Pool } from "pg";
+import { Kysely, PostgresDialect } from "kysely";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/kysely-adapter";
+
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+  // Override defaults as needed:
+  // max: 30,
+});
+
+const db = new Kysely({
+  dialect: new PostgresDialect({ pool }),
+});
+
+const { adapter, close, stats } = createPooledAdapter({ pool, kysely: db });
+
+export const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+});
+
+// Monitor pool health
+setInterval(() => console.log(stats()), 60_000);
+
+// On shutdown
+await summa.workers.stop();
+await close();
+```
+
+### Recommended Pool Defaults
+
+`RECOMMENDED_POOL_CONFIG` includes these production-ready values:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `max` | `20` | Max connections. Divide by instance count for multi-instance. |
+| `min` | `5` | Keep 5 idle connections warm. |
+| `idleTimeoutMillis` | `30000` | Close idle connections after 30s. |
+| `connectionTimeoutMillis` | `10000` | Fail fast if no connection in 10s. |
+| `maxLifetimeMillis` | `1800000` | Recycle connections after 30min (avoids stale connections behind LBs). |
+| `statement_timeout` | `30000` | Prevent runaway queries (30s). |
+
+### Pool Sizing Guidelines
+
+| Workload | `max` connections | Notes |
+|----------|:-:|-------|
+| Light (< 100 txn/min) | 5–10 | Default for small services |
+| Medium (100–1000 txn/min) | 10–20 | Most production workloads |
+| Heavy (1000+ txn/min) | 20–50 | Enable hot accounts plugin |
+
+<Callout type="info" title="Multi-instance deployments">
+  Divide `max` by the number of instances. For example, with 4 instances and a PostgreSQL `max_connections` of 100, set `max: 20` per instance (leaving room for admin connections).
+</Callout>
+
+### Manual Setup
+
+You can also configure the pool manually without `createPooledAdapter`:
 
 ```ts
 import { Pool } from "pg";
@@ -127,8 +193,8 @@ import { kyselyAdapter } from "@summa/kysely-adapter";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 20,                    // Maximum connections
-  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  max: 20,
+  idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
 
@@ -194,22 +260,30 @@ Kysely is a great choice when you want:
 
 ```ts
 import { createSumma } from "summa";
-import { kyselyAdapter } from "@summa/kysely-adapter";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/kysely-adapter";
+import { createReadReplicaAdapter } from "@summa/core/db";
 import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
 
+// Connection pool with production defaults
 const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
   connectionString: process.env.DATABASE_URL,
-  max: 20,
 });
 
 const db = new Kysely({
   dialect: new PostgresDialect({ pool }),
 });
 
+// Pooled adapter with monitoring
+const { adapter, close, stats } = createPooledAdapter({ pool, kysely: db });
+
 export const summa = createSumma({
-  database: kyselyAdapter(db),
+  database: adapter,
   currency: "USD",
   plugins: [auditLog(), reconciliation(), velocityLimits()],
 });
@@ -219,4 +293,13 @@ export const summa = createSumma({
 
 // Start background workers
 await summa.workers.start();
+
+// Graceful shutdown
+async function shutdown() {
+  await summa.workers.stop();
+  await close();
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 ```

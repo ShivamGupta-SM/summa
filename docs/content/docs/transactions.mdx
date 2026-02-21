@@ -1,6 +1,6 @@
 ---
 title: Transactions
-description: Transfer, credit, debit, refund, and multi-destination payments.
+description: Transfer, credit, debit, refund, journal entries, corrections, and multi-destination payments.
 icon: ArrowsRightLeft
 ---
 
@@ -16,7 +16,7 @@ Every transaction returns:
 interface LedgerTransaction {
   id: string;                       // UUID
   reference: string;                // Your business reference
-  type: TransactionType;            // "credit" | "debit" | "transfer"
+  type: TransactionType;            // "credit" | "debit" | "transfer" | "journal" | "correction" | "adjustment"
   status: TransactionStatus;        // "posted" | "reversed" | etc.
   amount: number;                   // Smallest currency unit (cents/paise)
   amountDecimal: string;            // Display format: "254.90"
@@ -33,13 +33,13 @@ interface LedgerTransaction {
 }
 ```
 
-**Transaction types:** `"credit"` | `"debit"` | `"transfer"`
+**Transaction types:** `"credit"` | `"debit"` | `"transfer"` | `"journal"` | `"correction"` | `"adjustment"`
 
 **Transaction statuses:** `"pending"` | `"inflight"` | `"posted"` | `"expired"` | `"voided"` | `"reversed"`
 
-## Operations
+## Basic Operations
 
-<Tabs items={["Transfer", "Credit", "Debit", "Multi-destination"]}>
+<Tabs items={["Transfer", "Credit", "Debit"]}>
 <Tab value="Transfer">
 Move funds between two user accounts:
 
@@ -57,8 +57,10 @@ const txn = await summa.transactions.transfer({
 ```
 
 Creates two entry records: a DEBIT on the source account and a CREDIT on the destination.
+
 </Tab>
 <Tab value="Credit">
+
 Add funds to a user account. Funds come from a system account (default: `@World`):
 
 ```ts
@@ -71,8 +73,10 @@ const txn = await summa.transactions.credit({
   idempotencyKey: "dep_001",
 });
 ```
+
 </Tab>
 <Tab value="Debit">
+
 Remove funds from a user account. Funds go to a system account (default: `@World`):
 
 ```ts
@@ -86,8 +90,45 @@ const txn = await summa.transactions.debit({
   idempotencyKey: "fee_001",
 });
 ```
+
 </Tab>
-<Tab value="Multi-destination">
+</Tabs>
+
+### Refunds
+
+Refund a posted transaction to reverse the balance changes:
+
+<Tabs items={["Full refund", "Partial refund"]}>
+<Tab value="Full refund">
+
+```ts
+const refund = await summa.transactions.refund({
+  transactionId: txn.id,
+  reason: "Customer refund — item not received",
+});
+```
+
+</Tab>
+<Tab value="Partial refund">
+
+```ts
+const partial = await summa.transactions.refund({
+  transactionId: txn.id,
+  reason: "Partial refund — 1 of 3 items returned",
+  amount: 25_00,
+  idempotencyKey: "refund_abc_partial",
+});
+```
+
+</Tab>
+</Tabs>
+
+Refunds create a new transaction with `isReversal: true` and `parentId` pointing to the original.
+
+## Multi-Party Operations
+
+### Multi-Destination Transfer
+
 Split a payment across multiple recipients in a single atomic transaction:
 
 ```ts
@@ -105,35 +146,176 @@ const txn = await summa.transactions.multiTransfer({
 ```
 
 Each destination can be a `holderId` (user account) or `systemAccount` (platform account). If one destination omits `amount`, it receives the remainder.
-</Tab>
-</Tabs>
 
-## Refunds
+### Journal Entries
 
-Refund a posted transaction to reverse the balance changes:
+N-leg journal entries support arbitrary combinations of debits and credits in a single atomic transaction. Use this for complex multi-party entries like payroll, revenue splits, or accruals.
 
-<Tabs items={["Full refund", "Partial refund"]}>
-<Tab value="Full refund">
 ```ts
-const refund = await summa.transactions.refund({
-  transactionId: txn.id,
-  reason: "Customer refund — item not received",
+const txn = await summa.transactions.journal({
+  entries: [
+    { holderId: "employee_1", amount: 500_000, direction: "credit", description: "Salary" },
+    { holderId: "employee_2", amount: 450_000, direction: "credit", description: "Salary" },
+    { systemAccount: "@Payroll", amount: 950_000, direction: "debit", description: "Payroll expense" },
+  ],
+  reference: "payroll-jan-2026",
+  description: "January payroll run",
+  idempotencyKey: "payroll-jan-2026",
 });
 ```
-</Tab>
-<Tab value="Partial refund">
+
+Each entry leg specifies either a `holderId` (user account) or `systemAccount` (platform account), along with an `amount` and `direction`.
+
+<Callout type="warn" title="Balanced entries required">
+  The sum of all debit amounts must equal the sum of all credit amounts. Unbalanced entries are rejected with `INVALID_ARGUMENT`.
+</Callout>
+
+#### JournalEntryLeg
+
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Holder ID of a user account (mutually exclusive with systemAccount)." },
+    systemAccount: { type: "string", description: "System account identifier, e.g. @Fees (mutually exclusive with holderId)." },
+    amount: { type: "number", description: "Amount in smallest currency units.", required: true },
+    direction: { type: '"debit" | "credit"', description: "Entry direction.", required: true },
+    description: { type: "string", description: "Per-leg description." },
+  }}
+/>
+
+## Corrections & Adjustments
+
+### Corrections
+
+Atomic correction: reverse the original transaction and post new correcting entries in a single database transaction.
+
 ```ts
-const partial = await summa.transactions.refund({
-  transactionId: txn.id,
-  reason: "Partial refund — 1 of 3 items returned",
-  amount: 25_00,
-  idempotencyKey: "refund_abc_partial",
+const { reversal, correction } = await summa.transactions.correct({
+  transactionId: originalTxn.id,
+  correctionEntries: [
+    { holderId: "user_123", amount: 45_00, direction: "debit" },
+    { holderId: "merchant_1", amount: 45_00, direction: "credit" },
+  ],
+  reason: "Incorrect amount — should have been $45.00",
+  reference: "correction-001",
+  idempotencyKey: "correct-order-abc",
 });
 ```
-</Tab>
-</Tabs>
 
-Refunds create a new transaction with `isReversal: true` and `parentId` pointing to the original.
+The `reversal` is the auto-generated reversal of the original, and `correction` is the new correcting entry. Both are linked via `correlationId`.
+
+<Callout type="info" title="Cannot correct reversed transactions">
+  Only transactions with status `"posted"` can be corrected. Already-reversed or voided transactions will throw an error.
+</Callout>
+
+### Adjustments
+
+Typed adjustment entries for accounting operations like accruals, depreciation, reclassifications, and manual corrections.
+
+```ts
+const txn = await summa.transactions.adjust({
+  entries: [
+    { holderId: "prepaid_insurance", amount: 1_000_00, direction: "credit" },
+    { holderId: "insurance_expense", amount: 1_000_00, direction: "debit" },
+  ],
+  reference: "adj-feb-2026",
+  adjustmentType: "accrual",
+  description: "Monthly insurance accrual",
+  idempotencyKey: "adj-insurance-feb",
+});
+```
+
+| Adjustment Type | Use Case |
+|----------------|----------|
+| `accrual` | Recognize earned revenue or incurred expenses |
+| `depreciation` | Record periodic asset depreciation |
+| `correction` | Fix posting errors |
+| `reclassification` | Move amounts between account categories |
+
+## Cross-Currency Transfers
+
+If the [FX Engine plugin](/docs/plugins/fx-engine) is registered, cross-currency transfers automatically resolve exchange rates from your configured rate provider:
+
+```ts
+const txn = await summa.transactions.transfer({
+  sourceHolderId: "user_usd",
+  destinationHolderId: "user_eur",
+  amount: 100_00,              // $100 debited from source
+  reference: "fx-transfer-001",
+});
+// Source debited $100.00, destination credited €92.00 — rate auto-resolved
+```
+
+You can override auto-resolution by providing `exchangeRate` explicitly:
+
+```ts
+const txn = await summa.transactions.transfer({
+  sourceHolderId: "user_usd",
+  destinationHolderId: "user_eur",
+  amount: 100_00,              // $100 debited from source
+  reference: "fx-transfer-001",
+  exchangeRate: 920_000,       // 0.92 EUR/USD (6 decimal precision as integer)
+});
+// Source debited $100.00, destination credited €92.00
+```
+
+Without the FX Engine plugin, `exchangeRate` is required for cross-currency transfers.
+
+<Callout type="info" title="Exchange rate format">
+  Exchange rates are integers with 6 decimal precision. A rate of `1.000000` is stored as `1_000_000`. For example, `0.92 EUR/USD` is `920_000`.
+</Callout>
+
+## Querying Transactions
+
+### Listing Transactions
+
+```ts
+const result = await summa.transactions.list({
+  holderId: "user_123",
+  page: 1,
+  perPage: 20,
+  type: "transfer",
+  status: "posted",
+  category: "payment",
+  dateFrom: "2025-01-01",
+  dateTo: "2025-01-31",
+  amountMin: 10_00,
+  amountMax: 500_00,
+  sortBy: "createdAt",
+});
+
+// result.transactions — LedgerTransaction[]
+// result.hasMore      — boolean
+// result.total        — number (optional)
+```
+
+### Getting a Transaction
+
+```ts
+const txn = await summa.transactions.get(transactionId);
+```
+
+### Categories
+
+Categories let you segment transactions for reporting and velocity limits:
+
+```ts
+// Tag transactions with a category
+await summa.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "merchant_1",
+  amount: 50_00,
+  reference: "order_001",
+  category: "marketplace",
+});
+
+// Set velocity limits per category
+await summa.limits.set({
+  holderId: "user_123",
+  limitType: "daily",
+  maxAmount: 500_00,
+  category: "marketplace",  // Only applies to marketplace transactions
+});
+```
 
 ## Idempotency
 
@@ -156,54 +338,3 @@ const txn = await summa.transactions.transfer({
 <Callout type="warn" title="Duplicate key with different params">
   A duplicate key with *different* parameters throws a `DUPLICATE` error (HTTP 409).
 </Callout>
-
-## Listing Transactions
-
-```ts
-const result = await summa.transactions.list({
-  holderId: "user_123",
-  page: 1,
-  perPage: 20,
-  type: "transfer",
-  status: "posted",
-  category: "payment",
-  dateFrom: "2025-01-01",
-  dateTo: "2025-01-31",
-  amountMin: 10_00,
-  amountMax: 500_00,
-  sortBy: "createdAt",
-});
-
-// result.transactions — LedgerTransaction[]
-// result.hasMore      — boolean
-// result.total        — number (optional)
-```
-
-## Getting a Transaction
-
-```ts
-const txn = await summa.transactions.get(transactionId);
-```
-
-## Categories
-
-Categories let you segment transactions for reporting and velocity limits:
-
-```ts
-// Tag transactions with a category
-await summa.transactions.transfer({
-  sourceHolderId: "user_123",
-  destinationHolderId: "merchant_1",
-  amount: 50_00,
-  reference: "order_001",
-  category: "marketplace",
-});
-
-// Set velocity limits per category
-await summa.limits.set({
-  holderId: "user_123",
-  limitType: "daily",
-  maxAmount: 500_00,
-  category: "marketplace",  // Only applies to marketplace transactions
-});
-```

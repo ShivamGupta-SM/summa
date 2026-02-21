@@ -82,9 +82,9 @@ Reserve funds before settlement. Supports partial capture, void, expiry, and mul
 </td>
 <td width="50%" valign="top">
 
-### 12 Built-in Plugins
+### 21 Built-in Plugins
 
-Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI — compose what you need.
+Reconciliation, snapshots, velocity limits, audit log, period close, financial reporting, FX engine, GL/sub-ledger, approval workflows, batch import, accrual accounting, and more.
 
 </td>
 </tr>
@@ -117,6 +117,22 @@ Split payments across multiple recipients in a single atomic transaction. One id
 ### 4 Database Adapters
 
 Drizzle ORM, Prisma, Kysely, or in-memory for testing. Swap adapters without changing business logic. All backed by PostgreSQL.
+
+</td>
+</tr>
+<tr>
+<td width="50%" valign="top">
+
+### Chart of Accounts & Journal Entries
+
+Full accounting primitives — account types (asset/liability/equity/revenue/expense), hierarchical account trees, account codes, and N-leg journal entries for complex multi-party transactions.
+
+</td>
+<td width="50%" valign="top">
+
+### Multi-Currency & FX
+
+Cross-currency transfers with exchange rates, FX rate caching and quotes, gain/loss tracking. Create accounts in any supported currency with automatic rate conversion.
 
 </td>
 </tr>
@@ -242,20 +258,23 @@ console.log(result.valid); // true — no events tampered
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│  Your Application                                       │
-│  API routes · Workers · Cron jobs                       │
-├─────────────────────────────────────────────────────────┤
-│  Summa API                                              │
-│  accounts · transactions · holds · events · limits      │
-├─────────────────────────────────────────────────────────┤
-│  Plugin System                                          │
-│  audit · reconciliation · snapshots · velocity          │
-│  holdExpiry · outbox · dlq · hot · scheduled · admin    │
-├─────────────────────────────────────────────────────────┤
-│  Database Adapters                                      │
-│  Drizzle · Prisma · Kysely · Memory                     │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│  Your Application                                            │
+│  API routes · Workers · Cron jobs                            │
+├──────────────────────────────────────────────────────────────┤
+│  Summa API                                                   │
+│  accounts · chartOfAccounts · transactions · journal         │
+│  holds · events · limits · corrections                       │
+├──────────────────────────────────────────────────────────────┤
+│  Plugin System                                               │
+│  audit · reconciliation · snapshots · velocity · holdExpiry  │
+│  outbox · dlq · hot · scheduled · admin · periodClose        │
+│  reporting · fxEngine · glSubLedger · approvalWorkflow       │
+│  batchImport · accrualAccounting · observability · statements│
+├──────────────────────────────────────────────────────────────┤
+│  Database Adapters                                           │
+│  Drizzle · Prisma · Kysely · Memory                          │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 <br/>
@@ -293,6 +312,13 @@ Extend Summa with composable, type-safe plugins:
 | `maintenance` | Database maintenance and cleanup tasks |
 | `admin` | Administrative operations and controls |
 | `openApi` | Auto-generated OpenAPI spec |
+| `periodClose` | Lock accounting periods for compliance |
+| `financialReporting` | Trial balance, balance sheet, income statement |
+| `fxEngine` | FX rate caching, quotes, and gain/loss tracking |
+| `glSubLedger` | GL / sub-ledger separation with reconciliation |
+| `approvalWorkflow` | Maker-checker dual authorization |
+| `batchImport` | Bulk CSV/JSON transaction import |
+| `accrualAccounting` | Revenue/expense recognition over time |
 
 <br/>
 

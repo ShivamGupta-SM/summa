@@ -72,6 +72,16 @@
       "types": "./dist/api/fastify.d.mts",
       "default": "./dist/api/fastify.mjs"
     },
+    "./api/elysia": {
+      "dev-source": "./src/api/elysia.ts",
+      "types": "./dist/api/elysia.d.mts",
+      "default": "./dist/api/elysia.mjs"
+    },
+    "./api/encore": {
+      "dev-source": "./src/api/encore.ts",
+      "types": "./dist/api/encore.d.mts",
+      "default": "./dist/api/encore.mjs"
+    },
     "./webhooks": {
       "dev-source": "./src/webhooks/index.ts",
       "types": "./dist/webhooks/index.d.mts",

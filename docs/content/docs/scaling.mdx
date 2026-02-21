@@ -1,6 +1,6 @@
 ---
 title: Scaling
-description: Scale Summa from thousands to millions of transactions with read replicas, connection pooling, and Redis.
+description: Scale Summa from thousands to millions of transactions with denormalized balances, cursor pagination, lock retry, version retention, table partitioning, and more.
 icon: ChartBar
 ---
 
@@ -46,9 +46,10 @@ A production Summa deployment with all scalability features enabled:
 |---------------|:---:|-------|
 | Single instance, default config | 1,000–5,000 | Limited by advisory locks and single DB |
 | + Connection pooling | 3,000–8,000 | Better connection reuse |
-| + Read replicas | 10,000–20,000 | Offloads read queries |
-| + Redis secondary storage | 15,000–30,000 | Distributed rate limiting, multi-instance |
-| + Hot accounts plugin | 20,000–50,000 | Reduces lock contention on high-volume accounts |
+| + Denormalized balance + lock retry | 5,000–15,000 | Fewer queries per txn, fail-fast lock contention |
+| + Read replicas | 15,000–30,000 | Offloads read queries |
+| + Redis secondary storage | 20,000–40,000 | Distributed rate limiting, multi-instance |
+| + Hot accounts + version retention | 30,000–60,000 | Reduces contention + keeps tables bounded |
 
 ## Quick Start
 
@@ -181,6 +182,168 @@ const { storage, disconnect, ping } = createRedisStorage({
 
 See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) for setup options.
 
+### Hot Accounts
+
+High-throughput accounts (e.g., a platform fee account receiving thousands of credits per second) create row-level contention — every transaction locks the same `account_balance` row with `SELECT ... FOR UPDATE`.
+
+The `hotAccounts()` plugin solves this by **deferring balance updates** into a `hot_account_entry` table, then flushing them in batches:
+
+```ts
+import { hotAccounts } from "summa/plugins";
+
+plugins: [
+  hotAccounts({
+    batchSize: 1000,      // Entries per flush (default: 1000)
+    retentionHours: 24,   // Keep processed entries for 24h (default)
+  }),
+]
+```
+
+**How it works:**
+1. During a transaction, system account entries are written to `hot_account_entry` instead of updating `system_account.balance` synchronously
+2. A background worker flushes batched entries every few seconds, updating the system account balance in bulk
+3. User account entries still go through the synchronous lock-and-update path (correctness guarantee)
+
+<Callout type="warn" title="System accounts only">
+  Hot account batching currently applies to **system accounts only** (e.g., `@World`, `@Fees`, `@Revenue`). User accounts always use synchronous balance updates with row locking. This is the correct design for most deployments — system accounts see N× the traffic of any single user account since they're the counterparty to every transaction.
+
+  If a single user account genuinely receives 1000+ TPS (extremely rare), consider application-level sharding — split the logical account across multiple Summa accounts and aggregate at the application layer.
+</Callout>
+
+### Denormalized Balance Cache
+
+By default, Summa reads account balances via a `LATERAL JOIN` on the `account_balance_version` table. As version rows grow into millions, this join becomes a bottleneck. Enable the denormalized balance cache to store the current balance directly on the `account_balance` row:
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  advanced: {
+    useDenormalizedBalance: true,
+  },
+});
+```
+
+**How it works:**
+1. Every transaction still inserts a new `account_balance_version` row (audit trail is preserved)
+2. At the end of each transaction, the `account_balance` row is updated with cached balance, version, status, and checksum columns
+3. All reads (`getAccount`, `listAccounts`, `getBalance`) read directly from the cached columns — no `LATERAL JOIN`
+4. The `FOR UPDATE` lock and balance read happen in a single query instead of two
+
+**Impact:** Balance reads become O(1) on the already-locked row instead of a secondary index scan. At 100M+ versions, this can reduce read latency by 10-50x.
+
+<Callout type="info" title="Schema migration required">
+  Enabling `useDenormalizedBalance` requires running `summa migrate push` to add the `cached_*` columns to the `account_balance` table. Existing data will have default values until the next transaction touches each account.
+</Callout>
+
+### Lock Retry with Backoff
+
+High-contention accounts (many concurrent writes to the same account) can cause lock timeouts. Instead of immediately failing, configure automatic retry with exponential backoff:
+
+```ts
+advanced: {
+  lockRetryCount: 3,            // Retry up to 3 times (default: 0)
+  lockRetryBaseDelayMs: 50,     // Start with 50ms delay (default: 50)
+  lockRetryMaxDelayMs: 500,     // Cap delay at 500ms (default: 500)
+  lockMode: "nowait",           // Fail immediately if locked, then retry (default: "wait")
+}
+```
+
+**Lock modes:**
+- `"wait"` (default) — `FOR UPDATE` with `lock_timeout`. Blocks until the lock is available or times out.
+- `"nowait"` — `FOR UPDATE NOWAIT`. Fails immediately if the row is locked, triggering a retry with backoff.
+
+With `lockMode: "nowait"` and `lockRetryCount: 3`, contested accounts fail fast and retry with jitter instead of blocking in a lock queue. This significantly improves throughput on hot user accounts.
+
+### Cursor-Based Pagination
+
+For large datasets, OFFSET-based pagination degrades as page depth increases — `OFFSET 1,000,000` requires scanning 1M rows. Summa supports cursor-based (keyset) pagination for constant-time page traversal:
+
+```ts
+// First page
+const page1 = await summa.accounts.list({
+  holderId: "org_123",
+  limit: 20,
+});
+// page1.nextCursor = "eyJjcmVhdGVkX2F0..."
+
+// Next page — O(1) regardless of depth
+const page2 = await summa.accounts.list({
+  holderId: "org_123",
+  limit: 20,
+  cursor: page1.nextCursor,
+});
+```
+
+**Backward compatible:** Existing `page`/`perPage` parameters still work. When `cursor` is provided, Summa uses keyset pagination automatically. Cursor-based pagination is available on `accounts.list()`, `transactions.listAccountTransactions()`, and `holds.listAll()`.
+
+### Version Retention
+
+The `account_balance_version` table grows linearly with transaction volume — at 100M transactions/year, it can reach 200M+ rows. The `versionRetention()` plugin bounds this table by archiving and pruning old versions:
+
+```ts
+import { versionRetention } from "summa/plugins";
+
+plugins: [
+  versionRetention({
+    retainVersions: 100,   // Keep last 100 versions per account (default)
+    retainDays: 90,        // Keep versions newer than 90 days (default)
+    archiveTable: true,    // Move old versions to archive table (default)
+    batchSize: 500,        // Accounts per worker run (default)
+    interval: "1h",        // Run every hour (default)
+  }),
+]
+```
+
+**How it works:**
+1. A background worker identifies accounts with more versions than `retainVersions`
+2. For each account, versions older than `retainDays` AND beyond the latest `retainVersions` are eligible for pruning
+3. If `archiveTable: true`, eligible rows are copied to `account_balance_version_archive` before deletion
+4. The archive table has the same schema plus an `archived_at` timestamp
+
+**Impact:** At 100M txns/year with retain=100, the version table stays at ~10M rows instead of 200M+. Index maintenance and VACUUM costs are dramatically reduced.
+
+See [Version Retention Plugin](/docs/plugins/version-retention) for full configuration.
+
+### Table Partitioning
+
+For very large deployments, PostgreSQL range partitioning on time-series tables dramatically improves query performance and maintenance:
+
+```ts
+import { generatePartitionDDL, partitionMaintenance } from "summa/db";
+
+// 1. Generate migration DDL (run once)
+const ddl = generatePartitionDDL({
+  schema: "summa",
+  tables: {
+    entry_record: { type: "range", column: "created_at", interval: "monthly" },
+    transaction_record: { type: "range", column: "created_at", interval: "monthly" },
+    ledger_event: { type: "range", column: "created_at", interval: "monthly" },
+  },
+});
+// Returns SQL statements to run in a maintenance window
+
+// 2. Enable automatic partition maintenance
+plugins: [
+  partitionMaintenance({
+    tables: {
+      entry_record: { interval: "monthly" },
+      transaction_record: { interval: "monthly" },
+      ledger_event: { interval: "monthly" },
+    },
+    createAhead: 3,            // Create partitions 3 months ahead
+    retainPartitions: 24,      // Detach partitions older than 24 months
+  }),
+]
+```
+
+**Partition intervals:** `"daily"`, `"weekly"`, or `"monthly"`.
+
+**Impact:** Queries with `created_at` filters hit only relevant partitions. VACUUM and index maintenance happens per-partition. Detaching old partitions is instant (vs DELETE which causes table bloat).
+
+<Callout type="warn" title="One-time migration required">
+  Converting existing tables to partitioned tables requires a maintenance window. The `generatePartitionDDL()` helper produces the exact SQL statements, but you must run them manually. Back up your database first.
+</Callout>
+
 ### Background Statement Generation
 
 Large CSV/PDF statement generation can cause request timeouts. The statements plugin includes a background worker that processes generation jobs asynchronously.
@@ -256,8 +419,7 @@ if (!healthy) {
 
 ## What's Next
 
-For workloads beyond 50,000 TPS, consider:
-- **Event store partitioning** — partition `ledger_event` by time for faster queries
+For workloads beyond 60,000 TPS, consider:
 - **CQRS** — separate read/write models with materialized views
 - **Database sharding** — shard by account for horizontal write scaling
 - **Dedicated message queue** — replace outbox polling with Kafka/Redis Streams

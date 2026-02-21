@@ -6,6 +6,7 @@
 // and processed event cleanup.
 
 import { type SummaPlugin, validatePluginOptions } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // OPTIONS
@@ -53,8 +54,9 @@ export function maintenance(options?: MaintenanceOptions): SummaPlugin {
 				id: "worker-lease-cleanup",
 				description: "Remove expired worker leases from dead instances",
 				handler: async (ctx) => {
+					const t = createTableResolver(ctx.options.schema);
 					const deleted = await ctx.adapter.rawMutate(
-						`DELETE FROM worker_lease WHERE lease_until < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")}`,
+						`DELETE FROM ${t("worker_lease")} WHERE lease_until < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")}`,
 						[],
 					);
 					if (deleted > 0) {
@@ -68,8 +70,9 @@ export function maintenance(options?: MaintenanceOptions): SummaPlugin {
 				id: "processed-event-cleanup",
 				description: "Remove old processed event records beyond retention period",
 				handler: async (ctx) => {
+					const t = createTableResolver(ctx.options.schema);
 					const deleted = await ctx.adapter.rawMutate(
-						`DELETE FROM processed_event
+						`DELETE FROM ${t("processed_event")}
 						 WHERE processed_at < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")} * $1`,
 						[processedEventRetentionHours],
 					);

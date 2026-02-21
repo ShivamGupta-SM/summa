@@ -45,7 +45,7 @@ describe("Concurrency Stress Tests", () => {
 	// =========================================================================
 
 	it("concurrent debits do not overdraft an account", async () => {
-		await summa.accounts.create({ holderId: "conc-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "conc-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "conc-user",
 			amount: 10000,
@@ -86,7 +86,7 @@ describe("Concurrency Stress Tests", () => {
 		// Create 4 accounts, each with 50000
 		const holders = ["ct-a", "ct-b", "ct-c", "ct-d"];
 		for (const h of holders) {
-			await summa.accounts.create({ holderId: h, holderType: "user" });
+			await summa.accounts.create({ holderId: h, holderType: "individual" });
 			await summa.transactions.credit({ holderId: h, amount: 50000, reference: `fund-${h}` });
 		}
 
@@ -122,7 +122,7 @@ describe("Concurrency Stress Tests", () => {
 	it("concurrent account creation returns the same account", async () => {
 		const results = await Promise.allSettled(
 			Array.from({ length: 5 }, () =>
-				summa.accounts.create({ holderId: "race-user", holderType: "user" }),
+				summa.accounts.create({ holderId: "race-user", holderType: "individual" }),
 			),
 		);
 
@@ -140,7 +140,7 @@ describe("Concurrency Stress Tests", () => {
 	// =========================================================================
 
 	it("concurrent hold commit and void — only one succeeds", async () => {
-		await summa.accounts.create({ holderId: "hold-race", holderType: "user" });
+		await summa.accounts.create({ holderId: "hold-race", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "hold-race",
 			amount: 20000,
@@ -178,7 +178,7 @@ describe("Concurrency Stress Tests", () => {
 	// =========================================================================
 
 	it("concurrent credits all apply correctly", async () => {
-		await summa.accounts.create({ holderId: "multi-credit", holderType: "user" });
+		await summa.accounts.create({ holderId: "multi-credit", holderType: "individual" });
 
 		const results = await Promise.allSettled(
 			Array.from({ length: 10 }, (_, i) =>
@@ -203,9 +203,9 @@ describe("Concurrency Stress Tests", () => {
 
 	it("mixed concurrent operations maintain double-entry invariant", async () => {
 		// Setup: 3 accounts with funds
-		await summa.accounts.create({ holderId: "mix-a", holderType: "user" });
-		await summa.accounts.create({ holderId: "mix-b", holderType: "user" });
-		await summa.accounts.create({ holderId: "mix-c", holderType: "user" });
+		await summa.accounts.create({ holderId: "mix-a", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mix-b", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mix-c", holderType: "individual" });
 
 		await summa.transactions.credit({ holderId: "mix-a", amount: 100000, reference: "mix-fund-a" });
 		await summa.transactions.credit({ holderId: "mix-b", amount: 100000, reference: "mix-fund-b" });
@@ -244,7 +244,7 @@ describe("Concurrency Stress Tests", () => {
 	// =========================================================================
 
 	it("concurrent debits with same idempotency key produce single debit", async () => {
-		await summa.accounts.create({ holderId: "idem-conc", holderType: "user" });
+		await summa.accounts.create({ holderId: "idem-conc", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "idem-conc",
 			amount: 50000,

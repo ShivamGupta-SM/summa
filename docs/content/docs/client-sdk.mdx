@@ -14,13 +14,15 @@ Use the client SDK when Summa runs as a **standalone service** and your applicat
 |--------|-----------|-------------|
 | **Your App** (`@summa/client`) | HTTP (JSON) | **Summa API** (Hono / Express) |
 
-## Installation
+## Getting Started
+
+### Installation
 
 ```bash
 pnpm add @summa/client @summa/core
 ```
 
-## Quick Start
+### Quick Start
 
 ```ts
 import { createSummaClient } from "@summa/client";
@@ -48,7 +50,7 @@ const txn = await client.transactions.transfer({
 const balance = await client.accounts.getBalance("user_123");
 ```
 
-## Configuration
+### Configuration
 
 <TypeTable
   type={{
@@ -61,12 +63,13 @@ const balance = await client.accounts.getBalance("user_123");
   }}
 />
 
-## Authentication
+### Authentication
 
 The client SDK does not enforce any authentication scheme — add your auth headers via `headers` or interceptors:
 
 <Tabs items={["Static API key", "Dynamic token"]}>
 <Tab value="Static API key">
+
 ```ts
 const client = createSummaClient({
   baseURL: "http://ledger:3000/api/ledger",
@@ -75,8 +78,10 @@ const client = createSummaClient({
   },
 });
 ```
+
 </Tab>
 <Tab value="Dynamic token">
+
 ```ts
 const client = createSummaClient({
   baseURL: "http://ledger:3000/api/ledger",
@@ -89,6 +94,7 @@ const client = createSummaClient({
   },
 });
 ```
+
 </Tab>
 </Tabs>
 
@@ -96,6 +102,7 @@ const client = createSummaClient({
 
 <Tabs items={["Accounts", "Transactions", "Holds", "Events", "Limits"]}>
 <Tab value="Accounts">
+
 ```ts
 client.accounts.create(params)       // POST /accounts
 client.accounts.get(holderId)        // GET /accounts/:holderId
@@ -105,49 +112,62 @@ client.accounts.unfreeze(params)     // POST /accounts/:holderId/unfreeze
 client.accounts.close(params)        // POST /accounts/:holderId/close
 client.accounts.list(params?)        // GET /accounts
 ```
+
 </Tab>
 <Tab value="Transactions">
+
 ```ts
 client.transactions.credit(params)        // POST /transactions/credit
 client.transactions.debit(params)         // POST /transactions/debit
 client.transactions.transfer(params)      // POST /transactions/transfer
 client.transactions.multiTransfer(params) // POST /transactions/multi-transfer
 client.transactions.refund(params)        // POST /transactions/refund
+client.transactions.correct(params)       // POST /transactions/correct
+client.transactions.adjust(params)        // POST /transactions/adjust
+client.transactions.journal(params)       // POST /transactions/journal
 client.transactions.get(id)               // GET /transactions/:id
 client.transactions.list(params)          // GET /transactions
 ```
+
 </Tab>
 <Tab value="Holds">
+
 ```ts
-client.holds.create(params)     // POST /holds
-client.holds.commit(params)     // POST /holds/:holdId/commit
+client.holds.create(params)                // POST /holds
+client.holds.createMultiDestination(params) // POST /holds/multi-destination
+client.holds.commit(params)                // POST /holds/:holdId/commit
 client.holds.void(params)       // POST /holds/:holdId/void
 client.holds.get(id)            // GET /holds/:id
 client.holds.listActive(params) // GET /holds/active
 client.holds.listAll(params)    // GET /holds
 ```
+
 </Tab>
 <Tab value="Events">
+
 ```ts
 client.events.getForAggregate(type, id)       // GET /events/:type/:id
 client.events.getByCorrelation(correlationId) // GET /events/correlation/:id
 client.events.verifyChain(type, id)           // POST /events/verify
 ```
+
 </Tab>
 <Tab value="Limits">
+
 ```ts
 client.limits.set(params)      // POST /limits
 client.limits.get(holderId)    // GET /limits/:holderId
 client.limits.remove(params)   // DELETE /limits/:holderId
 client.limits.getUsage(params) // GET /limits/:holderId/usage
 ```
+
 </Tab>
 </Tabs>
 
 ## Error Handling
 
 <Callout type="info" title="Typed errors">
-  The client throws `SummaClientError` for all API errors, with `code`, `status`, and `message` fields.
+  The client throws `SummaClientError` for all API errors, with `code`, `status`, `message`, and `details` fields.
 </Callout>
 
 ```ts
@@ -160,13 +180,16 @@ try {
     console.log(error.code);    // "INSUFFICIENT_BALANCE"
     console.log(error.status);  // 400
     console.log(error.message); // "Insufficient balance: ..."
+    console.log(error.details); // { available: 1000, requested: 5000 }
   }
 }
 ```
 
-## Interceptors
+## Advanced
 
-### Request Interceptor
+### Interceptors
+
+#### Request Interceptor
 
 Modify outgoing requests before they are sent:
 
@@ -187,7 +210,7 @@ const client = createSummaClient({
 });
 ```
 
-### Response Interceptor
+#### Response Interceptor
 
 Process responses before they are returned:
 
@@ -212,7 +235,7 @@ const client = createSummaClient({
 
 Multiple interceptors can be passed as an array — they execute in order.
 
-## Custom Fetch
+### Custom Fetch
 
 Provide a custom `fetch` implementation for environments without a global `fetch`, or for testing:
 
@@ -225,9 +248,9 @@ const client = createSummaClient({
 });
 ```
 
-## Low-Level Fetch Client
+### Low-Level Fetch Client
 
-For advanced use cases, the SDK also exports the internal `FetchClient` with typed `get`, `post`, and `del` methods:
+For advanced use cases, the SDK also exports the internal `FetchClient` with typed `get`, `post`, `put`, and `del` methods:
 
 ```ts
 import { createFetchClient } from "@summa/client/fetch";
@@ -245,11 +268,12 @@ const txn = await http.post<Transaction>("/transactions/credit", { holderId: "us
 |--------|-----------|-------------|
 | `get` | `get<T>(path, query?)` | GET request with optional query params |
 | `post` | `post<T>(path, body?)` | POST request with JSON body |
+| `put` | `put<T>(path, body?)` | PUT request with JSON body |
 | `del` | `del<T>(path, body?)` | DELETE request with optional JSON body |
 
 The `FetchClient` applies the same interceptors, timeout, and error parsing as the main client.
 
-## Proxy Client
+### Proxy Client
 
 For dynamic or plugin endpoints not covered by the typed client, use the **proxy client**. It maps property access chains to URL paths automatically:
 
@@ -270,7 +294,7 @@ await client.admin.accounts("user_123").freeze.$post({ reason: "suspicious" });
 const metrics = await client.metrics.$get();
 ```
 
-### Method Hints
+#### Method Hints
 
 | Method | HTTP Verb | Usage |
 |--------|-----------|-------|

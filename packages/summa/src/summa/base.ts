@@ -7,11 +7,14 @@ import type {
 	Account,
 	AccountBalance,
 	AccountStatus,
+	AccountType,
 	Hold,
 	HoldDestination,
 	HolderType,
 	InferPluginTypes,
+	JournalEntryLeg,
 	LedgerTransaction,
+	MerkleProof,
 	StoredEvent,
 	SummaContext,
 	SummaOptions,
@@ -24,7 +27,17 @@ import * as events from "../infrastructure/event-store.js";
 import * as hashChain from "../infrastructure/hash-chain.js";
 import { createWorkerRunner, type SummaWorkerRunner } from "../infrastructure/worker-runner.js";
 import * as accounts from "../managers/account-manager.js";
+import {
+	type AccountingEquationResult,
+	type AccountNode,
+	getAccountHierarchy,
+	getAccountsByType,
+	getChildAccounts,
+	validateAccountingEquation,
+} from "../managers/chart-of-accounts.js";
+import * as corrections from "../managers/correction-manager.js";
 import * as holds from "../managers/hold-manager.js";
+import * as journal from "../managers/journal-manager.js";
 import type { AccountLimitInfo, LimitType } from "../managers/limit-manager.js";
 import * as limits from "../managers/limit-manager.js";
 import { initializeSystemAccounts } from "../managers/system-accounts.js";
@@ -42,13 +55,20 @@ export interface Summa<TInfer = Record<string, never>> {
 			currency?: string;
 			allowOverdraft?: boolean;
 			indicator?: string;
+			accountType?: AccountType;
+			accountCode?: string;
+			parentAccountId?: string;
 			metadata?: Record<string, unknown>;
 		}) => Promise<Account>;
 		get: (holderId: string) => Promise<Account>;
 		getById: (accountId: string) => Promise<Account>;
 		getBalance: (holderId: string) => Promise<AccountBalance>;
 		freeze: (params: { holderId: string; reason: string; frozenBy: string }) => Promise<Account>;
-		unfreeze: (params: { holderId: string; unfrozenBy: string }) => Promise<Account>;
+		unfreeze: (params: {
+			holderId: string;
+			unfrozenBy: string;
+			reason?: string;
+		}) => Promise<Account>;
 		close: (params: {
 			holderId: string;
 			closedBy: string;
@@ -62,6 +82,12 @@ export interface Summa<TInfer = Record<string, never>> {
 			holderType?: HolderType;
 			search?: string;
 		}) => Promise<{ accounts: Account[]; hasMore: boolean; total: number }>;
+	};
+	chartOfAccounts: {
+		getByType: (accountType: AccountType) => Promise<Account[]>;
+		getChildren: (parentAccountId: string) => Promise<Account[]>;
+		getHierarchy: (rootAccountId?: string) => Promise<AccountNode[]>;
+		validateEquation: () => Promise<AccountingEquationResult>;
 	};
 	transactions: {
 		credit: (params: {
@@ -94,6 +120,8 @@ export interface Summa<TInfer = Record<string, never>> {
 			category?: string;
 			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
+			/** Exchange rate as scaled integer (rate × 1_000_000). Auto-resolved if fx-engine plugin is registered. */
+			exchangeRate?: number;
 		}) => Promise<LedgerTransaction>;
 		multiTransfer: (params: {
 			sourceHolderId: string;
@@ -109,6 +137,28 @@ export interface Summa<TInfer = Record<string, never>> {
 			transactionId: string;
 			reason: string;
 			amount?: number;
+			idempotencyKey?: string;
+		}) => Promise<LedgerTransaction>;
+		correct: (params: {
+			transactionId: string;
+			correctionEntries: JournalEntryLeg[];
+			reason: string;
+			reference?: string;
+			idempotencyKey?: string;
+		}) => Promise<{ reversal: LedgerTransaction; correction: LedgerTransaction }>;
+		adjust: (params: {
+			entries: JournalEntryLeg[];
+			reference: string;
+			adjustmentType: "accrual" | "depreciation" | "correction" | "reclassification";
+			description?: string;
+			metadata?: Record<string, unknown>;
+			idempotencyKey?: string;
+		}) => Promise<LedgerTransaction>;
+		journal: (params: {
+			entries: JournalEntryLeg[];
+			reference: string;
+			description?: string;
+			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
 		}) => Promise<LedgerTransaction>;
 		get: (id: string) => Promise<LedgerTransaction>;
@@ -127,7 +177,7 @@ export interface Summa<TInfer = Record<string, never>> {
 		}) => Promise<{
 			transactions: LedgerTransaction[];
 			hasMore: boolean;
-			total?: number;
+			total: number;
 		}>;
 	};
 	holds: {
@@ -143,6 +193,18 @@ export interface Summa<TInfer = Record<string, never>> {
 			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
 		}) => Promise<Hold>;
+		createMultiDestination: (params: {
+			holderId: string;
+			amount: number;
+			reference: string;
+			description?: string;
+			category?: string;
+			destinations: HoldDestination[];
+			expiresInMinutes?: number;
+			metadata?: Record<string, unknown>;
+			idempotencyKey?: string;
+		}) => Promise<Hold>;
+		/** @deprecated Use `createMultiDestination` instead */
 		createMultiDest: (params: {
 			holderId: string;
 			amount: number;
@@ -169,14 +231,14 @@ export interface Summa<TInfer = Record<string, never>> {
 			page?: number;
 			perPage?: number;
 			category?: string;
-		}) => Promise<{ holds: Hold[]; hasMore: boolean; total?: number }>;
+		}) => Promise<{ holds: Hold[]; hasMore: boolean; total: number }>;
 		listAll: (params: {
 			holderId: string;
 			page?: number;
 			perPage?: number;
 			category?: string;
 			status?: "inflight" | "posted" | "voided" | "expired";
-		}) => Promise<{ holds: Hold[]; hasMore: boolean; total?: number }>;
+		}) => Promise<{ holds: Hold[]; hasMore: boolean; total: number }>;
 	};
 	events: {
 		getForAggregate: (type: string, id: string) => Promise<StoredEvent[]>;
@@ -185,6 +247,19 @@ export interface Summa<TInfer = Record<string, never>> {
 			type: string,
 			id: string,
 		) => Promise<{ valid: boolean; brokenAtVersion?: number; eventCount: number }>;
+		verifyExternalAnchor: (
+			blockSequence: number,
+			externalBlockHash: string,
+		) => Promise<{ valid: boolean; storedHash: string; merkleRoot: string | null }>;
+		/** Generate a Merkle proof for a specific event (O(log n) siblings). */
+		generateProof: (
+			eventId: string,
+		) => Promise<MerkleProof & { blockId: string; blockSequence: number }>;
+		/** Verify a Merkle proof, optionally cross-checking against the stored block root. */
+		verifyProof: (
+			proof: MerkleProof,
+			blockId?: string,
+		) => Promise<{ valid: boolean; rootMatch: boolean }>;
 	};
 	limits: {
 		set: (params: {
@@ -281,6 +356,24 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				return accounts.listAccounts(ctx, params);
 			},
 		},
+		chartOfAccounts: {
+			getByType: async (accountType) => {
+				const ctx = await getCtx();
+				return getAccountsByType(ctx, accountType);
+			},
+			getChildren: async (parentAccountId) => {
+				const ctx = await getCtx();
+				return getChildAccounts(ctx, parentAccountId);
+			},
+			getHierarchy: async (rootAccountId) => {
+				const ctx = await getCtx();
+				return getAccountHierarchy(ctx, rootAccountId);
+			},
+			validateEquation: async () => {
+				const ctx = await getCtx();
+				return validateAccountingEquation(ctx);
+			},
+		},
 		transactions: {
 			credit: async (params) => {
 				const ctx = await getCtx();
@@ -302,6 +395,18 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				const ctx = await getCtx();
 				return transactions.refundTransaction(ctx, params);
 			},
+			correct: async (params) => {
+				const ctx = await getCtx();
+				return corrections.correctTransaction(ctx, params);
+			},
+			adjust: async (params) => {
+				const ctx = await getCtx();
+				return corrections.adjustmentEntry(ctx, params);
+			},
+			journal: async (params) => {
+				const ctx = await getCtx();
+				return journal.journalEntry(ctx, params);
+			},
 			get: async (id) => {
 				const ctx = await getCtx();
 				return transactions.getTransaction(ctx, id);
@@ -315,6 +420,10 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 			create: async (params) => {
 				const ctx = await getCtx();
 				return holds.createHold(ctx, params);
+			},
+			createMultiDestination: async (params) => {
+				const ctx = await getCtx();
+				return holds.createMultiDestinationHold(ctx, params);
 			},
 			createMultiDest: async (params) => {
 				const ctx = await getCtx();
@@ -357,6 +466,18 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 			verifyChain: async (type, id) => {
 				const ctx = await getCtx();
 				return hashChain.verifyHashChain(ctx, type.toLowerCase(), id);
+			},
+			verifyExternalAnchor: async (blockSequence: number, externalBlockHash: string) => {
+				const ctx = await getCtx();
+				return hashChain.verifyExternalAnchor(ctx, blockSequence, externalBlockHash);
+			},
+			generateProof: async (eventId) => {
+				const ctx = await getCtx();
+				return hashChain.generateEventProof(ctx, eventId);
+			},
+			verifyProof: async (proof, blockId) => {
+				const ctx = await getCtx();
+				return hashChain.verifyEventProof(ctx, proof, blockId);
 			},
 		},
 		limits: {

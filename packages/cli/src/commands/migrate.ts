@@ -49,33 +49,98 @@ function columnSQL(colName: string, col: ColumnDefinition): string {
 	return `  ${parts.join(" ")}`;
 }
 
-function createTableSQL(tableName: string, def: TableDefinition): string {
+function qualifyTable(schema: string, tableName: string): string {
+	if (schema === "public") return `"${tableName}"`;
+	return `"${schema}"."${tableName}"`;
+}
+
+function createTableSQL(tableName: string, def: TableDefinition, schema: string): string {
 	const sqlTableName = toSnakeCase(tableName);
+	const qualified = qualifyTable(schema, sqlTableName);
 	const colLines: string[] = [];
 
 	for (const [colName, col] of Object.entries(def.columns)) {
 		colLines.push(columnSQL(colName, col));
 	}
 
-	let sql = `CREATE TABLE IF NOT EXISTS ${sqlTableName} (\n${colLines.join(",\n")}\n);\n`;
+	let sql = `CREATE TABLE IF NOT EXISTS ${qualified} (\n${colLines.join(",\n")}\n);\n`;
 
 	if (def.indexes) {
 		for (const idx of def.indexes) {
 			const cols = idx.columns.join(", ");
 			const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
-			sql += `CREATE ${kind} IF NOT EXISTS ${idx.name} ON ${sqlTableName} (${cols});\n`;
+			const qualifiedIdx = schema === "public" ? idx.name : `"${schema}".${idx.name}`;
+			sql += `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified} (${cols});\n`;
 		}
 	}
 
 	return sql;
 }
 
-function dropTableSQL(tableName: string): string {
-	return `DROP TABLE IF EXISTS ${toSnakeCase(tableName)} CASCADE;\n`;
+function dropTableSQL(tableName: string, schema: string): string {
+	return `DROP TABLE IF EXISTS ${qualifyTable(schema, toSnakeCase(tableName))} CASCADE;\n`;
 }
 
-function dropIndexSQL(indexName: string): string {
-	return `DROP INDEX IF EXISTS ${indexName};\n`;
+function dropIndexSQL(indexName: string, schema: string): string {
+	const qualified = schema === "public" ? indexName : `"${schema}".${indexName}`;
+	return `DROP INDEX IF EXISTS ${qualified};\n`;
+}
+
+// =============================================================================
+// IMMUTABILITY TRIGGERS — Last line of defense for financial data
+// =============================================================================
+
+/** Tables that MUST NOT allow UPDATE or DELETE at the DB level. */
+const IMMUTABLE_TABLES: ReadonlySet<string> = new Set([
+	"account_balance",
+	"account_balance_version",
+	"transaction_record",
+	"transaction_status",
+	"entry_record",
+	"ledger_event",
+	"block_checkpoint",
+	"merkle_node",
+	"entity_status_log",
+	"system_account",
+	"system_account_version",
+]);
+
+/**
+ * Generate SQL to create immutability enforcement triggers.
+ * These triggers prevent UPDATE and DELETE on financial tables at the DB level,
+ * serving as the last line of defense even if application code has bugs.
+ */
+function immutabilityTriggersSQL(schema: string): string {
+	const parts: string[] = [];
+
+	// Create the shared trigger function
+	parts.push(`
+CREATE OR REPLACE FUNCTION "${schema}".prevent_update_delete()
+RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'Table %.% is immutable — UPDATE and DELETE are not allowed', TG_TABLE_SCHEMA, TG_TABLE_NAME;
+  RETURN NULL;
+END;
+$$ LANGUAGE plpgsql;`);
+
+	// Create triggers for each immutable table
+	for (const tableName of IMMUTABLE_TABLES) {
+		const qualified = qualifyTable(schema, tableName);
+		const triggerName = `trg_immutable_${tableName}`;
+
+		parts.push(`
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = '${schema}' AND table_name = '${tableName}') THEN
+    DROP TRIGGER IF EXISTS ${triggerName} ON ${qualified};
+    CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OR DELETE ON ${qualified}
+      FOR EACH ROW
+      EXECUTE FUNCTION "${schema}".prevent_update_delete();
+  END IF;
+END $$;`);
+	}
+
+	return parts.join("\n");
 }
 
 interface MigrationPlan {
@@ -91,6 +156,7 @@ interface MigrationPlan {
 async function buildMigrationPlan(
 	client: import("pg").Client,
 	tables: Record<string, TableDefinition>,
+	schema: string,
 ): Promise<MigrationPlan> {
 	const plan: MigrationPlan = {
 		tablesToCreate: [],
@@ -102,16 +168,16 @@ async function buildMigrationPlan(
 		const sqlName = toSnakeCase(tableName);
 
 		const tableExists = await client.query(
-			`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`,
-			[sqlName],
+			`SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2`,
+			[schema, sqlName],
 		);
 
 		if (tableExists.rows.length === 0) {
 			plan.tablesToCreate.push({ name: tableName, sqlName, def });
 		} else {
 			const existingCols = await client.query(
-				`SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1`,
-				[sqlName],
+				`SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2`,
+				[schema, sqlName],
 			);
 			const existingColNames = new Set(existingCols.rows.map((r) => String(r.column_name)));
 
@@ -128,8 +194,8 @@ async function buildMigrationPlan(
 
 			if (def.indexes) {
 				const existingIndexes = await client.query(
-					`SELECT indexname FROM pg_indexes WHERE schemaname = 'public' AND tablename = $1`,
-					[sqlName],
+					`SELECT indexname FROM pg_indexes WHERE schemaname = $1 AND tablename = $2`,
+					[schema, sqlName],
 				);
 				const existingIdxNames = new Set(existingIndexes.rows.map((r) => String(r.indexname)));
 
@@ -137,8 +203,10 @@ async function buildMigrationPlan(
 					if (!existingIdxNames.has(idx.name)) {
 						const cols = idx.columns.join(", ");
 						const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
+						const qualified = qualifyTable(schema, sqlName);
+						const qualifiedIdx = schema === "public" ? idx.name : `"${schema}".${idx.name}`;
 						plan.indexesToCreate.push({
-							sql: `CREATE ${kind} IF NOT EXISTS ${idx.name} ON ${sqlName} (${cols});`,
+							sql: `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified} (${cols});`,
 							name: idx.name,
 						});
 					}
@@ -162,11 +230,14 @@ function planIsEmpty(plan: MigrationPlan): boolean {
 // MIGRATION TRACKING HELPERS
 // =============================================================================
 
-const MIGRATIONS_TABLE = "_summa_migrations";
+function migrationsTable(schema: string): string {
+	return qualifyTable(schema, "_summa_migrations");
+}
 
-async function ensureMigrationsTable(client: import("pg").Client): Promise<void> {
+async function ensureMigrationsTable(client: import("pg").Client, schema: string): Promise<void> {
+	const mt = migrationsTable(schema);
 	await client.query(`
-		CREATE TABLE IF NOT EXISTS ${MIGRATIONS_TABLE} (
+		CREATE TABLE IF NOT EXISTS ${mt} (
 			id SERIAL PRIMARY KEY,
 			name TEXT NOT NULL,
 			hash TEXT NOT NULL,
@@ -180,14 +251,15 @@ function hashSQL(sql: string): string {
 	return createHash("sha256").update(sql).digest("hex").slice(0, 16);
 }
 
-function planToUpSQL(plan: MigrationPlan): string {
+function planToUpSQL(plan: MigrationPlan, schema: string): string {
 	const parts: string[] = [];
 
 	for (const table of plan.tablesToCreate) {
-		parts.push(createTableSQL(table.name, table.def));
+		parts.push(createTableSQL(table.name, table.def, schema));
 	}
 
 	for (const alter of plan.tablesToAlter) {
+		const qualified = qualifyTable(schema, alter.sqlName);
 		for (const col of alter.columnsToAdd) {
 			const colType = pgType(col.col);
 			const notNull = col.col.notNull ? " NOT NULL" : "";
@@ -195,7 +267,7 @@ function planToUpSQL(plan: MigrationPlan): string {
 				? ` DEFAULT ${col.col.default === "NOW()" ? "NOW()" : col.col.default}`
 				: "";
 			parts.push(
-				`ALTER TABLE ${alter.sqlName} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
+				`ALTER TABLE ${qualified} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
 			);
 		}
 	}
@@ -204,25 +276,28 @@ function planToUpSQL(plan: MigrationPlan): string {
 		parts.push(idx.sql);
 	}
 
+	// Append immutability triggers
+	parts.push(immutabilityTriggersSQL(schema));
+
 	return parts.join("\n\n");
 }
 
-function planToDownSQL(plan: MigrationPlan): string {
+function planToDownSQL(plan: MigrationPlan, schema: string): string {
 	const parts: string[] = [];
 
-	// Reverse order: drop indexes first, then columns, then tables
 	for (const idx of plan.indexesToCreate) {
-		parts.push(dropIndexSQL(idx.name));
+		parts.push(dropIndexSQL(idx.name, schema));
 	}
 
 	for (const alter of plan.tablesToAlter) {
+		const qualified = qualifyTable(schema, alter.sqlName);
 		for (const col of alter.columnsToAdd) {
-			parts.push(`ALTER TABLE ${alter.sqlName} DROP COLUMN IF EXISTS ${col.name};`);
+			parts.push(`ALTER TABLE ${qualified} DROP COLUMN IF EXISTS ${col.name};`);
 		}
 	}
 
 	for (const table of [...plan.tablesToCreate].reverse()) {
-		parts.push(dropTableSQL(table.name));
+		parts.push(dropTableSQL(table.name, schema));
 	}
 
 	return parts.join("\n\n");
@@ -232,6 +307,7 @@ interface LoadedContext {
 	dbUrl: string;
 	pg: typeof import("pg");
 	tables: Record<string, TableDefinition>;
+	schema: string;
 }
 
 async function loadContext(command: Command, urlOption?: string): Promise<LoadedContext | null> {
@@ -240,11 +316,15 @@ async function loadContext(command: Command, urlOption?: string): Promise<Loaded
 	const configFlag: string | undefined = parent?.opts().config;
 
 	let configDbUrl: string | undefined;
+	let schema = "summa";
 	const config = await getConfig({ cwd, configPath: configFlag });
 	if (config?.options) {
 		const db = config.options.database;
 		if (typeof db === "object" && "connectionString" in db) {
 			configDbUrl = db.connectionString as string;
+		}
+		if (typeof config.options.schema === "string" && config.options.schema.length > 0) {
+			schema = config.options.schema;
 		}
 	}
 
@@ -279,7 +359,7 @@ async function loadContext(command: Command, urlOption?: string): Promise<Loaded
 		return null;
 	}
 
-	return { dbUrl, pg, tables };
+	return { dbUrl, pg, tables, schema };
 }
 
 // =============================================================================
@@ -305,12 +385,17 @@ const pushCommand = new Command("push")
 		try {
 			await client.connect();
 
+			// Create schema if non-public
+			if (ctx.schema !== "public") {
+				await client.query(`CREATE SCHEMA IF NOT EXISTS "${ctx.schema}"`);
+			}
+
 			// Ensure migrations table exists
-			await ensureMigrationsTable(client);
+			await ensureMigrationsTable(client, ctx.schema);
 
 			const s2 = p.spinner();
 			s2.start("Analyzing database schema...");
-			const plan = await buildMigrationPlan(client, ctx.tables);
+			const plan = await buildMigrationPlan(client, ctx.tables, ctx.schema);
 			s2.stop("Schema analysis complete");
 
 			if (planIsEmpty(plan)) {
@@ -350,46 +435,67 @@ const pushCommand = new Command("push")
 				}
 			}
 
-			// Execute
+			// Execute inside a transaction so partial failures are rolled back
+			// (PostgreSQL supports transactional DDL)
 			const s3 = p.spinner();
 			s3.start("Applying migrations...");
 
 			let statementsRun = 0;
 
-			for (const table of plan.tablesToCreate) {
-				const sql = createTableSQL(table.name, table.def);
-				for (const stmt of sql.split(";\n").filter(Boolean)) {
+			await client.query("BEGIN");
+			try {
+				for (const table of plan.tablesToCreate) {
+					const sql = createTableSQL(table.name, table.def, ctx.schema);
+					for (const stmt of sql.split(";\n").filter(Boolean)) {
+						await client.query(`${stmt};`);
+						statementsRun++;
+					}
+				}
+
+				for (const alter of plan.tablesToAlter) {
+					const qualifiedAlter = qualifyTable(ctx.schema, alter.sqlName);
+					for (const col of alter.columnsToAdd) {
+						const colType = pgType(col.col);
+						const notNull = col.col.notNull ? " NOT NULL" : "";
+						const def = col.col.default
+							? ` DEFAULT ${col.col.default === "NOW()" ? "NOW()" : col.col.default}`
+							: "";
+						await client.query(
+							`ALTER TABLE ${qualifiedAlter} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
+						);
+						statementsRun++;
+					}
+				}
+
+				for (const idx of plan.indexesToCreate) {
+					await client.query(idx.sql);
+					statementsRun++;
+				}
+
+				// Apply immutability triggers on financial tables
+				const triggerSQL = immutabilityTriggersSQL(ctx.schema);
+				for (const stmt of triggerSQL
+					.split(";")
+					.map((s) => s.trim())
+					.filter((s) => s.length > 0 && !s.startsWith("--"))) {
 					await client.query(`${stmt};`);
 					statementsRun++;
 				}
-			}
 
-			for (const alter of plan.tablesToAlter) {
-				for (const col of alter.columnsToAdd) {
-					const colType = pgType(col.col);
-					const notNull = col.col.notNull ? " NOT NULL" : "";
-					const def = col.col.default
-						? ` DEFAULT ${col.col.default === "NOW()" ? "NOW()" : col.col.default}`
-						: "";
-					await client.query(
-						`ALTER TABLE ${alter.sqlName} ADD COLUMN IF NOT EXISTS ${col.name} ${colType}${notNull}${def};`,
-					);
-					statementsRun++;
-				}
-			}
+				// Record migration in tracking table
+				const upSQL = planToUpSQL(plan, ctx.schema);
+				const migrationName = `push_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+				const mt = migrationsTable(ctx.schema);
+				await client.query(`INSERT INTO ${mt} (name, hash) VALUES ($1, $2)`, [
+					migrationName,
+					hashSQL(upSQL),
+				]);
 
-			for (const idx of plan.indexesToCreate) {
-				await client.query(idx.sql);
-				statementsRun++;
+				await client.query("COMMIT");
+			} catch (ddlError) {
+				await client.query("ROLLBACK").catch(() => {});
+				throw ddlError;
 			}
-
-			// Record migration in tracking table
-			const upSQL = planToUpSQL(plan);
-			const migrationName = `push_${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
-			await client.query(`INSERT INTO ${MIGRATIONS_TABLE} (name, hash) VALUES ($1, $2)`, [
-				migrationName,
-				hashSQL(upSQL),
-			]);
 
 			s3.stop(`Applied ${pc.cyan(String(statementsRun))} statement(s)`);
 			p.outro(pc.green("Migration completed successfully!"));
@@ -420,11 +526,15 @@ const generateSubCommand = new Command("generate")
 
 		try {
 			await client.connect();
-			await ensureMigrationsTable(client);
+
+			if (ctx.schema !== "public") {
+				await client.query(`CREATE SCHEMA IF NOT EXISTS "${ctx.schema}"`);
+			}
+			await ensureMigrationsTable(client, ctx.schema);
 
 			const s = p.spinner();
 			s.start("Analyzing database schema...");
-			const plan = await buildMigrationPlan(client, ctx.tables);
+			const plan = await buildMigrationPlan(client, ctx.tables, ctx.schema);
 			s.stop("Analysis complete");
 
 			if (planIsEmpty(plan)) {
@@ -433,8 +543,8 @@ const generateSubCommand = new Command("generate")
 				return;
 			}
 
-			const upSQL = planToUpSQL(plan);
-			const downSQL = planToDownSQL(plan);
+			const upSQL = planToUpSQL(plan, ctx.schema);
+			const downSQL = planToDownSQL(plan, ctx.schema);
 
 			const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 			const migrationName = `${timestamp}_summa_migration`;
@@ -504,11 +614,11 @@ const statusSubCommand = new Command("status")
 
 		try {
 			await client.connect();
-			await ensureMigrationsTable(client);
+			await ensureMigrationsTable(client, ctx.schema);
 
 			const s = p.spinner();
 			s.start("Checking schema...");
-			const plan = await buildMigrationPlan(client, ctx.tables);
+			const plan = await buildMigrationPlan(client, ctx.tables, ctx.schema);
 			s.stop("Analysis complete");
 
 			if (planIsEmpty(plan)) {
@@ -537,7 +647,8 @@ const statusSubCommand = new Command("status")
 			}
 
 			// Show migration history summary
-			const history = await client.query(`SELECT COUNT(*) as count FROM ${MIGRATIONS_TABLE}`);
+			const mt = migrationsTable(ctx.schema);
+			const history = await client.query(`SELECT COUNT(*) as count FROM ${mt}`);
 			const count = Number(history.rows[0].count);
 			if (count > 0) {
 				p.log.info(
@@ -573,11 +684,12 @@ const listSubCommand = new Command("list")
 
 		try {
 			await client.connect();
-			await ensureMigrationsTable(client);
+			await ensureMigrationsTable(client, ctx.schema);
 
+			const mt = migrationsTable(ctx.schema);
 			const limit = Math.max(1, Number.parseInt(options.limit, 10) || 20);
 			const result = await client.query(
-				`SELECT id, name, hash, applied_at FROM ${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT $1`,
+				`SELECT id, name, hash, applied_at FROM ${mt} ORDER BY id DESC LIMIT $1`,
 				[limit],
 			);
 
@@ -596,7 +708,7 @@ const listSubCommand = new Command("list")
 				);
 			}
 
-			const total = await client.query(`SELECT COUNT(*) as count FROM ${MIGRATIONS_TABLE}`);
+			const total = await client.query(`SELECT COUNT(*) as count FROM ${mt}`);
 			const totalCount = Number(total.rows[0].count);
 			if (totalCount > result.rows.length) {
 				p.log.info(
@@ -634,11 +746,12 @@ const rollbackSubCommand = new Command("rollback")
 
 		try {
 			await client.connect();
-			await ensureMigrationsTable(client);
+			await ensureMigrationsTable(client, ctx.schema);
 
+			const mt = migrationsTable(ctx.schema);
 			const steps = Math.max(1, Number.parseInt(options.steps, 10) || 1);
 			const result = await client.query(
-				`SELECT id, name, hash FROM ${MIGRATIONS_TABLE} ORDER BY id DESC LIMIT $1`,
+				`SELECT id, name, hash FROM ${mt} ORDER BY id DESC LIMIT $1`,
 				[steps],
 			);
 
@@ -705,22 +818,29 @@ const rollbackSubCommand = new Command("rollback")
 			const s = p.spinner();
 			s.start("Rolling back...");
 
-			for (const { row, downSQL } of rollbackPlans) {
-				if (downSQL) {
-					// Execute each statement in the down SQL
-					const statements = downSQL
-						.split(";\n")
-						.map((s) => s.trim())
-						.filter((s) => s.length > 0 && !s.startsWith("--"));
+			await client.query("BEGIN");
+			try {
+				for (const { row, downSQL } of rollbackPlans) {
+					if (downSQL) {
+						// Execute each statement in the down SQL
+						const statements = downSQL
+							.split(";\n")
+							.map((s) => s.trim())
+							.filter((s) => s.length > 0 && !s.startsWith("--"));
 
-					for (const stmt of statements) {
-						const sql = stmt.endsWith(";") ? stmt : `${stmt};`;
-						await client.query(sql);
+						for (const stmt of statements) {
+							const sql = stmt.endsWith(";") ? stmt : `${stmt};`;
+							await client.query(sql);
+						}
 					}
-				}
 
-				// Remove from migration tracking
-				await client.query(`DELETE FROM ${MIGRATIONS_TABLE} WHERE id = $1`, [row.id]);
+					// Remove from migration tracking
+					await client.query(`DELETE FROM ${mt} WHERE id = $1`, [row.id]);
+				}
+				await client.query("COMMIT");
+			} catch (rollbackError) {
+				await client.query("ROLLBACK").catch(() => {});
+				throw rollbackError;
 			}
 
 			s.stop(`Rolled back ${pc.cyan(String(rollbackPlans.length))} migration(s)`);

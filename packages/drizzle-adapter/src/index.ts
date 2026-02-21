@@ -1,7 +1,8 @@
 export { drizzleAdapter } from "./adapter.js";
 export {
 	createPooledAdapter,
-	type PooledAdapterConfig,
+	type DrizzlePooledAdapterConfig,
+	type DrizzlePooledAdapterConfig as PooledAdapterConfig,
 	type PooledAdapterResult,
 	type PoolLike,
 	type PoolStats,
@@ -9,7 +10,6 @@ export {
 } from "./pool.js";
 export type {
 	RawAccountRow,
-	RawBalanceUpdateRow,
 	RawCountRow,
 	RawHoldSummaryRow,
 	RawIdRow,

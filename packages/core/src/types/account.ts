@@ -1,5 +1,7 @@
 export type AccountStatus = "active" | "frozen" | "closed";
 export type HolderType = "individual" | "organization" | "system";
+export type AccountType = "asset" | "liability" | "equity" | "revenue" | "expense";
+export type NormalBalance = "debit" | "credit";
 
 export interface Account {
 	id: string;
@@ -13,6 +15,10 @@ export interface Account {
 	pendingCredit: number;
 	pendingDebit: number;
 	allowOverdraft: boolean;
+	accountType: AccountType | null;
+	accountCode: string | null;
+	parentAccountId: string | null;
+	normalBalance: NormalBalance | null;
 	indicator: string | null;
 	freezeReason: string | null;
 	frozenAt: Date | null;

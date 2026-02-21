@@ -35,24 +35,30 @@ Generate Drizzle-compatible `pgTable()` definitions for all Summa tables:
 npx summa generate --adapter drizzle --out src/db/summa-schema.ts
 ```
 
-This outputs `pgTable(...)` definitions you can import alongside your own Drizzle schema. If you have plugins configured in your `summa.config.ts`, the generated schema will include their tables too.
+This outputs schema-aware table definitions you can import alongside your own Drizzle schema. If you have plugins configured in your `summa.config.ts`, the generated schema will include their tables too.
+
+When `schema` is set to a non-public value (default: `"summa"`), the generated file uses `pgSchema()` to namespace all tables:
 
 ```ts title="src/db/summa-schema.ts (generated)"
-import { pgTable, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgSchema, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const accountBalance = pgTable("account_balance", {
+export const summaSchema = pgSchema("summa");
+
+export const accountBalance = summaSchema.table("account_balance", {
   id: uuid("id").primaryKey(),
   holderId: text("holder_id").notNull(),
   holderType: text("holder_type").notNull(),
   currency: text("currency").notNull(),
   balance: bigint("balance", { mode: "number" }).notNull(),
   // ... more columns
-}, (table) => ({
-  holderIdIdx: index("account_balance_holder_id_idx").on(table.holderId),
-}));
+}, (table) => [
+  index("account_balance_holder_id_idx").on(table.holderId),
+]);
 
 // ... all other tables
 ```
+
+If `schema` is set to `"public"`, the generator uses `pgTable()` instead of `pgSchema().table()`.
 
 ## Migrations
 

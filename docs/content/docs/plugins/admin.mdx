@@ -50,13 +50,16 @@ The `authorize` callback runs before every admin endpoint handler. If it returns
 
 <Tabs items={["API key", "JWT token"]}>
 <Tab value="API key">
+
 ```ts
 admin({
   authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY,
 })
 ```
+
 </Tab>
 <Tab value="JWT token">
+
 ```ts
 admin({
   authorize: async (req) => {
@@ -67,6 +70,7 @@ admin({
   },
 })
 ```
+
 </Tab>
 </Tabs>
 

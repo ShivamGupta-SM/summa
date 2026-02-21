@@ -21,7 +21,7 @@ const { summa, cleanup } = await getTestInstance({
 // Create accounts and transactions...
 const account = await summa.accounts.create({
   holderId: "user_1",
-  holderType: "user",
+  holderType: "individual",
 });
 
 // Assert the double-entry invariant (all balances sum to zero)

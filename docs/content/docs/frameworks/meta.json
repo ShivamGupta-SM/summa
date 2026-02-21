@@ -1,0 +1,5 @@
+{
+	"title": "Frameworks",
+	"icon": "Server",
+	"pages": ["hono", "elysia", "express", "fastify", "next", "encore", "fetch"]
+}

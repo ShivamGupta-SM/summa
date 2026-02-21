@@ -3,8 +3,9 @@
 // =============================================================================
 
 import type { Summa } from "../summa/base.js";
-import type { ApiHandlerOptions, ApiRequest } from "./handler.js";
+import type { ApiHandlerOptions } from "./handler.js";
 import { handleRequest } from "./handler.js";
+import { parseNodeHeaders, parseNodeQuery } from "./request-helpers.js";
 
 /**
  * Create a Fastify plugin for the Summa API.
@@ -45,27 +46,12 @@ export function createSummaFastify(summa: Summa, options?: ApiHandlerOptions) {
 			// Extract path from URL (strip query string)
 			const urlPath = request.url.split("?")[0] ?? "/";
 
-			const query: Record<string, string | undefined> = {};
-			for (const [key, value] of Object.entries(request.query)) {
-				query[key] = typeof value === "string" ? value : undefined;
-			}
-
-			// Extract headers (flatten arrays to first value)
-			const headers: Record<string, string> = {};
-			for (const [key, value] of Object.entries(request.headers)) {
-				if (typeof value === "string") {
-					headers[key] = value;
-				} else if (Array.isArray(value) && value.length > 0) {
-					headers[key] = value[0] as string;
-				}
-			}
-
-			const apiReq: ApiRequest = {
+			const apiReq = {
 				method: request.method,
 				path: urlPath,
 				body: request.body,
-				query,
-				headers,
+				query: parseNodeQuery(request.query),
+				headers: parseNodeHeaders(request.headers),
 			};
 
 			const apiRes = await handleRequest(summa, apiReq, options);

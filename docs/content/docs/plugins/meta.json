@@ -15,6 +15,17 @@
 		"admin",
 		"open-api",
 		"observability",
-		"statements"
+		"statements",
+		"period-close",
+		"financial-reporting",
+		"fx-engine",
+		"gl-sub-ledger",
+		"approval-workflow",
+		"batch-import",
+		"accrual-accounting",
+		"data-retention",
+		"freeze-expiry",
+		"i18n",
+		"mcp"
 	]
 }

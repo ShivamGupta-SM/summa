@@ -2,7 +2,9 @@ export type {
 	Account,
 	AccountBalance,
 	AccountStatus,
+	AccountType,
 	HolderType,
+	NormalBalance,
 } from "./account.js";
 export type {
 	SummaAdvancedOptions,
@@ -11,6 +13,8 @@ export type {
 	SystemAccountDefinition,
 } from "./config.js";
 export type {
+	FxResolver,
+	RequestContext,
 	ResolvedAdvancedOptions,
 	ResolvedSummaOptions,
 	SummaContext,
@@ -32,6 +36,7 @@ export type {
 	HoldExpiredData,
 	HoldVoidedData,
 	StoredEvent,
+	TransactionCorrectedData,
 	TransactionInitiatedData,
 	TransactionPostedData,
 	TransactionReversedData,
@@ -53,9 +58,11 @@ export type {
 	LimitType,
 } from "./limit.js";
 export type {
+	CursorPayload,
 	PaginatedResult,
 	PaginationParams,
 } from "./pagination.js";
+export { decodeCursor, encodeCursor } from "./pagination.js";
 export type {
 	AccountHookParams,
 	ColumnDefinition,
@@ -75,6 +82,7 @@ export type {
 	TransactionHookParams,
 } from "./plugin.js";
 export type {
+	JournalEntryLeg,
 	LedgerTransaction,
 	TransactionStatus,
 	TransactionType,

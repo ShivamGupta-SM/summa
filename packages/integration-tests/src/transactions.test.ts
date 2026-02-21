@@ -37,7 +37,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("lists transactions for an account with pagination", async () => {
-		await summa.accounts.create({ holderId: "list-txn", holderType: "user" });
+		await summa.accounts.create({ holderId: "list-txn", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "list-txn", amount: 100000, reference: "lt-fund" });
 
 		// Create 5 debits
@@ -72,7 +72,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("get transaction by ID returns the correct transaction", async () => {
-		await summa.accounts.create({ holderId: "get-txn", holderType: "user" });
+		await summa.accounts.create({ holderId: "get-txn", holderType: "individual" });
 		const txn = await summa.transactions.credit({
 			holderId: "get-txn",
 			amount: 15000,
@@ -101,7 +101,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("duplicate reference is rejected", async () => {
-		await summa.accounts.create({ holderId: "dup-ref", holderType: "user" });
+		await summa.accounts.create({ holderId: "dup-ref", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "dup-ref",
 			amount: 10000,
@@ -122,7 +122,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("transfer to self is either rejected or is a no-op", async () => {
-		await summa.accounts.create({ holderId: "self-xfer", holderType: "user" });
+		await summa.accounts.create({ holderId: "self-xfer", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "self-xfer",
 			amount: 20000,
@@ -148,8 +148,8 @@ describe("Transaction Tests", () => {
 	});
 
 	it("transfer of zero amount is rejected", async () => {
-		await summa.accounts.create({ holderId: "zero-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "zero-dst", holderType: "user" });
+		await summa.accounts.create({ holderId: "zero-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "zero-dst", holderType: "individual" });
 
 		await expect(
 			summa.transactions.transfer({
@@ -162,8 +162,8 @@ describe("Transaction Tests", () => {
 	});
 
 	it("transfer of negative amount is rejected", async () => {
-		await summa.accounts.create({ holderId: "neg-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "neg-dst", holderType: "user" });
+		await summa.accounts.create({ holderId: "neg-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "neg-dst", holderType: "individual" });
 
 		await expect(
 			summa.transactions.transfer({
@@ -180,9 +180,9 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("multiTransfer rejects if destination amounts don't sum to total", async () => {
-		await summa.accounts.create({ holderId: "mt-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "mt-d1", holderType: "user" });
-		await summa.accounts.create({ holderId: "mt-d2", holderType: "user" });
+		await summa.accounts.create({ holderId: "mt-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mt-d1", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mt-d2", holderType: "individual" });
 
 		await summa.transactions.credit({ holderId: "mt-src", amount: 50000, reference: "mt-fund" });
 
@@ -200,10 +200,10 @@ describe("Transaction Tests", () => {
 	});
 
 	it("multiTransfer with 3 destinations distributes correctly", async () => {
-		await summa.accounts.create({ holderId: "mt3-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "mt3-d1", holderType: "user" });
-		await summa.accounts.create({ holderId: "mt3-d2", holderType: "user" });
-		await summa.accounts.create({ holderId: "mt3-d3", holderType: "user" });
+		await summa.accounts.create({ holderId: "mt3-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mt3-d1", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mt3-d2", holderType: "individual" });
+		await summa.accounts.create({ holderId: "mt3-d3", holderType: "individual" });
 
 		await summa.transactions.credit({ holderId: "mt3-src", amount: 90000, reference: "mt3-fund" });
 
@@ -231,7 +231,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("refund of a credit reverses the credit", async () => {
-		await summa.accounts.create({ holderId: "ref-credit", holderType: "user" });
+		await summa.accounts.create({ holderId: "ref-credit", holderType: "individual" });
 		const txn = await summa.transactions.credit({
 			holderId: "ref-credit",
 			amount: 20000,
@@ -248,7 +248,7 @@ describe("Transaction Tests", () => {
 	});
 
 	it("refund more than original amount is rejected", async () => {
-		await summa.accounts.create({ holderId: "overref", holderType: "user" });
+		await summa.accounts.create({ holderId: "overref", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "overref", amount: 50000, reference: "or-fund" });
 
 		const txn = await summa.transactions.debit({
@@ -267,7 +267,7 @@ describe("Transaction Tests", () => {
 	});
 
 	it("multiple partial refunds reduce remaining refundable amount", async () => {
-		await summa.accounts.create({ holderId: "multi-ref", holderType: "user" });
+		await summa.accounts.create({ holderId: "multi-ref", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "multi-ref",
 			amount: 50000,
@@ -314,7 +314,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("transaction metadata is preserved", async () => {
-		await summa.accounts.create({ holderId: "meta-txn", holderType: "user" });
+		await summa.accounts.create({ holderId: "meta-txn", holderType: "individual" });
 		const txn = await summa.transactions.credit({
 			holderId: "meta-txn",
 			amount: 5000,
@@ -331,7 +331,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("events for a transaction share the same correlation ID", async () => {
-		await summa.accounts.create({ holderId: "corr-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "corr-user", holderType: "individual" });
 		const txn = await summa.transactions.credit({
 			holderId: "corr-user",
 			amount: 10000,
@@ -352,7 +352,7 @@ describe("Transaction Tests", () => {
 	// =========================================================================
 
 	it("hash chain remains valid after many operations", async () => {
-		await summa.accounts.create({ holderId: "chain-multi", holderType: "user" });
+		await summa.accounts.create({ holderId: "chain-multi", holderType: "individual" });
 
 		// Perform many operations
 		await summa.transactions.credit({

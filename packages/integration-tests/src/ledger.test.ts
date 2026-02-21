@@ -39,7 +39,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("credit increases balance, debit decreases balance", async () => {
-		await summa.accounts.create({ holderId: "user-1", holderType: "user" });
+		await summa.accounts.create({ holderId: "user-1", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "user-1",
@@ -65,8 +65,8 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("transfer maintains total balance across accounts", async () => {
-		await summa.accounts.create({ holderId: "alice", holderType: "user" });
-		await summa.accounts.create({ holderId: "bob", holderType: "user" });
+		await summa.accounts.create({ holderId: "alice", holderType: "individual" });
+		await summa.accounts.create({ holderId: "bob", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "alice",
@@ -94,8 +94,8 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("sum of all debits equals sum of all credits globally", async () => {
-		await summa.accounts.create({ holderId: "u1", holderType: "user" });
-		await summa.accounts.create({ holderId: "u2", holderType: "user" });
+		await summa.accounts.create({ holderId: "u1", holderType: "individual" });
+		await summa.accounts.create({ holderId: "u2", holderType: "individual" });
 
 		await summa.transactions.credit({ holderId: "u1", amount: 100000, reference: "c-1" });
 		await summa.transactions.credit({ holderId: "u2", amount: 50000, reference: "c-2" });
@@ -136,7 +136,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("overdraft prevention blocks debit when balance is insufficient", async () => {
-		await summa.accounts.create({ holderId: "poor-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "poor-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "poor-user",
 			amount: 5000,
@@ -160,7 +160,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("idempotency key prevents duplicate transactions", async () => {
-		await summa.accounts.create({ holderId: "idem-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "idem-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "idem-user",
 			amount: 50000,
@@ -194,7 +194,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("hold freezes funds, commit deducts, void releases", async () => {
-		await summa.accounts.create({ holderId: "hold-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "hold-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "hold-user",
 			amount: 20000,
@@ -225,7 +225,7 @@ describe("Ledger Integration Tests", () => {
 	});
 
 	it("voiding a hold releases the pending amount", async () => {
-		await summa.accounts.create({ holderId: "void-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "void-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "void-user",
 			amount: 15000,
@@ -250,9 +250,9 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("multiTransfer splits amount atomically to multiple destinations", async () => {
-		await summa.accounts.create({ holderId: "payer", holderType: "user" });
-		await summa.accounts.create({ holderId: "seller", holderType: "user" });
-		await summa.accounts.create({ holderId: "platform", holderType: "user" });
+		await summa.accounts.create({ holderId: "payer", holderType: "individual" });
+		await summa.accounts.create({ holderId: "seller", holderType: "individual" });
+		await summa.accounts.create({ holderId: "platform", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "payer",
@@ -282,7 +282,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("refund reverses a transaction correctly", async () => {
-		await summa.accounts.create({ holderId: "refund-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "refund-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "refund-user",
 			amount: 30000,
@@ -308,7 +308,7 @@ describe("Ledger Integration Tests", () => {
 	});
 
 	it("partial refund only returns the specified amount", async () => {
-		await summa.accounts.create({ holderId: "partial-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "partial-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "partial-user",
 			amount: 50000,
@@ -337,7 +337,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("freeze prevents transactions, unfreeze allows them again", async () => {
-		await summa.accounts.create({ holderId: "freeze-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "freeze-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "freeze-user",
 			amount: 10000,
@@ -378,7 +378,7 @@ describe("Ledger Integration Tests", () => {
 	// =========================================================================
 
 	it("event hash chain is valid after multiple operations", async () => {
-		await summa.accounts.create({ holderId: "chain-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "chain-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "chain-user",
 			amount: 10000,

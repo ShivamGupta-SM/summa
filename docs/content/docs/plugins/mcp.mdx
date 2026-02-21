@@ -1,0 +1,148 @@
+---
+title: MCP
+description: Model Context Protocol integration for AI agents.
+icon: CpuChip
+---
+
+## Overview
+
+The MCP plugin exposes Summa ledger operations as [Model Context Protocol](https://modelcontextprotocol.io/) tools, enabling AI agents (Claude, GPT, etc.) to query balances, list transactions, perform transfers, and verify the accounting equation through natural language.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { mcp } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    mcp({
+      authorize: (req) => req.headers?.["x-api-key"] === process.env.MCP_API_KEY,
+    }),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+mcp({
+  basePath: "/mcp",       // Base path for MCP endpoints (default)
+  authorize: (req) => {   // Optional authorization check
+    return req.headers?.["authorization"] === `Bearer ${process.env.MCP_TOKEN}`;
+  },
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `basePath` | `string` | `"/mcp"` | URL prefix for MCP endpoints |
+| `authorize` | `(req) => boolean \| Promise<boolean>` | — | Auth check. Return `false` to reject with 403 |
+
+## Available Tools
+
+The plugin exposes 6 tools that AI agents can call:
+
+| Tool | Description | Required Args |
+|------|-------------|---------------|
+| `summa_get_balance` | Get account balance by holder ID | `holderId` |
+| `summa_list_accounts` | List accounts with filters | — |
+| `summa_get_transaction` | Get transaction details by ID | `transactionId` |
+| `summa_list_transactions` | List transactions for a holder | `holderId` |
+| `summa_transfer` | Transfer funds between accounts | `sourceHolderId`, `destinationHolderId`, `amount`, `reference` |
+| `summa_verify_equation` | Verify the accounting equation | — |
+
+## Endpoints
+
+### `GET /mcp/tools`
+
+Returns the list of available tools with their JSON Schema input definitions.
+
+```json
+{
+  "tools": [
+    {
+      "name": "summa_get_balance",
+      "description": "Get the balance of an account by holder ID",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "holderId": { "type": "string" }
+        },
+        "required": ["holderId"]
+      }
+    }
+  ]
+}
+```
+
+### `POST /mcp/tools/call`
+
+Execute a tool by name with arguments.
+
+```json
+{
+  "name": "summa_get_balance",
+  "arguments": { "holderId": "user_123" }
+}
+```
+
+**Response:**
+
+```json
+{
+  "content": [
+    {
+      "type": "text",
+      "text": "{ \"balance\": 10000, \"availableBalance\": 8500, ... }"
+    }
+  ]
+}
+```
+
+**Error response:**
+
+```json
+{
+  "content": [{ "type": "text", "text": "Error: Account not found" }],
+  "isError": true
+}
+```
+
+## Connecting an AI Agent
+
+### With Claude Desktop
+
+Add Summa as an MCP server in your Claude Desktop config:
+
+```json title="claude_desktop_config.json"
+{
+  "mcpServers": {
+    "summa-ledger": {
+      "url": "http://localhost:3000/api/ledger/mcp"
+    }
+  }
+}
+```
+
+### With a Custom Agent
+
+```ts
+const response = await fetch("http://localhost:3000/api/ledger/mcp/tools/call", {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.MCP_API_KEY,
+  },
+  body: JSON.stringify({
+    name: "summa_get_balance",
+    arguments: { holderId: "user_123" },
+  }),
+});
+```
+
+<Callout type="warn">
+  Always set the `authorize` callback in production. Without it, any client with network access can query balances and initiate transfers.
+</Callout>

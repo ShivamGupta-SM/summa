@@ -1,4 +1,10 @@
-export type TransactionType = "credit" | "debit" | "transfer";
+export type TransactionType =
+	| "credit"
+	| "debit"
+	| "transfer"
+	| "journal"
+	| "correction"
+	| "adjustment";
 export type TransactionStatus =
 	| "pending"
 	| "inflight"
@@ -6,6 +12,14 @@ export type TransactionStatus =
 	| "expired"
 	| "voided"
 	| "reversed";
+
+export interface JournalEntryLeg {
+	holderId?: string;
+	systemAccount?: string;
+	amount: number;
+	direction: "debit" | "credit";
+	description?: string;
+}
 
 export interface LedgerTransaction {
 	id: string;

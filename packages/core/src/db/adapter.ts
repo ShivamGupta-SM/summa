@@ -1,8 +1,14 @@
 // =============================================================================
 // SUMMA ADAPTER INTERFACE
 // =============================================================================
-// Financial-grade database adapter with transaction, locking, and raw SQL support.
-// Extends beyond simple CRUD — double-entry bookkeeping demands it.
+// Financial-grade database adapter for PostgreSQL.
+//
+// IMPORTANT: Summa requires PostgreSQL. The adapter interface exists for
+// ORM choice (Drizzle, Prisma, Kysely), NOT for database portability.
+// All manager-level business logic uses `raw()` and `rawMutate()` with
+// PostgreSQL-specific SQL. The CRUD methods (create, findOne, findMany,
+// update, delete, count) exist for plugin-level convenience but are NOT
+// used by core managers.
 
 export interface Where {
 	field: string;
@@ -74,4 +80,8 @@ export interface SummaAdapterOptions {
 	supportsReturning: boolean;
 	dialectName: "postgres" | "mysql" | "sqlite";
 	dialect?: import("./dialect.js").SqlDialect;
+	/** PostgreSQL schema for table name qualification. Set by Summa context. */
+	schema?: string;
+	/** HMAC secret for balance checksum computation. Set by Summa context. */
+	hmacSecret?: string | null;
 }

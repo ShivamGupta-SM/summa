@@ -1,0 +1,130 @@
+---
+title: Approval Workflow
+description: Maker-checker dual authorization for sensitive transactions.
+icon: ShieldCheck
+---
+
+## Overview
+
+The approval workflow plugin provides enterprise-grade dual authorization (maker-checker) for transactions. Define rules that match operations by amount, account type, or custom logic — matching transactions are held pending until the required number of approvals is met.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { approvalWorkflow } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    approvalWorkflow({
+      rules: [
+        {
+          name: "Large transfers",
+          conditionType: "amount_gt",
+          conditionValue: { amount: 100_000_00 }, // > $100,000
+          requiredApprovals: 2,
+          timeoutHours: 24,
+        },
+      ],
+    }),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+approvalWorkflow({
+  rules: [],  // Pre-seed rules on init (default: [])
+})
+```
+
+Rules can also be created at runtime via the API.
+
+## How It Works
+
+1. A transaction is initiated (credit, debit, transfer, journal, etc.)
+2. The `operationHooks.before` matcher checks if any enabled rule matches
+3. If a rule matches, the plugin creates an `approval_request` and **cancels the operation** with reason `"Approval required"`
+4. Approvers approve via the API until `requiredApprovals` is met
+5. Once fully approved, the caller re-submits the transaction — the plugin matches it by a stable hash of the operation params, marks the approval as `"consumed"`, and allows the operation through
+
+## Rule Types
+
+| Condition Type | Matches when... |
+|---------------|-----------------|
+| `amount_gt` | Transaction amount exceeds `conditionValue.amount` |
+| `account_type` | Holder type matches `conditionValue.accountType` |
+| `custom` | Always matches (use for blanket approval requirements) |
+
+## Utility Functions
+
+### Create a Rule
+
+```ts
+import { createRule } from "summa/plugins";
+
+const rule = await createRule(summa.$context, {
+  name: "High-value transfers",
+  conditionType: "amount_gt",
+  conditionValue: { amount: 50_000_00 },
+  requiredApprovals: 2,
+  timeoutHours: 48,
+});
+```
+
+### Approve a Request
+
+```ts
+import { approveRequest } from "summa/plugins";
+
+const result = await approveRequest(summa.$context, {
+  requestId: "approval-uuid",
+  approvedBy: "cfo@company.com",
+});
+// result.status: "pending" (need more approvals) or "approved" (ready to re-submit)
+```
+
+### Reject a Request
+
+```ts
+import { rejectRequest } from "summa/plugins";
+
+await rejectRequest(summa.$context, {
+  requestId: "approval-uuid",
+  rejectedBy: "cfo@company.com",
+  reason: "Suspicious destination account",
+});
+```
+
+## Security
+
+Approved requests can only be consumed **once**. When a re-submitted transaction matches an approved request (via a stable hash of the operation type and parameters), the request status is atomically set to `"consumed"`. Re-submitting the same operation again after consumption will trigger a new approval request — preventing replay attacks.
+
+The matching uses a cryptographic hash of sorted operation parameters, so key ordering differences in the request body won't prevent a match.
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `approval-expiry` | 5m | No | Expires timed-out pending requests |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/approvals` | List pending approval requests |
+| `GET` | `/approvals/:id` | Get a specific approval request |
+| `POST` | `/approvals/:id/approve` | Approve a request |
+| `POST` | `/approvals/:id/reject` | Reject a request |
+| `GET` | `/approval-rules` | List all rules |
+| `POST` | `/approval-rules` | Create a new rule |
+
+## Schema
+
+| Table | Description |
+|-------|-------------|
+| `approval_rule` | Rule definitions with conditions and thresholds |
+| `approval_request` | Pending/approved/consumed/rejected/expired requests |

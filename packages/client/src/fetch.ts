@@ -9,6 +9,7 @@ import type { RequestInterceptor, ResponseInterceptor, SummaClientOptions } from
 export interface FetchClient {
 	get<T>(path: string, query?: Record<string, string | undefined>): Promise<T>;
 	post<T>(path: string, body?: unknown): Promise<T>;
+	put<T>(path: string, body?: unknown): Promise<T>;
 	del<T>(path: string, body?: unknown): Promise<T>;
 }
 
@@ -59,13 +60,14 @@ export function createFetchClient(options: SummaClientOptions): FetchClient {
 
 		if (!response.ok) {
 			const errorBody = (await response.json().catch(() => null)) as {
-				error?: { code?: string; message?: string };
+				error?: { code?: string; message?: string; details?: Record<string, unknown> };
 			} | null;
 
 			throw new SummaClientError(
 				(errorBody?.error?.code ?? "INTERNAL") as SummaErrorCode,
 				errorBody?.error?.message ?? `HTTP ${response.status}`,
 				response.status,
+				errorBody?.error?.details as Record<string, unknown> | undefined,
 			);
 		}
 
@@ -92,6 +94,9 @@ export function createFetchClient(options: SummaClientOptions): FetchClient {
 		},
 		async post<T>(path: string, body?: unknown): Promise<T> {
 			return request<T>("POST", path, body);
+		},
+		async put<T>(path: string, body?: unknown): Promise<T> {
+			return request<T>("PUT", path, body);
 		},
 		async del<T>(path: string, body?: unknown): Promise<T> {
 			return request<T>("DELETE", path, body);

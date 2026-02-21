@@ -1,0 +1,226 @@
+---
+title: Next.js
+description: Mount Summa's HTTP API in Next.js App Router.
+icon: Nextjs
+---
+
+## Installation
+
+```bash
+pnpm add summa
+```
+
+No additional framework package needed — Next.js is already your app framework.
+
+## Quick Start
+
+Create a catch-all API route:
+
+```ts title="app/api/ledger/[...path]/route.ts"
+import { createSummaNextHandler } from "summa/api/next";
+import { summa } from "@/lib/summa";
+
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+});
+
+export { GET, POST, PUT, PATCH, DELETE };
+```
+
+Create your Summa instance in a shared module:
+
+```ts title="lib/summa.ts"
+import { createSumma } from "summa";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+export const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+```
+
+All 36+ endpoints are now available under `/api/ledger`.
+
+## How It Works
+
+`createSummaNextHandler()` returns an object with `GET`, `POST`, `PUT`, `PATCH`, `DELETE` — the exact shape Next.js App Router expects from a route handler.
+
+Under the hood, it wraps `createSummaFetchHandler()` — the same Fetch API adapter used for Deno, Bun, and Cloudflare Workers. Next.js App Router uses the Web `Request`/`Response` APIs, so no conversion is needed.
+
+```
+Next.js App Router → [createSummaNextHandler]
+                          ↓ (delegates to)
+                     [createSummaFetchHandler]
+                          ↓
+                     [handleRequest] → Summa core router
+```
+
+## File Structure
+
+```
+app/
+├── api/
+│   └── ledger/
+│       └── [...path]/
+│           └── route.ts    ← Summa catch-all route
+├── page.tsx
+└── layout.tsx
+lib/
+└── summa.ts                ← Summa instance (shared)
+```
+
+The `[...path]` catch-all segment captures all sub-paths (e.g., `/api/ledger/accounts`, `/api/ledger/transactions/credit`) and passes them to Summa's router.
+
+## Handler Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `basePath` | `string` | URL prefix to strip before routing (e.g., `"/api/ledger"`) |
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request. Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit. |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+<Callout type="warn" title="basePath is required">
+  Unlike Express and Fastify where the framework strips the prefix, Next.js passes the full URL to route handlers. You **must** set `basePath` to match your route directory structure.
+</Callout>
+
+## Authentication
+
+Use the `onRequest` hook:
+
+```ts title="app/api/ledger/[...path]/route.ts"
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+  onRequest: (req) => {
+    const apiKey = req.headers?.["x-api-key"];
+    if (!apiKey || !isValidApiKey(apiKey)) {
+      return {
+        status: 401,
+        body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+      };
+    }
+    return req;
+  },
+});
+```
+
+You can also use Next.js middleware for auth:
+
+```ts title="middleware.ts"
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+export function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname.startsWith("/api/ledger")) {
+    const apiKey = request.headers.get("x-api-key");
+    if (!apiKey) {
+      return NextResponse.json(
+        { error: { code: "UNAUTHORIZED", message: "Missing API key" } },
+        { status: 401 },
+      );
+    }
+  }
+}
+```
+
+## Rate Limiting
+
+```ts
+import { createSummaNextHandler } from "summa/api/next";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) =>
+    req.headers?.["x-forwarded-for"] ?? req.headers?.["x-api-key"] ?? "anonymous",
+});
+```
+
+## CSRF Protection
+
+```ts
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+  trustedOrigins: ["https://app.example.com"],
+});
+```
+
+## Full Production Example
+
+```ts title="lib/summa.ts"
+import { createSumma } from "summa";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const db = drizzle(pool);
+const { adapter } = createPooledAdapter({ pool, drizzle: db });
+
+export const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+```
+
+```ts title="app/api/ledger/[...path]/route.ts"
+import { createSummaNextHandler } from "summa/api/next";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { summa } from "@/lib/summa";
+
+const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
+  basePath: "/api/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+  trustedOrigins: [process.env.APP_ORIGIN!],
+  onRequest: (req) => {
+    const key = req.headers?.["x-api-key"];
+    if (!key) {
+      return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Missing API key" } } };
+    }
+    return req;
+  },
+});
+
+export { GET, POST, PUT, PATCH, DELETE };
+```
+
+## Edge Runtime
+
+The Next.js handler works with the Edge runtime since it uses the standard Web Fetch API:
+
+```ts title="app/api/ledger/[...path]/route.ts"
+export const runtime = "edge";
+
+// ... same handler code
+```
+
+<Callout type="warn" title="Edge limitations">
+  Edge runtime does not support Node.js `pg` driver. Use an edge-compatible PostgreSQL client (e.g., `@neondatabase/serverless`, `@vercel/postgres`) if deploying to the edge.
+</Callout>
+
+## Workers
+
+Next.js API routes are serverless — they don't have a persistent process. If you need Summa's background workers (reconciliation, hold expiry, audit log cleanup), run them in a separate long-lived process:
+
+```ts title="worker.ts"
+import { summa } from "./lib/summa";
+
+await summa.workers.start();
+
+process.on("SIGTERM", async () => {
+  await summa.workers.stop();
+  process.exit(0);
+});
+```

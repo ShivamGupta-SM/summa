@@ -1,0 +1,151 @@
+---
+title: Version Retention
+description: Archive and prune old account_balance_version rows to keep the table bounded for high-volume deployments.
+icon: Clock
+---
+
+## Overview
+
+As transaction volume grows, the `account_balance_version` table accumulates rows indefinitely — every credit, debit, transfer, hold commit, freeze, and unfreeze creates a new version row. At 100M transactions per year, this table can reach 200M+ rows, degrading index maintenance and query performance.
+
+The version retention plugin periodically archives old version rows and deletes them from the main table, keeping it bounded for fast reads and efficient maintenance.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { versionRetention } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    versionRetention({
+      retainVersions: 100,   // Keep last 100 versions per account
+      retainDays: 90,        // Keep versions newer than 90 days
+      archiveTable: true,    // Copy old versions to archive before deleting
+      batchSize: 500,        // Process 500 accounts per run
+      interval: "1h",        // Run every hour
+    }),
+  ],
+});
+```
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `retainVersions` | `number` | `100` | Keep the latest N versions per account |
+| `retainDays` | `number` | `90` | Keep versions newer than N days |
+| `archiveTable` | `boolean` | `true` | Move old versions to `account_balance_version_archive` before deleting |
+| `batchSize` | `number` | `500` | Number of accounts to process per worker run |
+| `interval` | `string` | `"1h"` | How often the retention worker runs |
+
+## How It Works
+
+The retention strategy uses **both** criteria — a version row is only pruned when it satisfies both conditions:
+
+1. **Beyond the retention count** — the version is older than the Nth-latest version for that account
+2. **Beyond the retention age** — the version's `created_at` is older than `retainDays`
+
+This ensures recent versions are never pruned, even if an account has more than `retainVersions` rows.
+
+### Worker Behavior
+
+1. The worker identifies accounts with more than `retainVersions` rows using a `GROUP BY` + `HAVING` query
+2. For each account (up to `batchSize` per run):
+   - Finds the version number at the `retainVersions` offset
+   - If `archiveTable: true`, copies eligible rows to the archive table with `ON CONFLICT DO NOTHING`
+   - Deletes eligible rows from the main table
+3. Uses a distributed lease to prevent duplicate runs in multi-instance deployments
+
+### Archive Table
+
+When `archiveTable: true` (default), the plugin registers an `account_balance_version_archive` table with the same schema as `account_balance_version` plus an `archived_at` timestamp. This table is automatically created by `summa migrate push`.
+
+The archive table preserves the full audit trail — you can query historical versions without impacting the performance of the main table.
+
+## Status Endpoint
+
+The plugin exposes a status endpoint for monitoring:
+
+```
+GET /version-retention/status
+```
+
+**Response:**
+
+```json
+{
+  "config": {
+    "retainVersions": 100,
+    "retainDays": 90,
+    "archiveTable": true,
+    "batchSize": 500,
+    "interval": "1h"
+  },
+  "versionTable": {
+    "totalRows": 1250000,
+    "totalAccounts": 15000,
+    "maxVersionsPerAccount": 342,
+    "avgVersionsPerAccount": 83
+  },
+  "archiveTable": {
+    "totalRows": 4500000
+  }
+}
+```
+
+## Recommended Configuration
+
+### Low-Volume (< 1M txns/month)
+
+```ts
+versionRetention({
+  retainVersions: 500,
+  retainDays: 365,
+  interval: "6h",
+})
+```
+
+### High-Volume (10M+ txns/month)
+
+```ts
+versionRetention({
+  retainVersions: 50,
+  retainDays: 30,
+  batchSize: 1000,
+  interval: "30m",
+})
+```
+
+<Callout type="info" title="Works with denormalized balance">
+  When `advanced.useDenormalizedBalance` is enabled, balance reads don't touch the version table at all — so aggressive retention is safe. The version table becomes purely an audit trail.
+</Callout>
+
+## Combination with Table Partitioning
+
+For maximum performance, combine version retention with table partitioning on `account_balance_version`:
+
+```ts
+import { generatePartitionDDL, partitionMaintenance } from "summa/db";
+import { versionRetention } from "summa/plugins";
+
+// Partition the version table by month
+const ddl = generatePartitionDDL({
+  tables: {
+    account_balance_version: { type: "range", column: "created_at", interval: "monthly" },
+  },
+});
+
+plugins: [
+  versionRetention({ retainVersions: 100, retainDays: 90 }),
+  partitionMaintenance({
+    tables: { account_balance_version: { interval: "monthly" } },
+    createAhead: 3,
+    retainPartitions: 12,
+  }),
+]
+```
+
+This ensures the version table is both bounded (retention) and efficiently organized (partitioning).

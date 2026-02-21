@@ -1,0 +1,264 @@
+---
+title: Fetch API
+description: Mount Summa's HTTP API on any Web Fetch-compatible runtime.
+icon: FetchApi
+---
+
+## Overview
+
+The Fetch API adapter uses standard Web `Request`/`Response` objects — making it compatible with **any runtime** that implements the Web Fetch API:
+
+- **Deno**
+- **Bun**
+- **Cloudflare Workers**
+- **Node.js 18+** (via `node:http` or web-compatible servers)
+- **Vercel Edge Functions**
+- **AWS Lambda@Edge**
+
+## Installation
+
+```bash
+pnpm add summa
+```
+
+No framework package needed — just Summa and your runtime.
+
+## Quick Start
+
+```ts
+import { createSumma } from "summa";
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+
+const handler = createSummaFetchHandler(summa, { basePath: "/api/ledger" });
+```
+
+Then serve it with your runtime:
+
+### Deno
+
+```ts
+Deno.serve(handler);
+```
+
+### Bun
+
+```ts
+export default { fetch: handler };
+```
+
+### Cloudflare Workers
+
+```ts
+export default { fetch: handler };
+```
+
+## How It Works
+
+`createSummaFetchHandler()` returns a function with the signature `(request: Request) => Promise<Response>` that:
+
+1. Parses the URL from the `Request` object
+2. Strips `basePath` from the path if configured
+3. Parses the JSON body for non-GET/HEAD requests
+4. Collects query parameters from `url.searchParams`
+5. Converts `Headers` to a key-value map
+6. Passes everything to Summa's universal `handleRequest()` router
+7. Returns a `Response` with JSON body (or `null` for 204 No Content)
+
+## Handler Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `basePath` | `string` | URL prefix to strip before routing (e.g., `"/api/ledger"`) |
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request. Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit. |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+## Authentication
+
+```ts
+const handler = createSummaFetchHandler(summa, {
+  basePath: "/api/ledger",
+  onRequest: (req) => {
+    const apiKey = req.headers?.["x-api-key"];
+    if (!apiKey || !isValidApiKey(apiKey)) {
+      return {
+        status: 401,
+        body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+      };
+    }
+    return req;
+  },
+});
+```
+
+**Execution order:** `onRequest` → CSRF check → rate limiting → plugin hooks → route handler → plugin hooks (reverse) → `onResponse`
+
+## Rate Limiting
+
+```ts
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const handler = createSummaFetchHandler(summa, {
+  basePath: "/api/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+});
+```
+
+| Preset | Limit | Window |
+|--------|:-----:|:------:|
+| `standardRateLimit` | 100 | 60s |
+| `strictRateLimit` | 20 | 60s |
+| `lenientRateLimit` | 500 | 60s |
+| `burstRateLimit` | 10 | 1s |
+
+## CSRF Protection
+
+```ts
+const handler = createSummaFetchHandler(summa, {
+  basePath: "/api/ledger",
+  trustedOrigins: ["https://app.example.com"],
+});
+```
+
+## Full Production Example (Bun)
+
+```ts
+import { createSumma } from "summa";
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+// Database
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const db = drizzle(pool);
+const { adapter, close } = createPooledAdapter({ pool, drizzle: db });
+
+// Summa
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Handler
+const handler = createSummaFetchHandler(summa, {
+  basePath: "/api/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+  trustedOrigins: [process.env.APP_ORIGIN!],
+  onRequest: (req) => {
+    const key = req.headers?.["x-api-key"];
+    if (!key) {
+      return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Missing API key" } } };
+    }
+    return req;
+  },
+});
+
+// Start workers
+await summa.workers.start();
+
+// Serve
+export default {
+  port: 3000,
+  fetch: handler,
+};
+
+// Graceful shutdown
+process.on("SIGTERM", async () => {
+  await summa.workers.stop();
+  await close();
+  process.exit(0);
+});
+```
+
+## Full Production Example (Deno)
+
+```ts
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { summa, close } from "./summa.ts";
+
+const handler = createSummaFetchHandler(summa, {
+  basePath: "/api/ledger",
+});
+
+await summa.workers.start();
+
+Deno.serve({ port: 3000 }, handler);
+
+Deno.addSignalListener("SIGTERM", async () => {
+  await summa.workers.stop();
+  await close();
+  Deno.exit(0);
+});
+```
+
+## Full Production Example (Cloudflare Workers)
+
+```ts
+import { createSummaFetchHandler } from "summa/api/fetch";
+import { createSumma } from "summa";
+
+// Note: Use a Cloudflare-compatible PostgreSQL driver
+// (e.g., @neondatabase/serverless, Hyperdrive)
+
+export default {
+  async fetch(request: Request, env: Env) {
+    const summa = createSumma({
+      database: createAdapter(env.DATABASE_URL),
+      currency: "USD",
+    });
+
+    const handler = createSummaFetchHandler(summa, {
+      basePath: "/api/ledger",
+    });
+
+    return handler(request);
+  },
+};
+```
+
+<Callout type="info" title="Serverless workers">
+  In serverless environments (Cloudflare Workers, Lambda), background workers can't run in the same process. Use a separate long-lived service for workers like reconciliation and hold expiry.
+</Callout>
+
+## Combining with Other Routes
+
+Since the handler is a plain function, you can compose it with other routes:
+
+```ts
+async function router(request: Request): Promise<Response> {
+  const url = new URL(request.url);
+
+  if (url.pathname.startsWith("/api/ledger")) {
+    return handler(request);
+  }
+
+  if (url.pathname === "/health") {
+    return new Response("ok");
+  }
+
+  return new Response("Not Found", { status: 404 });
+}
+
+Deno.serve(router);
+```

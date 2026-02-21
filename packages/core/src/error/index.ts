@@ -15,6 +15,9 @@ export class SummaError extends Error {
 	readonly status: number;
 	readonly details?: Record<string, unknown>;
 
+	/** Base URL for error documentation. Override via SummaError.docsBaseUrl. */
+	static docsBaseUrl = "https://summa.dev/docs/error-codes";
+
 	constructor(
 		code: string,
 		message: string,
@@ -25,6 +28,11 @@ export class SummaError extends Error {
 		this.status = options?.status ?? 500;
 		this.details = options?.details;
 		this.name = "SummaError";
+	}
+
+	/** Documentation URL for this error code. */
+	get docsUrl(): string {
+		return `${SummaError.docsBaseUrl}#${this.code.toLowerCase().replace(/_/g, "-")}`;
 	}
 
 	/**

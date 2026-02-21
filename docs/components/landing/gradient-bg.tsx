@@ -24,10 +24,10 @@ export function GradientBG({
 			</div>
 			<div
 				className={cn(
-					"flex-none inset-0 overflow-hidden absolute z-0 rounded-none bg-gradient-to-tl dark:from-emerald-400/20 dark:via-zinc-950 dark:to-black blur-md opacity-50",
+					"flex-none inset-0 overflow-hidden absolute z-0 rounded-none bg-linear-to-tl from-blue-400/15 via-background to-card blur-md opacity-50",
 				)}
 			/>
-			<div className="bg-zinc-100 dark:bg-zinc-950 absolute z-1 flex-none inset-[2px]" />
+			<div className="bg-background absolute z-1 flex-none inset-0.5" />
 		</div>
 	);
 }

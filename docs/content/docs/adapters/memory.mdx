@@ -4,6 +4,10 @@ description: In-memory adapter for testing and development.
 icon: CpuChip
 ---
 
+<Callout type="warn" title="Deprecated">
+  The memory adapter is deprecated. It does not support `raw()` SQL queries required by many core features (hot accounts, reconciliation, rate limiting, etc.). Use PostgreSQL with the [Drizzle](/docs/adapters/drizzle), [Prisma](/docs/adapters/prisma), or [Kysely](/docs/adapters/kysely) adapter for all environments. For testing, use a local PostgreSQL instance or Docker container.
+</Callout>
+
 ## Installation
 
 ```bash

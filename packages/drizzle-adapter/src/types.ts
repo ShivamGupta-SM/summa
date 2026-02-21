@@ -53,12 +53,6 @@ export interface RawTransactionRow {
 // COMMON PARTIAL ROW TYPES
 // =============================================================================
 
-export interface RawBalanceUpdateRow {
-	balance_before: number;
-	balance_after: number;
-	lock_version: number;
-}
-
 export interface RawHoldSummaryRow {
 	id: string;
 	source_account_id: string;

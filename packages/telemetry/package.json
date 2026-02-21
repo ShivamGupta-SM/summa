@@ -29,6 +29,14 @@
 		"lint:types": "attw --profile esm-only --pack .",
 		"prepublishOnly": "tsdown"
 	},
+	"peerDependencies": {
+		"@opentelemetry/api": ">=1.0.0"
+	},
+	"peerDependenciesMeta": {
+		"@opentelemetry/api": {
+			"optional": true
+		}
+	},
 	"devDependencies": {
 		"@arethetypeswrong/cli": "catalog:",
 		"@types/node": "catalog:",

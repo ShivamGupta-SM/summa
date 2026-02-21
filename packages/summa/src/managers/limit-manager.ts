@@ -11,6 +11,7 @@ import type {
 	SummaTransactionAdapter,
 } from "@summa/core";
 import { SummaError } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 import { getAccountByHolder } from "./account-manager.js";
 import type { RawLimitRow } from "./raw-types.js";
 
@@ -42,13 +43,21 @@ export async function checkLimits(
 		category?: string;
 	},
 ): Promise<LimitCheckResult> {
+	const VALID_TXN_TYPES: ReadonlySet<string> = new Set(["credit", "debit", "hold"]);
+	if (!VALID_TXN_TYPES.has(params.txnType)) {
+		throw SummaError.invalidArgument(
+			`Invalid txnType: "${params.txnType}". Must be one of: credit, debit, hold`,
+		);
+	}
+
 	const { holderId, amount, txnType, category } = params;
+	const t = createTableResolver(ctx.options.schema);
 
 	const account = await getAccountByHolder(ctx, holderId);
 
 	// Fetch all applicable limits for this account
 	const limits = await ctx.adapter.raw<RawLimitRow>(
-		`SELECT * FROM account_limit
+		`SELECT * FROM ${t("account_limit")}
      WHERE account_id = $1 AND enabled = true`,
 		[account.id],
 	);
@@ -86,12 +95,13 @@ export async function checkLimits(
 
 	if (needsDaily || needsMonthly) {
 		const { daily, monthly } = await getUsageBoth(
-			ctx,
+			ctx.adapter,
 			account.id,
 			startOfDay,
 			startOfMonth,
 			txnType,
 			category,
+			t,
 		);
 
 		for (const limit of limits) {
@@ -158,9 +168,13 @@ export async function enforceLimits(
  * Enforce limits using an already-known account ID (from a FOR UPDATE row).
  * Avoids the redundant getAccountByHolder() lookup that checkLimits() does.
  * Call this inside transactions where the account is already locked.
+ *
+ * Requires `tx` to run limit queries within the same database transaction,
+ * preventing TOCTOU races where two concurrent requests could both pass
+ * the limit check before either commits.
  */
 export async function enforceLimitsWithAccountId(
-	ctx: SummaContext,
+	tx: SummaTransactionAdapter,
 	params: {
 		accountId: string;
 		holderId: string;
@@ -169,10 +183,18 @@ export async function enforceLimitsWithAccountId(
 		category?: string;
 	},
 ): Promise<void> {
-	const { accountId, amount, txnType, category } = params;
+	const VALID_TXN_TYPES: ReadonlySet<string> = new Set(["credit", "debit", "hold"]);
+	if (!VALID_TXN_TYPES.has(params.txnType)) {
+		throw SummaError.invalidArgument(
+			`Invalid txnType: "${params.txnType}". Must be one of: credit, debit, hold`,
+		);
+	}
 
-	const limits = await ctx.adapter.raw<RawLimitRow>(
-		`SELECT * FROM account_limit
+	const { accountId, amount, txnType, category } = params;
+	const t = createTableResolver(tx.options?.schema ?? "summa");
+
+	const limits = await tx.raw<RawLimitRow>(
+		`SELECT * FROM ${t("account_limit")}
      WHERE account_id = $1 AND enabled = true`,
 		[accountId],
 	);
@@ -201,12 +223,13 @@ export async function enforceLimitsWithAccountId(
 
 	if (needsDaily || needsMonthly) {
 		const { daily, monthly } = await getUsageBoth(
-			ctx,
+			tx,
 			accountId,
 			startOfDay,
 			startOfMonth,
 			txnType,
 			category,
+			t,
 		);
 
 		for (const limit of limits) {
@@ -240,9 +263,10 @@ export async function logTransaction(
 		reference?: string;
 	},
 ): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	try {
 		await ctx.adapter.raw(
-			`INSERT INTO account_transaction_log (account_id, ledger_txn_id, txn_type, amount, category, reference)
+			`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
        VALUES ($1, $2, $3, $4, $5, $6)`,
 			[
 				params.accountId,
@@ -277,8 +301,16 @@ export async function logTransactionInTx(
 		reference?: string;
 	},
 ): Promise<void> {
+	const VALID_TXN_TYPES: ReadonlySet<string> = new Set(["credit", "debit", "hold"]);
+	if (!VALID_TXN_TYPES.has(params.txnType)) {
+		throw SummaError.invalidArgument(
+			`Invalid txnType: "${params.txnType}". Must be one of: credit, debit, hold`,
+		);
+	}
+
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 	await tx.raw(
-		`INSERT INTO account_transaction_log (account_id, ledger_txn_id, txn_type, amount, category, reference)
+		`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
      VALUES ($1, $2, $3, $4, $5, $6)`,
 		[
 			params.accountId,
@@ -307,23 +339,31 @@ export async function setLimit(
 ): Promise<AccountLimitInfo> {
 	const { holderId, limitType, maxAmount, category = null, enabled = true } = params;
 
+	const VALID_LIMIT_TYPES: ReadonlySet<string> = new Set(["per_transaction", "daily", "monthly"]);
+	if (!VALID_LIMIT_TYPES.has(limitType)) {
+		throw SummaError.invalidArgument(
+			`Invalid limitType: "${limitType}". Must be one of: per_transaction, daily, monthly`,
+		);
+	}
+
 	if (maxAmount <= 0) {
 		throw SummaError.invalidArgument("maxAmount must be positive");
 	}
 
+	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, holderId);
 
 	// Check for existing limit (handles NULL category correctly since NULL != NULL in SQL)
 	const existingRows =
 		category === null
 			? await ctx.adapter.raw<RawLimitRow>(
-					`SELECT * FROM account_limit
+					`SELECT * FROM ${t("account_limit")}
        WHERE account_id = $1 AND limit_type = $2 AND category IS NULL
        LIMIT 1`,
 					[account.id, limitType],
 				)
 			: await ctx.adapter.raw<RawLimitRow>(
-					`SELECT * FROM account_limit
+					`SELECT * FROM ${t("account_limit")}
        WHERE account_id = $1 AND limit_type = $2 AND category = $3
        LIMIT 1`,
 					[account.id, limitType, category],
@@ -333,7 +373,7 @@ export async function setLimit(
 	if (existingRows[0]) {
 		// Update existing
 		rows = await ctx.adapter.raw<RawLimitRow>(
-			`UPDATE account_limit
+			`UPDATE ${t("account_limit")}
        SET max_amount = $1, enabled = $2, updated_at = NOW()
        WHERE id = $3
        RETURNING *`,
@@ -342,7 +382,7 @@ export async function setLimit(
 	} else {
 		// Insert new
 		rows = await ctx.adapter.raw<RawLimitRow>(
-			`INSERT INTO account_limit (account_id, limit_type, max_amount, category, enabled)
+			`INSERT INTO ${t("account_limit")} (account_id, limit_type, max_amount, category, enabled)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
 			[account.id, limitType, maxAmount, category, enabled],
@@ -360,10 +400,11 @@ export async function getLimits(
 	ctx: SummaContext,
 	params: { holderId: string },
 ): Promise<AccountLimitInfo[]> {
+	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, params.holderId);
 
 	const rows = await ctx.adapter.raw<RawLimitRow>(
-		`SELECT * FROM account_limit WHERE account_id = $1`,
+		`SELECT * FROM ${t("account_limit")} WHERE account_id = $1`,
 		[account.id],
 	);
 
@@ -382,6 +423,7 @@ export async function removeLimit(
 		category?: string;
 	},
 ): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, params.holderId);
 
 	const categoryCondition = params.category ? `AND category = $3` : `AND category IS NULL`;
@@ -390,7 +432,7 @@ export async function removeLimit(
 	if (params.category) queryParams.push(params.category);
 
 	await ctx.adapter.rawMutate(
-		`DELETE FROM account_limit
+		`DELETE FROM ${t("account_limit")}
      WHERE account_id = $1
        AND limit_type = $2
        ${categoryCondition}`,
@@ -410,13 +452,22 @@ export async function getUsageSummary(
 		category?: string;
 	},
 ): Promise<{ daily: number; monthly: number }> {
+	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, params.holderId);
 
 	const now = new Date();
 	const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
 	const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
-	return getUsageBoth(ctx, account.id, startOfDay, startOfMonth, params.txnType, params.category);
+	return getUsageBoth(
+		ctx.adapter,
+		account.id,
+		startOfDay,
+		startOfMonth,
+		params.txnType,
+		params.category,
+		t,
+	);
 }
 
 // =============================================================================
@@ -434,15 +485,16 @@ export async function cleanupOldTransactionLogs(
 	ctx: SummaContext,
 	retentionDays = 90,
 ): Promise<number> {
+	const t = createTableResolver(ctx.options.schema);
 	const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
 	let totalDeleted = 0;
 	const BATCH_SIZE = 5000;
 
 	while (true) {
 		const count = await ctx.adapter.rawMutate(
-			`DELETE FROM account_transaction_log
+			`DELETE FROM ${t("account_transaction_log")}
        WHERE id IN (
-         SELECT id FROM account_transaction_log
+         SELECT id FROM ${t("account_transaction_log")}
          WHERE created_at < $1
          LIMIT $2
        )`,
@@ -476,13 +528,15 @@ export async function cleanupOldTransactionLogs(
  * Avoids 2 separate SUM queries when both limits exist.
  */
 async function getUsageBoth(
-	ctx: SummaContext,
+	queryRunner: Pick<SummaTransactionAdapter, "raw">,
 	accountId: string,
 	startOfDay: Date,
 	startOfMonth: Date,
 	txnType?: "credit" | "debit" | "hold",
 	category?: string,
+	t?: ReturnType<typeof createTableResolver>,
 ): Promise<{ daily: number; monthly: number }> {
+	if (!t) t = createTableResolver("summa");
 	// Build dynamic query
 	const conditions: string[] = ["account_id = $1", "created_at >= $2"];
 	const params: unknown[] = [accountId, startOfMonth.toISOString()];
@@ -501,11 +555,11 @@ async function getUsageBoth(
 	params.push(startOfDay.toISOString());
 	const startOfDayParam = paramIdx;
 
-	const rows = await ctx.adapter.raw<{ daily: number; monthly: number }>(
+	const rows = await queryRunner.raw<{ daily: number; monthly: number }>(
 		`SELECT
        COALESCE(SUM(CASE WHEN created_at >= $${startOfDayParam} THEN amount ELSE 0 END)::bigint, 0) as daily,
        COALESCE(SUM(amount)::bigint, 0) as monthly
-     FROM account_transaction_log
+     FROM ${t("account_transaction_log")}
      WHERE ${conditions.join(" AND ")}`,
 		params,
 	);

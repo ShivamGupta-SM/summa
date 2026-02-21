@@ -1,0 +1,116 @@
+---
+title: i18n
+description: Multi-locale error message translation.
+icon: Language
+---
+
+## Overview
+
+The i18n plugin translates error messages in API responses based on the client's locale. Useful for multi-region fintech applications that need localized error messages.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { i18n } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    i18n({
+      defaultLocale: "en",
+      translations: {
+        en: {
+          INSUFFICIENT_BALANCE: "Insufficient balance",
+          ACCOUNT_FROZEN: "Account is frozen",
+        },
+        hi: {
+          INSUFFICIENT_BALANCE: "अपर्याप्त शेष राशि",
+          ACCOUNT_FROZEN: "खाता फ़्रीज़ है",
+        },
+        es: {
+          INSUFFICIENT_BALANCE: "Saldo insuficiente",
+          ACCOUNT_FROZEN: "La cuenta está congelada",
+        },
+      },
+    }),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+i18n({
+  defaultLocale: "en",          // Fallback locale (default: "en")
+  translations: { ... },        // Locale → error code → message
+  detection: "header",          // How to detect locale (default: "header")
+  cookieName: "locale",         // Cookie name for "cookie" detection
+  detectLocale: (req) => "hi",  // Custom function for "callback" detection
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `defaultLocale` | `string` | `"en"` | Fallback locale when detection fails |
+| `translations` | `TranslationMap` | — | **Required.** Translations keyed by locale, then by error code |
+| `detection` | `"header" \| "cookie" \| "callback"` | `"header"` | Locale detection strategy |
+| `cookieName` | `string` | `"locale"` | Cookie name when using `"cookie"` detection |
+| `detectLocale` | `(req) => string` | — | Custom detection function for `"callback"` strategy |
+
+## Detection Strategies
+
+### `"header"` (default)
+
+Parses the `Accept-Language` header with quality values:
+
+```
+Accept-Language: hi-IN,hi;q=0.9,en-US;q=0.8,en;q=0.7
+→ tries "hi", then "en"
+```
+
+### `"cookie"`
+
+Reads locale from a cookie:
+
+```
+Cookie: locale=hi
+→ uses "hi"
+```
+
+### `"callback"`
+
+Uses a custom function:
+
+```ts
+i18n({
+  detection: "callback",
+  detectLocale: (req) => req.headers?.["x-locale"],
+  translations: { ... },
+})
+```
+
+## Type-Safe Translations
+
+Use the `defineTranslations` helper for autocompletion:
+
+```ts
+import { defineTranslations } from "summa/plugins";
+
+const hindi = defineTranslations({
+  INSUFFICIENT_BALANCE: "अपर्याप्त शेष राशि",
+  ACCOUNT_FROZEN: "खाता फ़्रीज़ है",
+  ACCOUNT_CLOSED: "खाता बंद है",
+  LIMIT_EXCEEDED: "लेनदेन सीमा पार हो गई",
+  NOT_FOUND: "संसाधन नहीं मिला",
+});
+```
+
+## How It Works
+
+The plugin uses the `onResponse` hook to intercept error responses (status >= 400). When an error response contains a `code` field, the plugin looks up the translation for the detected locale and replaces the `message` field.
+
+Fallback chain: **requested locale → default locale → original message**.
+
+Non-error responses are passed through untouched.

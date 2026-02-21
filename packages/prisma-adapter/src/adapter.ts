@@ -2,20 +2,15 @@
 // PRISMA ADAPTER — SummaAdapter implementation backed by Prisma Client
 // =============================================================================
 // Uses raw SQL via Prisma's $queryRawUnsafe / $executeRawUnsafe for all operations.
-// This gives full control over locking, RETURNING, parameterized queries,
-// and avoids the complexity of dynamically mapping Where[] to Prisma's
-// type-safe model API across many tables.
+// CRUD logic is shared via buildSqlAdapterMethods from @summa/core/db.
 
 import {
-	buildWhereClause,
-	keysToCamel,
-	keysToSnake,
+	buildSqlAdapterMethods,
 	postgresDialect,
-	type SortBy,
+	type SqlExecutor,
 	type SummaAdapter,
+	type SummaAdapterOptions,
 	type SummaTransactionAdapter,
-	toSnakeCase,
-	type Where,
 } from "@summa/core/db";
 
 // =============================================================================
@@ -38,162 +33,19 @@ interface PrismaTransactionClient {
 }
 
 // =============================================================================
-// ADAPTER METHODS BUILDER
+// SQL EXECUTOR — Prisma-specific query execution
 // =============================================================================
 
-/**
- * Build the core adapter methods for a given Prisma client or transaction handle.
- */
-function buildAdapterMethods(
-	client: PrismaClientLike | PrismaTransactionClient,
-): Omit<SummaTransactionAdapter, "id" | "options"> {
+function createPrismaExecutor(client: PrismaClientLike | PrismaTransactionClient): SqlExecutor {
 	return {
-		create: async <T extends Record<string, unknown>>({
-			model,
-			data,
-		}: {
-			model: string;
-			data: T;
-		}): Promise<T> => {
-			const snakeData = keysToSnake(data as Record<string, unknown>);
-			const columns = Object.keys(snakeData);
-			const values = Object.values(snakeData);
-
-			if (columns.length === 0) {
-				throw new Error(`Cannot insert empty data into ${model}`);
-			}
-
-			const columnList = columns.map((c) => `"${c}"`).join(", ");
-			const placeholders = columns.map((_, i) => `$${i + 1}`).join(", ");
-			const query = `INSERT INTO "${model}" (${columnList}) VALUES (${placeholders}) RETURNING *`;
-
-			const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(query, ...values);
-			const row = rows[0];
-			if (!row) {
-				throw new Error(`Insert into ${model} returned no rows`);
-			}
-			return keysToCamel(row) as T;
+		query: async <T>(sql: string, params: unknown[]): Promise<T[]> => {
+			return client.$queryRawUnsafe<T[]>(sql, ...params);
 		},
-
-		findOne: async <T>({
-			model,
-			where,
-			forUpdate,
-		}: {
-			model: string;
-			where: Where[];
-			forUpdate?: boolean;
-		}): Promise<T | null> => {
-			const { clause, params } = buildWhereClause(where);
-			let query = `SELECT * FROM "${model}" WHERE ${clause} LIMIT 1`;
-			if (forUpdate) {
-				query += " FOR UPDATE";
-			}
-
-			const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(query, ...params);
-			const row = rows[0];
-			if (!row) return null;
-			return keysToCamel(row) as T;
+		mutate: async (sql: string, params: unknown[]): Promise<number> => {
+			return client.$executeRawUnsafe(sql, ...params);
 		},
-
-		findMany: async <T>({
-			model,
-			where,
-			limit,
-			offset,
-			sortBy,
-		}: {
-			model: string;
-			where?: Where[];
-			limit?: number;
-			offset?: number;
-			sortBy?: SortBy;
-		}): Promise<T[]> => {
-			const { clause, params } = buildWhereClause(where ?? []);
-			let query = `SELECT * FROM "${model}" WHERE ${clause}`;
-			let paramIdx = params.length + 1;
-
-			if (sortBy) {
-				const col = toSnakeCase(sortBy.field);
-				const dir = sortBy.direction === "desc" ? "DESC" : "ASC";
-				query += ` ORDER BY "${col}" ${dir}`;
-			}
-
-			if (limit !== undefined) {
-				query += ` LIMIT $${paramIdx}`;
-				params.push(limit);
-				paramIdx++;
-			}
-
-			if (offset !== undefined) {
-				query += ` OFFSET $${paramIdx}`;
-				params.push(offset);
-				paramIdx++;
-			}
-
-			const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(query, ...params);
-			return rows.map((r) => keysToCamel(r) as T);
-		},
-
-		update: async <T>({
-			model,
-			where,
-			update: updateData,
-		}: {
-			model: string;
-			where: Where[];
-			update: Record<string, unknown>;
-		}): Promise<T | null> => {
-			const snakeData = keysToSnake(updateData);
-			const setCols = Object.keys(snakeData);
-			const setValues = Object.values(snakeData);
-
-			if (setCols.length === 0) {
-				throw new Error(`Cannot update ${model} with empty data`);
-			}
-
-			const setClause = setCols.map((c, i) => `"${c}" = $${i + 1}`).join(", ");
-			const { clause: whereClause, params: whereParams } = buildWhereClause(
-				where,
-				setCols.length + 1,
-			);
-
-			const allParams = [...setValues, ...whereParams];
-			const query = `UPDATE "${model}" SET ${setClause} WHERE ${whereClause} RETURNING *`;
-
-			const rows = await client.$queryRawUnsafe<Record<string, unknown>[]>(query, ...allParams);
-			const row = rows[0];
-			if (!row) return null;
-			return keysToCamel(row) as T;
-		},
-
-		delete: async ({ model, where }: { model: string; where: Where[] }): Promise<void> => {
-			const { clause, params } = buildWhereClause(where);
-			const query = `DELETE FROM "${model}" WHERE ${clause}`;
-			await client.$executeRawUnsafe(query, ...params);
-		},
-
-		count: async ({ model, where }: { model: string; where?: Where[] }): Promise<number> => {
-			const { clause, params } = buildWhereClause(where ?? []);
-			const query = `SELECT COUNT(*)::int AS count FROM "${model}" WHERE ${clause}`;
-
-			const rows = await client.$queryRawUnsafe<{ count: number }[]>(query, ...params);
-			const row = rows[0];
-			return row?.count ?? 0;
-		},
-
 		advisoryLock: async (key: number): Promise<void> => {
 			await client.$queryRawUnsafe("SELECT pg_advisory_xact_lock($1)", key);
-		},
-
-		raw: async <T>(sqlStr: string, params: unknown[]): Promise<T[]> => {
-			const rows = await client.$queryRawUnsafe<T[]>(sqlStr, ...params);
-			return rows;
-		},
-
-		rawMutate: async (sqlStr: string, params: unknown[]): Promise<number> => {
-			const count = await client.$executeRawUnsafe(sqlStr, ...params);
-			return count;
 		},
 	};
 }
@@ -218,7 +70,17 @@ function buildAdapterMethods(
  * ```
  */
 export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
-	const methods = buildAdapterMethods(prisma);
+	// Shared mutable options — schema is set later by buildContext()
+	const sharedOptions: SummaAdapterOptions = {
+		supportsAdvisoryLocks: true,
+		supportsForUpdate: true,
+		supportsReturning: true,
+		dialectName: "postgres",
+		dialect: postgresDialect,
+	};
+
+	const executor = createPrismaExecutor(prisma);
+	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
 
 	return {
 		id: "prisma",
@@ -226,28 +88,17 @@ export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
 
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return prisma.$transaction(async (tx) => {
-				const txMethods = buildAdapterMethods(tx as PrismaTransactionClient);
+				const txExecutor = createPrismaExecutor(tx);
+				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
 				const txAdapter: SummaTransactionAdapter = {
 					id: "prisma",
 					...txMethods,
-					options: {
-						supportsAdvisoryLocks: true,
-						supportsForUpdate: true,
-						supportsReturning: true,
-						dialectName: "postgres",
-						dialect: postgresDialect,
-					},
+					options: sharedOptions,
 				};
 				return fn(txAdapter);
 			});
 		},
 
-		options: {
-			supportsAdvisoryLocks: true,
-			supportsForUpdate: true,
-			supportsReturning: true,
-			dialectName: "postgres",
-			dialect: postgresDialect,
-		},
+		options: sharedOptions,
 	};
 }

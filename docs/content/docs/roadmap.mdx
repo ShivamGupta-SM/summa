@@ -1,0 +1,413 @@
+---
+title: Immutability Architecture
+description: Summa's append-only design — every state change creates a new row, enforced at the application, database, and cryptographic layers.
+icon: Map
+---
+
+## Overview
+
+This document describes Summa's immutability architecture. Core financial tables use an **append-only design** — every state change creates a new row instead of updating in place. This matches the immutability guarantees of purpose-built financial databases like TigerBeetle, while retaining the flexibility of PostgreSQL.
+
+Each section describes the design rationale, implementation approach, and impact.
+
+---
+
+## 1. Append-Only Account Balances
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+The `account_balance` table was a mutable projection. Balance fields (`balance`, `credit_balance`, `debit_balance`, `pending_debit`, `pending_credit`), status fields (`status`, `freeze_reason`, `frozen_at`), and the optimistic lock (`lock_version`) were all updated in-place via SQL `UPDATE` statements.
+
+This meant a direct database `UPDATE` (whether malicious, accidental, or from a bug) could silently change an account's balance without leaving any trace in the `account_balance` table itself. While the event log captured the intent, the projection could drift from truth.
+
+### Implementation
+
+`account_balance` is split into two tables:
+
+**`account_balance`** (immutable after creation) — stores only static properties that never change: `holder_id`, `holder_type`, `currency`, `allow_overdraft`, `overdraft_limit`, `account_type`, `account_code`, `metadata`, `created_at`.
+
+**`account_balance_version`** (append-only) — each row is a complete state snapshot at a point in time. Every balance change, hold reservation, freeze, unfreeze, or close creates a new row instead of updating the existing one.
+
+```
+account_balance_version
+├── account_id      → FK to account_balance
+├── version         → monotonically increasing (replaces lock_version)
+├── balance, credit_balance, debit_balance
+├── pending_credit, pending_debit
+├── status, freeze_reason, frozen_at, frozen_by
+├── closed_at, closed_by, closure_reason
+├── change_type     → 'credit', 'debit', 'hold_create', 'hold_release', 'freeze', 'unfreeze', 'close'
+├── caused_by_event_id → links to the ledger_event that triggered this version
+└── created_at
+```
+
+The current balance is always the latest version row: `SELECT ... FROM account_balance_version WHERE account_id = $1 ORDER BY version DESC LIMIT 1`. With an index on `(account_id, version DESC)`, this is a single backward index scan — O(1).
+
+### Impact
+
+- Every balance state is permanently recorded and auditable
+- Balances can be reconstructed to any point in time without replaying events
+- No UPDATE statements on financial data
+- PostgreSQL performance improves: append-only tables produce zero dead tuples, reducing autovacuum pressure and eliminating table bloat
+
+### Files Affected
+
+- `packages/summa/src/db/schema.ts`
+- `packages/summa/src/managers/entry-balance.ts`
+- `packages/summa/src/managers/account-manager.ts`
+- `packages/summa/src/managers/hold-manager.ts`
+- `packages/summa/src/managers/raw-types.ts`
+
+---
+
+## 2. Append-Only Transaction Status
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+The `transaction_record` table had a mutable `status` field that transitioned through states: `pending` → `inflight` → `posted` → `voided` / `expired` / `reversed`. Fields like `committed_amount`, `refunded_amount`, and `posted_at` were also updated in-place.
+
+This meant the history of how a transaction moved through its lifecycle was lost — only the final state was visible.
+
+### Implementation
+
+Status tracking is separated into an append-only `transaction_status` table:
+
+**`transaction_record`** becomes immutable after initial insert — the core transaction data (amount, currency, reference, accounts, metadata) never changes.
+
+**`transaction_status`** (append-only) — each status transition creates a new row.
+
+```
+transaction_status
+├── transaction_id  → FK to transaction_record
+├── status          → 'pending', 'inflight', 'posted', 'voided', 'expired', 'reversed'
+├── committed_amount, refunded_amount
+├── posted_at
+├── reason          → why this transition happened
+├── caused_by_event_id
+└── created_at
+```
+
+The current status is derived from the latest row: `SELECT ... FROM transaction_status WHERE transaction_id = $1 ORDER BY created_at DESC LIMIT 1`.
+
+### Impact
+
+- Complete transaction lifecycle history is preserved
+- Auditors can see exactly when each status change happened
+- No UPDATE statements on transaction records
+- Two-phase commit (holds) becomes fully traceable: `inflight` → `posted` or `inflight` → `voided` are separate, timestamped records
+
+### Files Affected
+
+- `packages/summa/src/db/schema.ts`
+- `packages/summa/src/managers/hold-manager.ts`
+- `packages/summa/src/managers/correction-manager.ts`
+- `packages/summa/src/managers/transaction-manager.ts`
+
+---
+
+## 3. Append-Only System Accounts
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+The `system_account` table stored balance fields (`balance`, `credit_balance`, `debit_balance`) that were updated in-place, both synchronously and via the hot accounts batching plugin.
+
+### Implementation
+
+The same split pattern as account balances is applied:
+
+**`system_account`** (immutable) — `identifier`, `name`, `currency`, `created_at`.
+
+**`system_account_version`** (append-only) — `balance`, `credit_balance`, `debit_balance`, `version`, `created_at`.
+
+The hot accounts plugin INSERTs new version rows with aggregated deltas instead of running `UPDATE system_account SET balance = balance + $1`.
+
+### Files Affected
+
+- `packages/summa/src/db/schema.ts`
+- `packages/summa/src/plugins/hot-accounts.ts`
+
+---
+
+## 4. Generic Entity Status Log
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+Every plugin that managed a workflow (approval requests, batch imports, scheduled transactions, FX quotes, accounting periods, statement jobs) used mutable `status` columns on its tables. Each plugin had its own UPDATE pattern, with no consistent history tracking.
+
+### Implementation
+
+A shared `entity_status_log` table is used for all status-based state machines:
+
+```
+entity_status_log (append-only)
+├── entity_type     → 'approval_request', 'import_batch', 'batch_item', etc.
+├── entity_id
+├── status          → the new status
+├── previous_status → what it was before
+├── reason
+├── metadata        → JSONB for status-specific data
+└── created_at
+```
+
+A utility module (`packages/summa/src/infrastructure/entity-status.ts`) provides `getEntityStatus()` and `transitionEntityStatus()` helper functions that all plugins use instead of direct UPDATE statements.
+
+The `status` column is removed from each plugin's main table. Current status is derived by querying the latest `entity_status_log` row for that entity.
+
+### Plugins Affected
+
+| Plugin | Entity Types |
+|--------|-------------|
+| Approval Workflow | `approval_request` |
+| Batch Import | `import_batch`, `batch_item` |
+| Accrual Accounting | `accrual_schedule`, `accrual_posting` |
+| Period Close | `accounting_period` |
+| Scheduled Transactions | `scheduled_transaction` |
+| Statements | `statement_job` |
+| FX Engine | `fx_rate_quote` |
+| Hot Accounts | `hot_account_entry` |
+
+Outbox and DLQ tables are ephemeral infrastructure (TTL-based cleanup) and remain mutable by design.
+
+### Special Cases
+
+**Scheduled Transactions** have additional mutable fields beyond status (`execution_count`, `retry_count`, `next_execution_at`). These moved to a separate append-only `scheduled_transaction_execution` table where each execution creates a new row.
+
+**Accrual Schedules** have mutable amount tracking (`recognized_amount`, `remaining_amount`). These moved to a separate append-only `accrual_recognition` table.
+
+### Impact
+
+- Unified status history across all plugins
+- Every workflow state transition is recorded with timestamp and reason
+- Consistent pattern for plugin developers building new plugins
+- Single table to query for "what changed and when" across the entire system
+
+---
+
+## 5. Database-Level Immutability Enforcement
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+Immutability was enforced only at the application layer. A direct SQL connection, a rogue migration, or a compromised admin account could UPDATE or DELETE any row without detection until the next reconciliation run.
+
+### Implementation — Three Layers of Protection
+
+#### Layer 1: Application Guard
+
+An `IMMUTABLE_MODELS` set in the adapter wrapper (`internal-adapter.ts`) throws an error if any code path attempts to call `update()` or `delete()` on an immutable model. This catches bugs during development.
+
+```ts
+const IMMUTABLE_MODELS = new Set([
+  'account_balance', 'account_balance_version',
+  'system_account', 'system_account_version',
+  'transaction_record', 'transaction_status',
+  'entry_record', 'ledger_event', 'block_checkpoint',
+  'entity_status_log',
+]);
+```
+
+#### Layer 2: PostgreSQL Triggers
+
+Database-level triggers block UPDATE and DELETE on immutable tables. Even if someone bypasses the application and connects directly to the database, the trigger fires:
+
+```sql
+CREATE FUNCTION prevent_mutation() RETURNS TRIGGER AS $$
+BEGIN
+  RAISE EXCEPTION 'Table % is immutable. UPDATE and DELETE are not allowed.', TG_TABLE_NAME;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+Applied to all immutable tables. To modify the data, an attacker would need to first drop the trigger — which is logged and detectable.
+
+#### Layer 3: Row-Level Security (RLS) (Optional)
+
+PostgreSQL RLS policies with `FORCE` enabled deny UPDATE and DELETE operations even for table owners. This is available as an optional additional layer of protection:
+
+```sql
+ALTER TABLE ledger_event ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ledger_event FORCE ROW LEVEL SECURITY;
+CREATE POLICY ledger_event_insert ON ledger_event FOR INSERT WITH CHECK (true);
+-- No UPDATE or DELETE policy = denied by default
+```
+
+### Impact
+
+- Defense-in-depth: three independent layers must all be compromised
+- Tamper attempts are blocked at the earliest possible point
+- Compliance-friendly: auditors can verify trigger existence as a control
+
+---
+
+## 6. Merkle Tree Upgrade
+
+<Callout type="info" title="Implemented">This feature is fully implemented.</Callout>
+
+### Before
+
+The hash chain used a **linear chain** — each event's hash depended on the previous event's hash. Verifying a single event required traversing the entire chain from the beginning: O(n). Block checkpoints reduced this to O(new events per block), but individual event proofs were still expensive.
+
+### Implementation
+
+Summa uses a **Merkle tree** structure (following the pattern used by SQL Server Ledger Tables and Twisp):
+
+```
+                    Root Hash
+                   /         \
+              Hash(AB)      Hash(CD)
+              /    \        /    \
+          Hash(A)  Hash(B)  Hash(C)  Hash(D)
+            │        │        │        │
+          Event 1  Event 2  Event 3  Event 4
+```
+
+Each block checkpoint computes a Merkle root from its events instead of a simple concatenated hash. This provides:
+
+- **O(log n) inclusion proofs** — prove a specific event is part of the ledger by providing only ~20 sibling hashes (for 1M events), instead of scanning the entire chain
+- **O(1) integrity verification** — compare the root hash against the externally anchored digest
+- **Compact audit proofs** — send a Merkle proof to an auditor instead of the entire event history
+
+### How It Works
+
+When a block checkpoint is created:
+
+1. All events in the block are collected
+2. Leaf hashes are computed: `SHA-256(event_data)` for each event
+3. The Merkle tree is built bottom-up: each parent = `SHA-256(left_child + right_child)`
+4. The root hash is stored as the `block_hash`
+5. The tree structure is stored for proof generation
+
+To verify a single event:
+
+1. The event's leaf hash is computed
+2. The sibling hashes along the path to the root are provided (~20 hashes for 1M events)
+3. The root hash is recomputed from the path
+4. It is compared with the stored/anchored root hash
+
+### Performance Comparison
+
+| Operation | Linear Hash Chain | Merkle Tree |
+|-----------|:-:|:-:|
+| Verify 1 event (1M total) | Scan 1,000,000 hashes | **~20 hashes** |
+| Full integrity check | O(n) | **O(1)** — compare root |
+| Audit proof size | O(n) | **O(log n)** |
+| Append new event | O(1) | O(log n) |
+| Implementation complexity | Simple | Medium |
+
+### Files Affected
+
+- `packages/summa/src/infrastructure/hash-chain.ts`
+- `packages/summa/src/db/schema.ts` (new `merkle_node` table or extended `block_checkpoint`)
+
+---
+
+## 7. Performance Optimizations for Append-Only Tables
+
+### BRIN Indexes
+
+All append-only tables will use **BRIN (Block Range Index)** on `created_at` columns in addition to B-tree indexes. BRIN indexes are ideal for append-only data because rows are naturally ordered by insertion time:
+
+- Index size: **kilobytes** instead of megabytes/gigabytes for B-tree
+- Perfect for time-range queries (audit reports, reconciliation windows)
+- Zero maintenance overhead
+
+### Table Partitioning
+
+High-volume append-only tables (`account_balance_version`, `transaction_status`, `entity_status_log`, `ledger_event`) will support optional range partitioning by `created_at`:
+
+```sql
+CREATE TABLE account_balance_version (...) PARTITION BY RANGE (created_at);
+```
+
+Benefits:
+- Old partitions become read-only and can be compressed or archived
+- Latest partition stays in memory (hot data)
+- Partition pruning skips irrelevant months during queries
+- Enables Hot-Warm-Cold storage tiering for long-term data retention
+
+### UUIDv7 for Sequential IDs
+
+Replace random UUIDv4 with time-sortable **UUIDv7** for all append-only table primary keys. This produces monotonically increasing IDs that:
+
+- Improve B-tree insert performance (always append to the end of the index)
+- Enable natural time-ordering without a separate `created_at` index
+- Reduce page splits and index fragmentation
+
+### Advisory Locks over Row Locks
+
+Where possible, replace `SELECT ... FOR UPDATE` (which marks rows on disk) with PostgreSQL advisory locks (in-memory, no disk writes). The parent `account_balance` row is used as a lock target — it's immutable but lockable — while the actual state is read from the latest `account_balance_version` row without a lock.
+
+---
+
+## 8. External Digest Anchoring
+
+### Current State
+
+Summa supports external anchoring via the reconciliation plugin's `onBlockCheckpoint` callback, but it's optional and manually configured.
+
+### Planned Improvements
+
+- **Automatic anchoring** — built-in support for anchoring to S3 (with Object Lock), a separate PostgreSQL database, or a blockchain
+- **Anchor verification on startup** — automatically verify the latest N block hashes against external anchors on application startup
+- **Anchor drift alerting** — emit warnings if anchoring falls behind or if a verification fails
+- **Signed digests** — the database digest includes a digital signature from the application, so even the external store can't forge a valid digest
+
+---
+
+## 9. Ephemeral Tables — No Changes Needed
+
+The following tables are intentionally mutable and ephemeral. They serve infrastructure purposes and do not contain financial data:
+
+| Table | Purpose | Why Mutable is OK |
+|-------|---------|-------------------|
+| `worker_lease` | Distributed lock coordination | Leases expire and are re-acquired constantly |
+| `rate_limit_log` | API rate limiting | Sliding window, entries deleted after window passes |
+| `idempotency_key` | Duplicate request prevention | TTL-based, entries deleted after 24 hours |
+| `processed_event` | Consumer-side deduplication | Tracking data, rebuildable from outbox |
+| `fx_rate_cache` | Exchange rate cache | Cache by nature, TTL-based |
+| `reconciliation_watermark` | Incremental reconciliation cursor | Singleton tracker, not financial data |
+
+These tables will not receive immutability enforcement. Attempting to make them immutable would add complexity without improving financial integrity.
+
+---
+
+## Implementation Status
+
+| Phase | What | Status |
+|-------|------|--------|
+| **Phase 1** | Account balance split (append-only versions) | Completed |
+| **Phase 2** | Transaction status split (append-only status) | Completed |
+| **Phase 3** | System account split (append-only versions) | Completed |
+| **Phase 4** | Entity status log + plugin migration | Completed |
+| **Phase 5** | Merkle tree (O(log n) proofs) | Completed |
+| **Phase 6** | DB-level enforcement (triggers) | Completed |
+| **Phase 7** | Performance optimizations (BRIN, partitioning, UUIDv7) | Planned |
+
+---
+
+## Industry Comparison
+
+How Summa's architecture compares to other financial ledger systems:
+
+| Feature | TigerBeetle | Formance | Blnk | Summa |
+|---------|:-:|:-:|:-:|:-:|
+| Transfers immutable | Yes | Yes | Yes | **Yes** |
+| Balance append-only | Derived from transfers | Computed on read | No (mutable) | **Yes** (version table) |
+| Status tracking | New transfer record | N/A | Separate record | **Append-only log** |
+| Corrections | Reverse transfer | Reverse posting | Reverse entry | **New status row** |
+| DB-level enforcement | Custom DBMS | Immutable log | None | **Triggers + RLS** |
+| Cryptographic proof | Hash chain | Immutable log | None | **Merkle tree** |
+| Individual event proof | N/A | N/A | N/A | **O(log n)** |
+
+<Callout type="info" title="Design Philosophy">
+  TigerBeetle achieves immutability by building a custom database where UPDATE and DELETE operations simply don't exist. Summa achieves the same guarantee on PostgreSQL through a combination of append-only table design, database triggers, row-level security, and cryptographic verification — making it the most secure approach possible on a general-purpose database.
+</Callout>

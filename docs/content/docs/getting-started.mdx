@@ -22,22 +22,28 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 
 <Tabs items={["pnpm", "npm", "yarn"]}>
 <Tab value="pnpm">
+
 ```bash
 pnpm add summa @summa/core @summa/drizzle-adapter drizzle-orm
 pnpm add -D @summa/cli
 ```
+
 </Tab>
 <Tab value="npm">
+
 ```bash
 npm install summa @summa/core @summa/drizzle-adapter drizzle-orm
 npm install -D @summa/cli
 ```
+
 </Tab>
 <Tab value="yarn">
+
 ```bash
 yarn add summa @summa/core @summa/drizzle-adapter drizzle-orm
 yarn add -D @summa/cli
 ```
+
 </Tab>
 </Tabs>
 
@@ -64,7 +70,7 @@ export const summa = createSumma({
 });
 ```
 
-The `database` field accepts any Summa adapter instance. The `currency` sets the default ISO 4217 currency code for the ledger.
+The `database` field accepts any Summa adapter instance. The `currency` sets the default ISO 4217 currency code for the ledger. By default, all tables are created in the `"summa"` PostgreSQL schema — see [Configuration](/docs/configuration#schema) to customize.
 
 </Step>
 
@@ -74,13 +80,16 @@ The `database` field accepts any Summa adapter instance. The `currency` sets the
 
 <Tabs items={["Direct push", "Generate + ORM migrate"]}>
 <Tab value="Direct push">
+
 ```bash
 npx summa migrate push
 ```
 
 Compares your table definitions against the database via `information_schema` and applies the diff. Shows a preview before executing — use `--yes` to skip confirmation.
+
 </Tab>
 <Tab value="Generate + ORM migrate">
+
 ```bash
 npx summa generate --adapter drizzle --out src/db/summa-schema.ts
 npx drizzle-kit generate
@@ -88,6 +97,7 @@ npx drizzle-kit push
 ```
 
 Generates the Summa schema for your ORM, then uses its native migration tooling.
+
 </Tab>
 </Tabs>
 
@@ -236,7 +246,7 @@ The CLI auto-discovers config files named `summa.config.ts`, `summa.ts`, or `led
     Event sourcing, hash chain verification, aggregate events.
   </Card>
   <Card title="Plugins" href="/docs/plugins">
-    All 14 built-in plugins with lifecycle hooks and workers.
+    All 25 built-in plugins with lifecycle hooks and workers.
   </Card>
   <Card title="Client SDK" href="/docs/client-sdk">
     Type-safe HTTP client for service-to-service calls.

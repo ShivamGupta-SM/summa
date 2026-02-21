@@ -1,0 +1,221 @@
+---
+title: Encore
+description: Mount Summa's HTTP API in Encore.ts services.
+icon: Encore
+---
+
+## Installation
+
+```bash
+pnpm add summa
+```
+
+<Callout type="info" title="No extra dependency">
+  Encore.ts raw endpoints use the standard Web Fetch API (`Request`/`Response`). The Summa Encore adapter is a thin wrapper around the Fetch adapter — no Encore-specific dependency is needed.
+</Callout>
+
+## Quick Start
+
+```ts
+// ledger/ledger.ts
+import { api } from "encore.dev/api";
+import { createSumma } from "summa";
+import { createSummaEncore } from "summa/api/encore";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+
+const handler = createSummaEncore(summa, { basePath: "/ledger" });
+
+export const ledger = api.raw(
+  { expose: true, method: "*", path: "/ledger/*path" },
+  handler,
+);
+```
+
+That's it — all 36+ Summa endpoints are now available under `/ledger` as an Encore service.
+
+## How It Works
+
+`createSummaEncore()` returns a standard `(Request) => Promise<Response>` function — identical to the [Fetch API](/docs/frameworks/fetch) adapter. Encore's `api.raw()` gives you access to the raw `Request` object, which Summa handles natively.
+
+1. Encore routes the request to the raw endpoint handler
+2. The handler strips the `basePath` prefix from the URL
+3. Parses the JSON body for non-GET requests
+4. Passes everything to Summa's universal `handleRequest()` router
+5. Returns a standard `Response` object back to Encore
+
+## Handler Options
+
+All framework integrations share the same options:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `basePath` | `string` | URL prefix to strip before routing (e.g., `"/ledger"`) |
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit (e.g., 401). |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+## Authentication
+
+Use Encore's built-in auth handler combined with Summa's `onRequest` hook:
+
+```ts
+// auth/auth.ts — Encore auth handler
+import { authHandler } from "encore.dev/auth";
+import { Header } from "encore.dev/api";
+
+interface AuthParams {
+  authorization: Header<"Authorization">;
+}
+
+interface AuthData {
+  userId: string;
+}
+
+export const auth = authHandler<AuthParams, AuthData>(async (params) => {
+  const token = params.authorization?.replace("Bearer ", "");
+  if (!token) throw new Error("Missing token");
+  const user = await verifyToken(token);
+  return { userID: user.id, userData: { userId: user.id } };
+});
+```
+
+```ts
+// ledger/ledger.ts — with auth
+export const ledger = api.raw(
+  { expose: true, auth: true, method: "*", path: "/ledger/*path" },
+  handler,
+);
+```
+
+Or use Summa's `onRequest` hook for API key-based auth:
+
+```ts
+const handler = createSummaEncore(summa, {
+  basePath: "/ledger",
+  onRequest: (req) => {
+    const apiKey = req.headers?.["x-api-key"];
+    if (!apiKey || !isValidApiKey(apiKey)) {
+      return {
+        status: 401,
+        body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+      };
+    }
+    return req;
+  },
+});
+```
+
+## Rate Limiting
+
+```ts
+import { createSummaEncore } from "summa/api/encore";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const handler = createSummaEncore(summa, {
+  basePath: "/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+});
+```
+
+| Preset | Limit | Window |
+|--------|:-----:|:------:|
+| `standardRateLimit` | 100 | 60s |
+| `strictRateLimit` | 20 | 60s |
+| `lenientRateLimit` | 500 | 60s |
+| `burstRateLimit` | 10 | 1s |
+
+## Using Encore's Database
+
+Encore manages database connections for you. Use the Drizzle adapter with Encore's `SQLDatabase`:
+
+```ts
+import { SQLDatabase } from "encore.dev/storage/sqldb";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = new SQLDatabase("ledger", {
+  migrations: "./migrations",
+});
+
+const orm = drizzle(db.connectionString);
+const adapter = drizzleAdapter(orm);
+```
+
+## Full Production Example
+
+```ts
+// ledger/ledger.ts
+import { api } from "encore.dev/api";
+import { SQLDatabase } from "encore.dev/storage/sqldb";
+import { createSumma } from "summa";
+import { createSummaEncore } from "summa/api/encore";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+// Encore-managed database
+const db = new SQLDatabase("ledger", { migrations: "./migrations" });
+const orm = drizzle(db.connectionString);
+
+// Summa
+const summa = createSumma({
+  database: drizzleAdapter(orm),
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Start workers
+await summa.workers.start();
+
+// Handler
+const handler = createSummaEncore(summa, {
+  basePath: "/ledger",
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+});
+
+// Encore raw endpoint — catches all methods and paths under /ledger
+export const ledger = api.raw(
+  { expose: true, method: "*", path: "/ledger/*path" },
+  handler,
+);
+```
+
+<Callout type="info" title="Encore Cloud">
+  When deployed to Encore Cloud, your database, secrets, and infrastructure are managed automatically. The Summa adapter works identically in local development and production.
+</Callout>
+
+## Service Architecture
+
+In Encore, each directory with an `encore.service.ts` file is a service. You can dedicate a service to the ledger:
+
+```
+backend/
+├── ledger/
+│   ├── encore.service.ts   # Service declaration
+│   ├── ledger.ts           # Summa raw endpoint
+│   └── migrations/         # Database migrations
+├── users/
+│   └── ...
+└── encore.app
+```
+
+```ts
+// ledger/encore.service.ts
+import { Service } from "encore.dev/service";
+
+export default new Service("ledger");
+```
+
+This gives you Encore's built-in service-to-service communication, distributed tracing, and automatic API documentation for the ledger service.

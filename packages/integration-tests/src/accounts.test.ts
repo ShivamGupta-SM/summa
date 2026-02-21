@@ -109,14 +109,14 @@ describe("Account Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("new account has zero balance", async () => {
-		await summa.accounts.create({ holderId: "zero-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "zero-user", holderType: "individual" });
 		const balance = await summa.accounts.getBalance("zero-user");
 		expect(balance.balance).toBe(0);
 		expect(balance.availableBalance).toBe(0);
 	});
 
 	it("balance reflects credits and debits correctly", async () => {
-		await summa.accounts.create({ holderId: "bal-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "bal-user", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "bal-user", amount: 25000, reference: "c1" });
 		await summa.transactions.debit({ holderId: "bal-user", amount: 10000, reference: "d1" });
 
@@ -131,7 +131,7 @@ describe("Account Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("frozen account rejects credits", async () => {
-		await summa.accounts.create({ holderId: "frz-credit", holderType: "user" });
+		await summa.accounts.create({ holderId: "frz-credit", holderType: "individual" });
 		await summa.accounts.freeze({
 			holderId: "frz-credit",
 			reason: "fraud",
@@ -152,8 +152,8 @@ describe("Account Lifecycle Tests", () => {
 	});
 
 	it("frozen account rejects transfers out", async () => {
-		await summa.accounts.create({ holderId: "frz-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "frz-dst", holderType: "user" });
+		await summa.accounts.create({ holderId: "frz-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "frz-dst", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "frz-src", amount: 20000, reference: "frz-fund" });
 
 		await summa.accounts.freeze({
@@ -173,7 +173,7 @@ describe("Account Lifecycle Tests", () => {
 	});
 
 	it("frozen account rejects hold creation", async () => {
-		await summa.accounts.create({ holderId: "frz-hold", holderType: "user" });
+		await summa.accounts.create({ holderId: "frz-hold", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "frz-hold", amount: 10000, reference: "frz-hf" });
 
 		await summa.accounts.freeze({
@@ -192,7 +192,7 @@ describe("Account Lifecycle Tests", () => {
 	});
 
 	it("unfreeze restores account operations", async () => {
-		await summa.accounts.create({ holderId: "unfrz", holderType: "user" });
+		await summa.accounts.create({ holderId: "unfrz", holderType: "individual" });
 		await summa.accounts.freeze({ holderId: "unfrz", reason: "temp", frozenBy: "admin" });
 		await summa.accounts.unfreeze({ holderId: "unfrz", unfrozenBy: "admin" });
 
@@ -206,7 +206,7 @@ describe("Account Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("closed account rejects all operations", async () => {
-		await summa.accounts.create({ holderId: "close-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "close-user", holderType: "individual" });
 		await summa.accounts.close({ holderId: "close-user", closedBy: "admin", reason: "inactive" });
 
 		try {
@@ -223,8 +223,8 @@ describe("Account Lifecycle Tests", () => {
 	});
 
 	it("close with sweep transfers remaining balance", async () => {
-		await summa.accounts.create({ holderId: "sweep-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "sweep-dst", holderType: "user" });
+		await summa.accounts.create({ holderId: "sweep-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "sweep-dst", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "sweep-src",
@@ -254,7 +254,7 @@ describe("Account Lifecycle Tests", () => {
 	it("lists accounts with pagination", async () => {
 		// Create 5 accounts
 		for (let i = 0; i < 5; i++) {
-			await summa.accounts.create({ holderId: `list-user-${i}`, holderType: "user" });
+			await summa.accounts.create({ holderId: `list-user-${i}`, holderType: "individual" });
 		}
 
 		const page1 = await summa.accounts.list({ page: 1, perPage: 3 });
@@ -268,8 +268,8 @@ describe("Account Lifecycle Tests", () => {
 	});
 
 	it("lists accounts filtered by status", async () => {
-		await summa.accounts.create({ holderId: "status-active", holderType: "user" });
-		await summa.accounts.create({ holderId: "status-frozen", holderType: "user" });
+		await summa.accounts.create({ holderId: "status-active", holderType: "individual" });
+		await summa.accounts.create({ holderId: "status-frozen", holderType: "individual" });
 		await summa.accounts.freeze({
 			holderId: "status-frozen",
 			reason: "test",

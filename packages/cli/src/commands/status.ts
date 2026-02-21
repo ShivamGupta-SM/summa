@@ -116,6 +116,15 @@ export const statusCommand = new Command("status")
 			return;
 		}
 
+		// Resolve schema from config
+		const schema =
+			loaded?.options &&
+			typeof loaded.options.schema === "string" &&
+			loaded.options.schema.length > 0
+				? loaded.options.schema
+				: "summa";
+		const t = (table: string) => (schema === "public" ? `"${table}"` : `"${schema}"."${table}"`);
+
 		const client = new pg.default.Client({ connectionString: dbUrl });
 
 		try {
@@ -128,29 +137,32 @@ export const statusCommand = new Command("status")
 
 			const accountCount = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM account_balance`,
+				`SELECT COUNT(*)::int AS count FROM ${t("account_balance")}`,
 			);
 			p.log.info(`  Accounts:      ${pc.cyan(String(accountCount?.count ?? 0))}`);
 
 			const sysAccountCount = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM system_account`,
+				`SELECT COUNT(*)::int AS count FROM ${t("system_account")}`,
 			);
 			p.log.info(`  System accts:  ${pc.cyan(String(sysAccountCount?.count ?? 0))}`);
 
 			const txnCount = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM transaction_record`,
+				`SELECT COUNT(*)::int AS count FROM ${t("transaction_record")}`,
 			);
 			p.log.info(`  Transactions:  ${pc.cyan(String(txnCount?.count ?? 0))}`);
 
 			const holdCount = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM transaction_record WHERE is_hold = true AND status = 'inflight'`,
+				`SELECT COUNT(*)::int AS count FROM ${t("transaction_record")} WHERE is_hold = true AND status = 'inflight'`,
 			);
 			p.log.info(`  Active holds:  ${pc.cyan(String(holdCount?.count ?? 0))}`);
 
-			const eventCount = await safeQuery(client, `SELECT COUNT(*)::int AS count FROM ledger_event`);
+			const eventCount = await safeQuery(
+				client,
+				`SELECT COUNT(*)::int AS count FROM ${t("ledger_event")}`,
+			);
 			p.log.info(`  Events:        ${pc.cyan(String(eventCount?.count ?? 0))}`);
 
 			// ---- Integrity ----
@@ -158,7 +170,7 @@ export const statusCommand = new Command("status")
 
 			const lastBlock = await safeQuery(
 				client,
-				`SELECT block_hash, block_sequence, event_count FROM block_checkpoint ORDER BY block_sequence DESC LIMIT 1`,
+				`SELECT block_hash, block_sequence, event_count FROM ${t("block_checkpoint")} ORDER BY block_sequence DESC LIMIT 1`,
 			);
 			if (lastBlock) {
 				p.log.info(
@@ -173,15 +185,15 @@ export const statusCommand = new Command("status")
 			// Double-entry balance check
 			const deBalance = await safeQuery(
 				client,
-				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM account_balance`,
+				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM ${t("account_balance")}`,
 			);
 			const sysBalance = await safeQuery(
 				client,
-				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM system_account`,
+				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM ${t("system_account")}`,
 			);
 			const hotBalance = await safeQuery(
 				client,
-				`SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM hot_account_entry WHERE status = 'pending'`,
+				`SELECT COALESCE(SUM(amount), 0)::bigint AS total FROM ${t("hot_account_entry")} WHERE status = 'pending'`,
 			);
 
 			const userTotal = Number(deBalance?.total ?? 0);
@@ -202,7 +214,7 @@ export const statusCommand = new Command("status")
 			// Last reconciliation
 			const lastRecon = await safeQuery(
 				client,
-				`SELECT run_date, status, total_mismatches, duration_ms FROM reconciliation_result ORDER BY created_at DESC LIMIT 1`,
+				`SELECT run_date, status, total_mismatches, duration_ms FROM ${t("reconciliation_result")} ORDER BY created_at DESC LIMIT 1`,
 			);
 			if (lastRecon) {
 				const status = String(lastRecon.status);
@@ -219,11 +231,11 @@ export const statusCommand = new Command("status")
 			// Outbox status
 			const outboxPending = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM outbox WHERE processed_at IS NULL`,
+				`SELECT COUNT(*)::int AS count FROM ${t("outbox")} WHERE processed_at IS NULL`,
 			);
 			const dlqCount = await safeQuery(
 				client,
-				`SELECT COUNT(*)::int AS count FROM dead_letter_queue WHERE status = 'pending'`,
+				`SELECT COUNT(*)::int AS count FROM ${t("dead_letter_queue")} WHERE status = 'pending'`,
 			);
 			p.log.info(
 				`  Outbox queue:  ${pc.cyan(String(outboxPending?.count ?? 0))} pending, ${pc.cyan(String(dlqCount?.count ?? 0))} in DLQ`,

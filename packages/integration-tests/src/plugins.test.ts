@@ -47,7 +47,7 @@ describe("Hold Expiry Plugin", () => {
 	});
 
 	it("hold-expiry plugin expires overdue holds via expireAll", async () => {
-		await summa.accounts.create({ holderId: "exp-plugin", holderType: "user" });
+		await summa.accounts.create({ holderId: "exp-plugin", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "exp-plugin",
 			amount: 50000,
@@ -118,7 +118,7 @@ describe("Velocity Limits Plugin", () => {
 	});
 
 	it("velocity-limits plugin auto-enforces per-transaction limits via hook", async () => {
-		await summa.accounts.create({ holderId: "vel-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "vel-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "vel-user",
 			amount: 500000,
@@ -313,7 +313,7 @@ describe("Outbox Plugin", () => {
 	});
 
 	it("transactions create outbox entries that can be queried", async () => {
-		await summa.accounts.create({ holderId: "outbox-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "outbox-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "outbox-user",
 			amount: 10000,
@@ -378,7 +378,7 @@ describe("Hot Accounts Plugin", () => {
 	});
 
 	it("credits to user create hot account entries for system account", async () => {
-		await summa.accounts.create({ holderId: "hot-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "hot-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "hot-user",
 			amount: 25000,

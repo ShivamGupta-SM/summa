@@ -11,18 +11,24 @@
 		"events",
 		"---Adapters---",
 		"...adapters",
+		"---Frameworks---",
+		"...frameworks",
 		"---Plugins---",
 		"...plugins",
 		"---Integrations---",
 		"api-reference",
+		"openapi-viewer",
 		"client-sdk",
 		"webhooks",
 		"---Reference---",
+		"schema",
 		"cli",
 		"error-codes",
 		"---Guides---",
 		"scaling",
 		"testing",
-		"deployment"
+		"deployment",
+		"---Roadmap---",
+		"roadmap"
 	]
 }

@@ -3,8 +3,9 @@
 // =============================================================================
 
 import type { Summa } from "../summa/base.js";
-import type { ApiHandlerOptions, ApiRequest } from "./handler.js";
+import type { ApiHandlerOptions } from "./handler.js";
 import { handleRequest } from "./handler.js";
+import { parseNodeHeaders, parseNodeQuery } from "./request-helpers.js";
 
 /**
  * Create an Express-compatible router handler for the Summa API.
@@ -33,27 +34,12 @@ export function createSummaExpress(summa: Summa, options?: ApiHandlerOptions) {
 			set: (headers: Record<string, string>) => void;
 		},
 	) => {
-		const query: Record<string, string | undefined> = {};
-		for (const [key, value] of Object.entries(req.query)) {
-			query[key] = typeof value === "string" ? value : undefined;
-		}
-
-		// Extract headers (flatten arrays to first value)
-		const headers: Record<string, string> = {};
-		for (const [key, value] of Object.entries(req.headers)) {
-			if (typeof value === "string") {
-				headers[key] = value;
-			} else if (Array.isArray(value) && value.length > 0) {
-				headers[key] = value[0] as string;
-			}
-		}
-
-		const apiReq: ApiRequest = {
+		const apiReq = {
 			method: req.method,
 			path: req.path,
 			body: req.body,
-			query,
-			headers,
+			query: parseNodeQuery(req.query),
+			headers: parseNodeHeaders(req.headers),
 		};
 
 		const apiRes = await handleRequest(summa, apiReq, options);

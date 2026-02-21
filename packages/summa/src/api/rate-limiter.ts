@@ -5,6 +5,7 @@
 // Ported from the original Encore ledger's middleware/rate-limiter.ts.
 
 import type { SecondaryStorage, SummaAdapter } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // TYPES
@@ -58,7 +59,7 @@ export const burstRateLimit: RateLimitConfig = { window: 1, max: 10 };
 
 export function createRateLimiter(
 	config: RateLimitConfig,
-	ctx: { adapter?: SummaAdapter; secondaryStorage?: SecondaryStorage },
+	ctx: { adapter?: SummaAdapter; secondaryStorage?: SecondaryStorage; schema?: string },
 ): RateLimiter {
 	const storage = config.storage ?? "memory";
 
@@ -69,7 +70,7 @@ export function createRateLimiter(
 			if (!ctx.adapter) {
 				throw new Error("Database adapter required for database-backed rate limiter");
 			}
-			return createDatabaseRateLimiter(config, ctx.adapter);
+			return createDatabaseRateLimiter(config, ctx.adapter, ctx.schema);
 		case "secondary":
 			if (!ctx.secondaryStorage) {
 				throw new Error("Secondary storage required for secondary-storage-backed rate limiter");
@@ -155,11 +156,17 @@ function createMemoryRateLimiter(config: RateLimitConfig): RateLimiter {
 // DATABASE BACKEND (sliding window via PostgreSQL)
 // =============================================================================
 
-function createDatabaseRateLimiter(config: RateLimitConfig, adapter: SummaAdapter): RateLimiter {
+function createDatabaseRateLimiter(
+	config: RateLimitConfig,
+	adapter: SummaAdapter,
+	schema?: string,
+): RateLimiter {
+	const t = createTableResolver(schema ?? "summa");
+
 	async function getCount(key: string): Promise<{ count: number; windowStart: Date }> {
 		const windowStart = new Date(Date.now() - config.window * 1000);
 		const rows = await adapter.raw<{ cnt: string }>(
-			`SELECT COUNT(*) as cnt FROM rate_limit_log
+			`SELECT COUNT(*) as cnt FROM ${t("rate_limit_log")}
 			 WHERE key = $1 AND created_at >= $2`,
 			[key, windowStart.toISOString()],
 		);
@@ -179,29 +186,43 @@ function createDatabaseRateLimiter(config: RateLimitConfig, adapter: SummaAdapte
 		},
 
 		async consume(key: string): Promise<RateLimitResult> {
-			const { count } = await getCount(key);
-			if (count >= config.max) {
+			// Use a transaction to atomically check count + insert in one step,
+			// preventing two concurrent requests from both passing the limit.
+			return adapter.transaction(async (tx) => {
+				const windowStart = new Date(Date.now() - config.window * 1000);
+				const rows = await tx.raw<{ cnt: string }>(
+					`SELECT COUNT(*) as cnt FROM ${t("rate_limit_log")}
+					 WHERE key = $1 AND created_at >= $2
+					 FOR UPDATE`,
+					[key, windowStart.toISOString()],
+				);
+				const count = Number(rows[0]?.cnt ?? 0);
+
+				if (count >= config.max) {
+					return {
+						allowed: false,
+						remaining: 0,
+						resetAt: new Date(Date.now() + config.window * 1000),
+						limit: config.max,
+					};
+				}
+
+				await tx.rawMutate(
+					`INSERT INTO ${t("rate_limit_log")} (key, created_at) VALUES ($1, NOW())`,
+					[key],
+				);
+				const remaining = Math.max(0, config.max - count - 1);
 				return {
-					allowed: false,
-					remaining: 0,
+					allowed: true,
+					remaining,
 					resetAt: new Date(Date.now() + config.window * 1000),
 					limit: config.max,
 				};
-			}
-			await adapter.rawMutate(`INSERT INTO rate_limit_log (key, created_at) VALUES ($1, NOW())`, [
-				key,
-			]);
-			const remaining = Math.max(0, config.max - count - 1);
-			return {
-				allowed: true,
-				remaining,
-				resetAt: new Date(Date.now() + config.window * 1000),
-				limit: config.max,
-			};
+			});
 		},
 
 		async reset(key: string): Promise<void> {
-			await adapter.rawMutate(`DELETE FROM rate_limit_log WHERE key = $1`, [key]);
+			await adapter.rawMutate(`DELETE FROM ${t("rate_limit_log")} WHERE key = $1`, [key]);
 		},
 	};
 }
@@ -231,10 +252,15 @@ function createSecondaryRateLimiter(
 
 		async consume(key: string): Promise<RateLimitResult> {
 			const fullKey = `${prefix}${key}`;
-			const newCount = await storage.increment(fullKey);
-			// Set TTL on first increment
-			if (newCount === 1) {
-				await storage.set(fullKey, String(newCount), config.window);
+			let newCount: number;
+			if (storage.incrementWithTTL) {
+				newCount = await storage.incrementWithTTL(fullKey, config.window);
+			} else {
+				newCount = await storage.increment(fullKey);
+				// Set TTL on first increment (non-atomic fallback)
+				if (newCount === 1) {
+					await storage.set(fullKey, String(newCount), config.window);
+				}
 			}
 			const remaining = Math.max(0, config.max - newCount);
 			return {

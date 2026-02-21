@@ -8,7 +8,7 @@ icon: QueueList
 
 Summa is **event-sourced** — every mutation (account creation, transaction, hold, etc.) produces an immutable event stored in an append-only log. Events are never updated or deleted.
 
-Each event includes a **SHA-256 hash** computed from the event data and the previous event's hash, forming a cryptographic chain. If any event is tampered with, the chain breaks — detectable by verification.
+Each event includes an **HMAC-SHA256 hash** computed from the event data and the previous event's hash, forming a cryptographic chain. If any event is tampered with, the chain breaks — detected immediately on the next read.
 
 ## Event Structure
 
@@ -24,7 +24,7 @@ interface StoredEvent {
   eventType: string;             // e.g. "AccountCreated", "TransactionPosted"
   eventData: Record<string, unknown>;  // Event payload
   correlationId: string;         // Groups related events
-  hash: string;                  // SHA-256 hash
+  hash: string;                  // HMAC-SHA256 hash (or SHA-256 if no secret)
   prevHash: string | null;       // Previous event's hash (null for first)
   createdAt: Date;
 }
@@ -95,6 +95,110 @@ const events = await summa.events.getByCorrelation(txn.correlationId);
 // Returns: TransactionInitiated, TransactionPosted, entry events, etc.
 ```
 
+## Tamper-Proofing
+
+Summa uses multiple layers to ensure ledger integrity:
+
+### HMAC-SHA256 Hash Chain
+
+Every event is hashed with the previous event's hash using **HMAC-SHA256** (when `advanced.hmacSecret` is configured). Without the secret key, an attacker with database access cannot recompute valid hashes — any modification is cryptographically undetectable without the key.
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  advanced: {
+    hmacSecret: process.env.SUMMA_HMAC_SECRET,  // Strong random string
+  },
+});
+```
+
+<Callout type="warn" title="Always set hmacSecret in production">
+  Without `hmacSecret`, hash chains use plain SHA-256 — an attacker with database access could recompute valid hashes after tampering. Summa logs a warning at startup if this is not configured.
+</Callout>
+
+### Read-Time Hash Verification
+
+By default, Summa verifies the hash chain **on every read** — not just during manual verification or daily reconciliation. Any tampered event is detected immediately when accessed.
+
+```ts
+// Enabled by default — disable only for maximum read throughput
+advanced: {
+  verifyHashOnRead: true,  // default
+}
+```
+
+When a hash mismatch is detected on read, Summa throws a `SummaError` with code `CHAIN_INTEGRITY_VIOLATION`.
+
+### Balance Checksums
+
+Every `account_balance_version` row includes an HMAC-SHA256 checksum computed from the balance fields (`balance`, `credit_balance`, `debit_balance`, `pending_debit`, `pending_credit`, `version`). Since balances are append-only (each change creates a new version row), direct SQL tampering is both detected by the checksum and blocked by database-level immutability triggers.
+
+### Database-Level Immutability
+
+Beyond application-level checks, Summa enforces immutability at the PostgreSQL level. The `summa migrate push` command automatically creates triggers that block UPDATE and DELETE operations on all financial tables:
+
+- `account_balance`, `account_balance_version`
+- `transaction_record`, `transaction_status`
+- `entry_record`, `ledger_event`
+- `block_checkpoint`, `merkle_node`
+- `entity_status_log`
+- `system_account`, `system_account_version`
+
+Even with direct database access, any attempt to modify or delete these rows raises an exception.
+
+### External Anchoring
+
+Use the reconciliation plugin's `onBlockCheckpoint` callback to anchor block hashes to an external store (S3, blockchain, separate database). This provides cryptographic proof that the ledger state at a given point was not altered retroactively.
+
+```ts
+import { reconciliation } from "summa/plugins";
+
+plugins: [
+  reconciliation({
+    onBlockCheckpoint: async (anchor) => {
+      // Write to S3, a separate database, or a blockchain
+      await externalStore.put(`block-${anchor.blockSequence}`, {
+        blockHash: anchor.blockHash,
+        merkleRoot: anchor.merkleRoot,
+        eventCount: anchor.eventCount,
+        fromEventSequence: anchor.fromEventSequence,
+        toEventSequence: anchor.toEventSequence,
+        timestamp: anchor.timestamp,
+      });
+    },
+  }),
+]
+```
+
+Later, verify that the stored block hash matches:
+
+```ts
+const result = await summa.events.verifyExternalAnchor(
+  blockSequence,
+  externallyStoredBlockHash,
+);
+
+console.log(result.valid);       // true if hashes match
+console.log(result.storedHash);  // the hash in the database
+```
+
+### Merkle Proofs
+
+Summa builds a Merkle tree during each block checkpoint, enabling O(log n) inclusion proofs for any event. Generate a compact proof for a single event and verify it independently:
+
+```ts
+// Generate a proof for a specific event (O(log n) sibling hashes)
+const proof = await summa.events.generateProof(eventId);
+// proof = { leafHash, leafIndex, siblings, root, blockId, blockSequence }
+
+// Verify the proof cryptographically + cross-check against stored block root
+const result = await summa.events.verifyProof(proof, proof.blockId);
+console.log(result.valid);     // true if proof is cryptographically valid
+console.log(result.rootMatch); // true if root matches stored block checkpoint
+```
+
+For a block with 1M events, the proof contains ~20 sibling hashes — enough to recompute the root without scanning the entire block.
+
 ## Hash Chain Verification
 
 Verify the integrity of the event chain for any aggregate:
@@ -114,7 +218,7 @@ The verification re-computes every hash from the event data and checks that each
 The CLI provides comprehensive integrity checks:
 
 ```bash
-# Verify everything (balances + hash chain)
+# Verify everything (balances + hash chain + merkle)
 npx summa verify
 
 # Verify hash chain only
@@ -122,6 +226,9 @@ npx summa verify --chain
 
 # Verify double-entry balances only
 npx summa verify --balances
+
+# Verify Merkle tree integrity
+npx summa verify --merkle
 ```
 
 **Hash chain checks:**
@@ -132,6 +239,10 @@ npx summa verify --balances
 - Per-transaction double-entry balance (every transaction must have equal debits and credits)
 - Global balance invariant (user + system + hot accounts = 0)
 - Duplicate entry detection
+
+**Merkle tree checks:**
+- Recompute Merkle root from event hashes and compare with stored root
+- Verify leaf node counts match event counts per block
 
 ## Disabling Event Sourcing
 
@@ -149,7 +260,7 @@ const summa = createSumma({
 This reduces write amplification but loses the audit trail and chain verification capability.
 
 <Callout type="warn" title="Hash chain cannot be disabled">
-  The SHA-256 hash chain is always enabled when event sourcing is on. It is critical for tamper detection and integrity verification. All events are hashed with their predecessor's hash, forming a verifiable chain per aggregate.
+  The HMAC-SHA256 hash chain is always enabled when event sourcing is on. It is critical for tamper detection and integrity verification. All events are hashed with their predecessor's hash, forming a verifiable chain per aggregate.
 </Callout>
 
 ## Transaction Isolation

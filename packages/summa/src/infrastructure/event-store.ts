@@ -4,22 +4,56 @@
 // Append-only event log with hash chain integrity.
 // All state mutations produce immutable events.
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import type {
 	AppendEventParams,
 	StoredEvent,
 	SummaContext,
 	SummaTransactionAdapter,
 } from "@summa/core";
-import { computeHash } from "@summa/core";
-import { runWithTransactionContext } from "@summa/core/db";
+import { computeHash, SummaError } from "@summa/core";
+import { createTableResolver, runWithTransactionContext } from "@summa/core/db";
 
 // =============================================================================
 // TRANSACTION TIMEOUT WRAPPER
 // =============================================================================
 // Prevents long-running transactions from blocking operations.
+// Supports configurable retry with exponential backoff on lock contention.
 
 export async function withTransactionTimeout<T>(
+	ctx: SummaContext,
+	operation: (tx: SummaTransactionAdapter) => Promise<T>,
+	options?: { statementTimeoutMs?: number; lockTimeoutMs?: number },
+): Promise<T> {
+	const { advanced } = ctx.options;
+	const retryCount = advanced.lockRetryCount;
+	const baseDelay = advanced.lockRetryBaseDelayMs;
+	const maxDelay = advanced.lockRetryMaxDelayMs;
+
+	for (let attempt = 0; attempt <= retryCount; attempt++) {
+		try {
+			return await executeTransaction(ctx, operation, options);
+		} catch (err) {
+			if (attempt < retryCount && isRetryableError(err)) {
+				const delay = Math.min(baseDelay * 2 ** attempt, maxDelay);
+				const jitter = delay * (0.5 + Math.random());
+				ctx.logger.debug("Transaction retry due to lock contention", {
+					attempt: attempt + 1,
+					maxRetries: retryCount,
+					delayMs: Math.round(jitter),
+				});
+				await new Promise((resolve) => setTimeout(resolve, jitter));
+				continue;
+			}
+			throw err;
+		}
+	}
+
+	// Unreachable — loop always returns or throws
+	throw new Error("Unexpected: retry loop exited without result");
+}
+
+async function executeTransaction<T>(
 	ctx: SummaContext,
 	operation: (tx: SummaTransactionAdapter) => Promise<T>,
 	options?: { statementTimeoutMs?: number; lockTimeoutMs?: number },
@@ -29,23 +63,81 @@ export async function withTransactionTimeout<T>(
 
 	const { dialect } = ctx;
 
-	return await runWithTransactionContext(() =>
-		ctx.adapter.transaction(async (tx) => {
-			// Set isolation level for financial consistency
-			await tx.raw("SET TRANSACTION ISOLATION LEVEL READ COMMITTED", []);
+	return await runWithTransactionContext(
+		() =>
+			ctx.adapter.transaction(async (tx) => {
+				// Set isolation level for financial consistency
+				// REPEATABLE READ prevents dirty reads and non-repeatable reads,
+				// ensuring balance checks are consistent within the transaction.
+				await tx.raw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", []);
 
-			const safeStatementTimeout = Number(statementTimeout);
-			const safeLockTimeout = Number(lockTimeout);
-			if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
-				throw new Error("Invalid timeout value");
-			}
-			const stmtTimeoutSql = dialect.setStatementTimeout(safeStatementTimeout);
-			const lockTimeoutSql = dialect.setLockTimeout(safeLockTimeout);
-			if (stmtTimeoutSql) await tx.raw(`SET LOCAL ${stmtTimeoutSql.replace(/^SET\s+/i, "")}`, []);
-			if (lockTimeoutSql) await tx.raw(`SET LOCAL ${lockTimeoutSql.replace(/^SET\s+/i, "")}`, []);
-			return await operation(tx);
-		}),
+				const safeStatementTimeout = Number(statementTimeout);
+				const safeLockTimeout = Number(lockTimeout);
+				if (!Number.isFinite(safeStatementTimeout) || !Number.isFinite(safeLockTimeout)) {
+					throw new Error("Invalid timeout value");
+				}
+				const stmtTimeoutSql = dialect.setStatementTimeout(safeStatementTimeout);
+				const lockTimeoutSql = dialect.setLockTimeout(safeLockTimeout);
+				if (stmtTimeoutSql) await tx.raw(`SET LOCAL ${stmtTimeoutSql.replace(/^SET\s+/i, "")}`, []);
+				if (lockTimeoutSql) await tx.raw(`SET LOCAL ${lockTimeoutSql.replace(/^SET\s+/i, "")}`, []);
+				return await operation(tx);
+			}),
+		(error, index) => {
+			ctx.logger.error("After-commit callback failed", {
+				callbackIndex: index,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		},
 	);
+}
+
+/**
+ * Check if a database error is retryable (lock contention, serialization failure, deadlock).
+ * PostgreSQL error codes: 55P03 (lock_not_available), 40001 (serialization_failure), 40P01 (deadlock_detected)
+ */
+function isRetryableError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	const msg = err.message;
+	// Check for PG error codes embedded in error messages
+	if (msg.includes("55P03") || msg.includes("lock_not_available")) return true;
+	if (
+		msg.includes("40001") ||
+		msg.includes("serialization_failure") ||
+		msg.includes("could not serialize")
+	)
+		return true;
+	if (msg.includes("40P01") || msg.includes("deadlock")) return true;
+	// Check for lock timeout messages
+	if (msg.includes("lock timeout") || msg.includes("canceling statement due to lock timeout"))
+		return true;
+	// Check for code property on error (common in pg drivers)
+	if ("code" in err) {
+		const code = (err as { code: string }).code;
+		if (code === "55P03" || code === "40001" || code === "40P01") return true;
+	}
+	return false;
+}
+
+// =============================================================================
+// HASH VERIFICATION
+// =============================================================================
+
+/** Verify a single event's hash against its stored data. Throws on mismatch. */
+function verifyEventHash(
+	eventData: Record<string, unknown>,
+	storedHash: string,
+	prevHash: string | null,
+	hmacSecret: string | null,
+): void {
+	const expected = computeHash(prevHash, eventData, hmacSecret);
+	if (
+		expected.length !== storedHash.length ||
+		!timingSafeEqual(Buffer.from(expected), Buffer.from(storedHash))
+	) {
+		throw SummaError.chainIntegrityViolation(
+			"Hash mismatch detected: event data may have been tampered with",
+		);
+	}
 }
 
 // =============================================================================
@@ -58,6 +150,8 @@ export async function withTransactionTimeout<T>(
  *
  * @param tx - Transaction adapter
  * @param params - Event parameters
+ * @param schema - PostgreSQL schema name
+ * @param hmacSecret - HMAC secret for tamper-proof hashing (null = plain SHA-256)
  * @returns The stored event with computed fields
  */
 const MAX_VERSION_RETRIES = 3;
@@ -65,7 +159,10 @@ const MAX_VERSION_RETRIES = 3;
 export async function appendEvent(
 	tx: SummaTransactionAdapter,
 	params: AppendEventParams,
+	schema = "public",
+	hmacSecret: string | null = null,
 ): Promise<StoredEvent> {
+	const t = createTableResolver(schema);
 	const correlationId = params.correlationId ?? randomUUID();
 
 	// Retry loop handles the rare case where two concurrent transactions
@@ -79,7 +176,7 @@ export async function appendEvent(
 			hash: string;
 		}>(
 			`SELECT aggregate_version, hash
-       FROM ledger_event
+       FROM ${t("ledger_event")}
        WHERE aggregate_type = $1
          AND aggregate_id = $2
        ORDER BY aggregate_version DESC
@@ -93,7 +190,8 @@ export async function appendEvent(
 
 		// Compute hash -- always enabled, no feature flag.
 		// Hash chain is critical for tamper detection and MUST NOT be disabled.
-		const hash = computeHash(prevHash, params.eventData);
+		// Uses HMAC-SHA256 when secret is provided for tamper-proof integrity.
+		const hash = computeHash(prevHash, params.eventData, hmacSecret);
 
 		const eventId = randomUUID();
 
@@ -111,7 +209,7 @@ export async function appendEvent(
 				prev_hash: string | null;
 				created_at: string | Date;
 			}>(
-				`INSERT INTO ledger_event (id, aggregate_type, aggregate_id, aggregate_version, event_type, event_data, correlation_id, hash, prev_hash)
+				`INSERT INTO ${t("ledger_event")} (id, aggregate_type, aggregate_id, aggregate_version, event_type, event_data, correlation_id, hash, prev_hash)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING *`,
 				[
@@ -166,12 +264,14 @@ export async function appendEvent(
 
 /**
  * Get all events for an aggregate, ordered by version.
+ * When verifyHashOnRead is enabled, verifies the full hash chain.
  */
 export async function getEvents(
 	ctx: SummaContext,
 	aggregateType: string,
 	aggregateId: string,
 ): Promise<StoredEvent[]> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		id: string;
 		sequence_number: number;
@@ -185,24 +285,37 @@ export async function getEvents(
 		prev_hash: string | null;
 		created_at: string | Date;
 	}>(
-		`SELECT * FROM ledger_event
+		`SELECT * FROM ${t("ledger_event")}
      WHERE aggregate_type = $1
        AND aggregate_id = $2
      ORDER BY aggregate_version ASC`,
 		[aggregateType, aggregateId],
 	);
 
-	return rows.map(rowToStoredEvent);
+	const events = rows.map(rowToStoredEvent);
+
+	if (ctx.options.advanced.verifyHashOnRead && events.length > 0) {
+		const hmacSecret = ctx.options.advanced.hmacSecret;
+		let prevHash: string | null = null;
+		for (const event of events) {
+			verifyEventHash(event.eventData, event.hash, prevHash, hmacSecret);
+			prevHash = event.hash;
+		}
+	}
+
+	return events;
 }
 
 /**
  * Get the latest event for an aggregate.
+ * When verifyHashOnRead is enabled, verifies the event's hash.
  */
 export async function getLatestEvent(
 	ctx: SummaContext,
 	aggregateType: string,
 	aggregateId: string,
 ): Promise<StoredEvent | null> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		id: string;
 		sequence_number: number;
@@ -216,7 +329,7 @@ export async function getLatestEvent(
 		prev_hash: string | null;
 		created_at: string | Date;
 	}>(
-		`SELECT * FROM ledger_event
+		`SELECT * FROM ${t("ledger_event")}
      WHERE aggregate_type = $1
        AND aggregate_id = $2
      ORDER BY aggregate_version DESC
@@ -225,16 +338,26 @@ export async function getLatestEvent(
 	);
 
 	const row = rows[0];
-	return row ? rowToStoredEvent(row) : null;
+	if (!row) return null;
+
+	const event = rowToStoredEvent(row);
+
+	if (ctx.options.advanced.verifyHashOnRead) {
+		verifyEventHash(event.eventData, event.hash, event.prevHash, ctx.options.advanced.hmacSecret);
+	}
+
+	return event;
 }
 
 /**
  * Get events by correlation ID (all events from a single command).
+ * When verifyHashOnRead is enabled, verifies each event's hash individually.
  */
 export async function getEventsByCorrelation(
 	ctx: SummaContext,
 	correlationId: string,
 ): Promise<StoredEvent[]> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		id: string;
 		sequence_number: number;
@@ -248,13 +371,23 @@ export async function getEventsByCorrelation(
 		prev_hash: string | null;
 		created_at: string | Date;
 	}>(
-		`SELECT * FROM ledger_event
+		`SELECT * FROM ${t("ledger_event")}
      WHERE correlation_id = $1
      ORDER BY sequence_number ASC`,
 		[correlationId],
 	);
 
-	return rows.map(rowToStoredEvent);
+	const events = rows.map(rowToStoredEvent);
+
+	if (ctx.options.advanced.verifyHashOnRead) {
+		const hmacSecret = ctx.options.advanced.hmacSecret;
+		for (const event of events) {
+			// Verify each event individually (not chain — events may span aggregates)
+			verifyEventHash(event.eventData, event.hash, event.prevHash, hmacSecret);
+		}
+	}
+
+	return events;
 }
 
 // =============================================================================

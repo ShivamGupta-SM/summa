@@ -4,6 +4,7 @@
 
 import type { SummaLogger } from "../types/config.js";
 import { blue, bold, dim, magenta, red, yellow } from "./colors.js";
+import { buildRedactKeys, redactData } from "./redact.js";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -28,6 +29,8 @@ export interface ConsoleLoggerOptions {
 	prefix?: string;
 	/** Whether to include ISO timestamps. Default: `true` */
 	timestamps?: boolean;
+	/** Keys to redact from log data. Values replaced with "[REDACTED]". Default: common PII keys */
+	redactKeys?: string[];
 }
 
 /**
@@ -43,6 +46,7 @@ export interface ConsoleLoggerOptions {
 export function createConsoleLogger(options: ConsoleLoggerOptions = {}): SummaLogger {
 	const { level = "info", prefix = "Summa", timestamps = true } = options;
 	const minPriority = LEVEL_PRIORITY[level];
+	const redactKeys = buildRedactKeys(options.redactKeys);
 
 	function emit(lvl: LogLevel, message: string, data?: Record<string, unknown>) {
 		if (LEVEL_PRIORITY[lvl] < minPriority) return;
@@ -58,8 +62,9 @@ export function createConsoleLogger(options: ConsoleLoggerOptions = {}): SummaLo
 		const line = parts.join(" ");
 		const method = lvl === "error" ? "error" : lvl === "warn" ? "warn" : "log";
 
-		if (data && Object.keys(data).length > 0) {
-			console[method](line, data);
+		const safeData = redactData(data, redactKeys);
+		if (safeData && Object.keys(safeData).length > 0) {
+			console[method](line, safeData);
 		} else {
 			console[method](line);
 		}

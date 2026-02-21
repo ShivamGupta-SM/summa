@@ -8,7 +8,7 @@ import {
 	index,
 	integer,
 	jsonb,
-	pgTable,
+	pgSchema,
 	text,
 	timestamp,
 	uniqueIndex,
@@ -16,12 +16,14 @@ import {
 	varchar,
 } from "drizzle-orm/pg-core";
 
+export const summaSchema = pgSchema("summa");
+
 // =============================================================================
 // 1. EVENT STORE (Source of Truth)
 // =============================================================================
 // Immutable append-only event log with hash chains for tamper detection.
 
-export const ledgerEvent = pgTable(
+export const ledgerEvent = summaSchema.table(
 	"ledger_event",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -59,11 +61,10 @@ export type LedgerEventInsert = typeof ledgerEvent.$inferInsert;
 // =============================================================================
 // Materialized view of account state, derived from events.
 
-export const accountBalance = pgTable(
+export const accountBalance = summaSchema.table(
 	"account_balance",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
-		ledgerId: uuid("ledger_id").notNull().defaultRandom(),
 		indicator: varchar("indicator", { length: 255 }).unique(),
 
 		holderId: varchar("holder_id", { length: 255 }).notNull(),
@@ -77,11 +78,18 @@ export const accountBalance = pgTable(
 
 		currency: char("currency", { length: 3 }).notNull().default("INR"),
 		lockVersion: integer("lock_version").notNull().default(1),
+		checksum: varchar("checksum", { length: 64 }),
 		lastSequenceNumber: bigint("last_sequence_number", { mode: "number" }).notNull().default(0),
 
 		allowOverdraft: boolean("allow_overdraft").notNull().default(false),
 		overdraftLimit: bigint("overdraft_limit", { mode: "number" }),
 		status: varchar("status", { length: 20 }).notNull().default("active"),
+
+		// Chart of Accounts fields (nullable for backward compat)
+		accountType: varchar("account_type", { length: 20 }),
+		accountCode: varchar("account_code", { length: 50 }).unique(),
+		parentAccountId: uuid("parent_account_id"),
+		normalBalance: varchar("normal_balance", { length: 10 }),
 
 		// Freeze tracking
 		freezeReason: text("freeze_reason"),
@@ -102,16 +110,12 @@ export const accountBalance = pgTable(
 			.$onUpdate(() => new Date()),
 	},
 	(table) => [
-		uniqueIndex("uq_account_balance_holder").on(
-			table.ledgerId,
-			table.holderId,
-			table.holderType,
-			table.currency,
-		),
 		uniqueIndex("uq_account_balance_holder_currency").on(table.holderId, table.currency),
 		index("idx_account_balance_sequence").on(table.lastSequenceNumber),
 		index("idx_account_balance_status").on(table.status),
 		index("idx_account_balance_holder_lookup").on(table.holderId, table.holderType),
+		index("idx_account_balance_type").on(table.accountType),
+		index("idx_account_balance_parent").on(table.parentAccountId),
 	],
 );
 
@@ -123,7 +127,7 @@ export type AccountBalanceInsert = typeof accountBalance.$inferInsert;
 // =============================================================================
 // Platform-owned accounts (prefixed with @). Always allow overdraft.
 
-export const systemAccount = pgTable("system_account", {
+export const systemAccount = summaSchema.table("system_account", {
 	id: uuid("id").primaryKey().defaultRandom(),
 	identifier: varchar("identifier", { length: 100 }).unique().notNull(),
 	name: varchar("name", { length: 255 }).notNull(),
@@ -148,10 +152,11 @@ export type SystemAccountInsert = typeof systemAccount.$inferInsert;
 // =============================================================================
 // Records every financial transaction with full lifecycle tracking.
 
-export const transactionRecord = pgTable(
+export const transactionRecord = summaSchema.table(
 	"transaction_record",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		type: varchar("type", { length: 50 }).notNull(),
 		reference: varchar("reference", { length: 255 }).unique().notNull(),
 		status: varchar("status", { length: 20 }).notNull().default("pending"),
 
@@ -181,6 +186,7 @@ export const transactionRecord = pgTable(
 	},
 	(table) => [
 		index("idx_txn_record_status").on(table.status),
+		index("idx_txn_record_type").on(table.type),
 		index("idx_txn_record_reference").on(table.reference),
 		index("idx_txn_record_source").on(table.sourceAccountId),
 		index("idx_txn_record_destination").on(table.destinationAccountId),
@@ -199,7 +205,7 @@ export type TransactionRecordInsert = typeof transactionRecord.$inferInsert;
 // =============================================================================
 // Every transaction produces exactly balanced debit + credit entries.
 
-export const entryRecord = pgTable(
+export const entryRecord = summaSchema.table(
 	"entry_record",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -219,6 +225,13 @@ export const entryRecord = pgTable(
 		isHotAccount: boolean("is_hot_account").notNull().default(false),
 		accountLockVersion: integer("account_lock_version"),
 
+		/** Original amount before FX conversion (null for same-currency) */
+		originalAmount: bigint("original_amount", { mode: "number" }),
+		/** Original currency code before FX conversion (null for same-currency) */
+		originalCurrency: char("original_currency", { length: 3 }),
+		/** Exchange rate used, stored as integer with 6 decimal precision (null for same-currency) */
+		exchangeRate: bigint("exchange_rate", { mode: "number" }),
+
 		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 	},
 	(table) => [
@@ -237,7 +250,7 @@ export type EntryRecordInsert = typeof entryRecord.$inferInsert;
 // 6. OUTBOX (Reliable event publishing)
 // =============================================================================
 
-export const outbox = pgTable(
+export const outbox = summaSchema.table(
 	"outbox",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -266,7 +279,7 @@ export type OutboxInsert = typeof outbox.$inferInsert;
 // Stores outbox entries that exceeded max retries. Used by the outbox plugin
 // for post-mortem analysis and manual retry.
 
-export const deadLetterQueue = pgTable(
+export const deadLetterQueue = summaSchema.table(
 	"dead_letter_queue",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -291,7 +304,7 @@ export type DeadLetterQueueInsert = typeof deadLetterQueue.$inferInsert;
 // =============================================================================
 // Async batched updates for high-volume system accounts.
 
-export const hotAccountEntry = pgTable(
+export const hotAccountEntry = summaSchema.table(
 	"hot_account_entry",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -318,7 +331,7 @@ export type HotAccountEntryInsert = typeof hotAccountEntry.$inferInsert;
 // Records batch processing failures for hot accounts. Used by the hot-accounts
 // plugin for traceable recovery after aggregation failures.
 
-export const hotAccountFailedSequence = pgTable(
+export const hotAccountFailedSequence = summaSchema.table(
 	"hot_account_failed_sequence",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -340,7 +353,7 @@ export type HotAccountFailedSequenceRow = typeof hotAccountFailedSequence.$infer
 // =============================================================================
 // Tracks which outbox events have been successfully published for deduplication.
 
-export const processedEvent = pgTable(
+export const processedEvent = summaSchema.table(
 	"processed_event",
 	{
 		id: uuid("id").primaryKey(),
@@ -357,7 +370,7 @@ export type ProcessedEventRow = typeof processedEvent.$inferSelect;
 // 11. IDEMPOTENCY KEYS (24-hour TTL)
 // =============================================================================
 
-export const idempotencyKey = pgTable(
+export const idempotencyKey = summaSchema.table(
 	"idempotency_key",
 	{
 		key: varchar("key", { length: 255 }).primaryKey(),
@@ -382,7 +395,7 @@ export type IdempotencyKeyRow = typeof idempotencyKey.$inferSelect;
 // Stores results of daily reconciliation runs. Each run produces one row
 // with per-step results and overall status.
 
-export const reconciliationResult = pgTable(
+export const reconciliationResult = summaSchema.table(
 	"reconciliation_result",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -412,7 +425,7 @@ export type ReconciliationResultRow = typeof reconciliationResult.$inferSelect;
 // =============================================================================
 // Singleton row tracking the last reconciled entry timestamp.
 
-export const reconciliationWatermark = pgTable("reconciliation_watermark", {
+export const reconciliationWatermark = summaSchema.table("reconciliation_watermark", {
 	id: integer("id").primaryKey().default(1),
 	lastEntryCreatedAt: timestamp("last_entry_created_at", { withTimezone: true }),
 	lastRunDate: date("last_run_date"),
@@ -428,7 +441,7 @@ export type ReconciliationWatermarkRow = typeof reconciliationWatermark.$inferSe
 // Immutable end-of-day balance snapshots. Used by the snapshots plugin for
 // historical balance queries and month-end reporting.
 
-export const accountSnapshot = pgTable(
+export const accountSnapshot = summaSchema.table(
 	"account_snapshot",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -459,11 +472,10 @@ export type AccountSnapshotRow = typeof accountSnapshot.$inferSelect;
 // 14. SCHEDULED TRANSACTIONS
 // =============================================================================
 
-export const scheduledTransaction = pgTable(
+export const scheduledTransaction = summaSchema.table(
 	"scheduled_transaction",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
-		ledgerId: uuid("ledger_id").notNull(),
 		reference: varchar("reference", { length: 255 }),
 		amount: bigint("amount", { mode: "number" }).notNull(),
 		currency: char("currency", { length: 3 }).notNull().default("INR"),
@@ -489,7 +501,7 @@ export type ScheduledTransactionRow = typeof scheduledTransaction.$inferSelect;
 // Each block = batch of events hashed together. Blocks chain via prevBlockHash.
 // O(new events) per checkpoint -- never grows with total aggregate count.
 
-export const blockCheckpoint = pgTable(
+export const blockCheckpoint = summaSchema.table(
 	"block_checkpoint",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -521,7 +533,7 @@ export type BlockCheckpointRow = typeof blockCheckpoint.$inferSelect;
 // Used by the worker runner to prevent duplicate execution of lease-required
 // workers across multiple processes/instances.
 
-export const workerLease = pgTable(
+export const workerLease = summaSchema.table(
 	"worker_lease",
 	{
 		workerId: varchar("worker_id", { length: 100 }).primaryKey(),
@@ -538,7 +550,7 @@ export type WorkerLeaseRow = typeof workerLease.$inferSelect;
 // 18. ACCOUNT LIMITS (copied from wallet)
 // =============================================================================
 
-export const accountLimit = pgTable(
+export const accountLimit = summaSchema.table(
 	"account_limit",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -576,7 +588,7 @@ export type AccountLimitInsert = typeof accountLimit.$inferInsert;
 // 19. TRANSACTION LOG (velocity tracking cache)
 // =============================================================================
 
-export const accountTransactionLog = pgTable(
+export const accountTransactionLog = summaSchema.table(
 	"account_transaction_log",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
@@ -605,7 +617,7 @@ export type AccountTransactionLogRow = typeof accountTransactionLog.$inferSelect
 // 20. FAILED EVENTS (PubSub DLQ -- copied from wallet)
 // =============================================================================
 
-export const failedEvent = pgTable(
+export const failedEvent = summaSchema.table(
 	"failed_event",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),

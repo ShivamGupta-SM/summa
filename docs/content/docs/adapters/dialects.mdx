@@ -1,0 +1,110 @@
+---
+title: SQL Dialects
+description: PostgreSQL, MySQL, and SQLite dialect support.
+icon: CircleStack
+---
+
+## Overview
+
+Summa's database layer uses a `SqlDialect` abstraction that handles differences between SQL engines — parameter placeholders, advisory locks, UUID generation, timestamp functions, and more. Three dialects are included out of the box.
+
+## Available Dialects
+
+```ts
+import { postgresDialect, mysqlDialect, sqliteDialect } from "@summa/core/db";
+```
+
+| Dialect | Min Version | Parameter Style | Advisory Locks | `RETURNING` |
+|---------|-------------|-----------------|:-:|:-:|
+| `postgresDialect` | PostgreSQL 12+ | `$1, $2, ...` | `pg_advisory_xact_lock` | Yes |
+| `mysqlDialect` | MySQL 8.0+ | `?, ?, ...` | `GET_LOCK` / `RELEASE_LOCK` | No |
+| `sqliteDialect` | SQLite 3.35+ | `?, ?, ...` | N/A | Yes (3.35+) |
+
+## PostgreSQL (Default)
+
+PostgreSQL is the recommended and most tested dialect. It supports all Summa features natively.
+
+```ts
+import { postgresDialect } from "@summa/core/db";
+
+// Used internally by all PostgreSQL-based adapters
+// You don't need to configure this explicitly — it's the default
+```
+
+### Features
+- `pg_advisory_xact_lock()` for transaction-scoped advisory locks
+- `SELECT ... FOR UPDATE` for row-level pessimistic locking
+- `gen_random_uuid()` for UUID generation
+- Native `RETURNING` clause
+- `$1, $2, ...` parameterized queries
+- `SET LOCAL lock_timeout` for lock timeouts
+
+## MySQL
+
+MySQL 8.0+ support with InnoDB engine.
+
+```ts
+import { mysqlDialect } from "@summa/core/db";
+```
+
+### Key Differences from PostgreSQL
+
+- **Parameter placeholders**: Uses `?` instead of `$1`
+- **Advisory locks**: Uses `GET_LOCK(name, timeout)` / `RELEASE_LOCK(name)` (session-scoped, not transaction-scoped)
+- **No `RETURNING`**: Requires a follow-up `SELECT` after `INSERT`
+- **Upsert**: Uses `ON DUPLICATE KEY UPDATE` instead of `ON CONFLICT`
+- **UUIDs**: Uses `UUID()` function
+- **Timestamps**: Uses `NOW()` / `CURRENT_TIMESTAMP`
+- **Lock timeout**: Uses `SET innodb_lock_wait_timeout`
+
+<Callout type="warn">
+  MySQL advisory locks are session-scoped, not transaction-scoped. This means they persist beyond the transaction boundary. The dialect handles `RELEASE_LOCK()` automatically, but be aware of this difference when debugging lock contention.
+</Callout>
+
+## SQLite
+
+SQLite 3.35+ support for development, testing, and embedded use cases.
+
+```ts
+import { sqliteDialect } from "@summa/core/db";
+```
+
+### Key Differences
+
+- **No advisory locks**: SQLite uses database-level locking. The advisory lock SQL returns an empty string (no-op)
+- **No `FOR UPDATE`**: Row-level locking is not supported. `FOR UPDATE` is omitted from queries
+- **UUIDs**: Uses `lower(hex(randomblob(16)))` to generate UUID-like identifiers
+- **Timestamps**: Uses `datetime('now')` instead of `NOW()`
+- **Lock timeout**: Uses `PRAGMA busy_timeout`
+- **`RETURNING`**: Supported in SQLite 3.35+ (2021-03-12)
+
+<Callout type="info">
+  SQLite is ideal for local development, CI testing, and embedded applications. For production workloads with concurrent writes, use PostgreSQL or MySQL.
+</Callout>
+
+## Custom Model Names
+
+If your database schema uses different table or column names than Summa's defaults, use the `ModelResolver`:
+
+```ts
+import { createModelResolver } from "@summa/core/db";
+
+const resolver = createModelResolver({
+  modelNames: {
+    account_balance: "accounts",
+    transaction_record: "transactions",
+    hold: "authorizations",
+  },
+  fieldNames: {
+    account_balance: {
+      holder_id: "user_id",
+      holder_type: "user_type",
+    },
+  },
+});
+
+// resolver.getModelName("account_balance")  → "accounts"
+// resolver.getFieldName("account_balance", "holder_id") → "user_id"
+```
+
+This is useful when integrating Summa into an existing database schema without renaming tables.

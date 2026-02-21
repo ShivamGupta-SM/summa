@@ -1,0 +1,112 @@
+---
+title: Data Retention
+description: Unified data retention policies for automated cleanup across all Summa tables.
+icon: Clock
+---
+
+## Overview
+
+The data retention plugin consolidates all data cleanup into a single, configurable policy. Instead of scattered cleanup workers in individual plugins (maintenance, audit-log, hot-accounts), this plugin provides a unified configuration point for operators to manage data lifecycle across the entire ledger.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { dataRetention } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    dataRetention({
+      idempotencyKeys: "24h",
+      processedOutbox: "7d",
+      hotAccountEntries: "24h",
+      auditLogs: "7y",
+      velocityLogs: "90d",
+      fxQuotes: "30d",
+      events: "365d",
+    }),
+  ],
+});
+```
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `idempotencyKeys` | `string` | `"24h"` | Retention for expired idempotency keys |
+| `processedOutbox` | `string` | `"7d"` | Retention for processed outbox entries |
+| `hotAccountEntries` | `string` | `"24h"` | Retention for flushed hot account entries |
+| `auditLogs` | `string` | — | Retention for audit log entries |
+| `velocityLogs` | `string` | — | Retention for velocity limit log entries |
+| `fxQuotes` | `string` | — | Retention for expired FX rate quotes |
+| `events` | `string` | — | Retention for event log entries |
+| `interval` | `string` | `"6h"` | How often the cleanup worker runs |
+
+Duration strings support: `"1h"`, `"24h"`, `"7d"`, `"30d"`, `"90d"`, `"365d"`, `"7y"`.
+
+Only configured policies are enforced — if a retention period is not set, that table is not cleaned up by this plugin.
+
+## How It Works
+
+A single background worker runs on the configured `interval` (default: every 6 hours) and executes DELETE queries for each configured retention policy:
+
+```sql
+DELETE FROM "summa"."idempotency_key"
+WHERE created_at < NOW() - INTERVAL '24 hours'
+```
+
+The worker uses a distributed lease to prevent duplicate runs in multi-instance deployments.
+
+## Retention Status
+
+Query the current retention status via the API:
+
+```bash
+curl http://localhost:3000/api/ledger/retention/status
+```
+
+```json
+{
+  "policies": {
+    "idempotencyKeys": { "retention": "24h", "rowCount": 1523 },
+    "processedOutbox": { "retention": "7d", "rowCount": 89 },
+    "auditLogs": { "retention": "7y", "rowCount": 45230 }
+  },
+  "lastRun": "2026-02-21T04:00:00.000Z",
+  "nextRun": "2026-02-21T10:00:00.000Z"
+}
+```
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `data-retention` | Configurable (default: 6h) | Yes | Runs all configured retention policies |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/retention/status` | Current retention status with per-table row counts |
+
+## Relationship to Other Plugins
+
+The data retention plugin is designed to **complement** the maintenance plugin, not replace it:
+
+- **`maintenance()`** handles operational cleanup like expired locks and lease renewals
+- **`dataRetention()`** handles data lifecycle — how long to keep audit logs, events, quotes, etc.
+
+For production deployments, use both:
+
+```ts
+plugins: [
+  maintenance(),          // Operational cleanup
+  dataRetention({         // Data lifecycle
+    idempotencyKeys: "24h",
+    processedOutbox: "7d",
+    auditLogs: "7y",
+  }),
+]
+```

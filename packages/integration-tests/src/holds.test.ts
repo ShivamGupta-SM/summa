@@ -37,7 +37,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("hold reduces available balance but not actual balance", async () => {
-		await summa.accounts.create({ holderId: "h-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "h-user", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "h-user", amount: 50000, reference: "h-fund" });
 
 		const hold = await summa.holds.create({
@@ -55,7 +55,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("multiple holds stack and reduce available balance", async () => {
-		await summa.accounts.create({ holderId: "multi-h", holderType: "user" });
+		await summa.accounts.create({ holderId: "multi-h", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "multi-h", amount: 30000, reference: "mh-fund" });
 
 		await summa.holds.create({ holderId: "multi-h", amount: 10000, reference: "mh-1" });
@@ -67,7 +67,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("hold creation fails if available balance is insufficient", async () => {
-		await summa.accounts.create({ holderId: "poor-h", holderType: "user" });
+		await summa.accounts.create({ holderId: "poor-h", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "poor-h", amount: 5000, reference: "ph-fund" });
 
 		await expect(
@@ -83,7 +83,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("partial commit deducts only the committed amount", async () => {
-		await summa.accounts.create({ holderId: "pc-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "pc-user", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "pc-user", amount: 30000, reference: "pc-fund" });
 
 		const hold = await summa.holds.create({
@@ -105,7 +105,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("full commit deducts the full hold amount", async () => {
-		await summa.accounts.create({ holderId: "fc-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "fc-user", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "fc-user", amount: 20000, reference: "fc-fund" });
 
 		const hold = await summa.holds.create({
@@ -122,7 +122,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("committing an already committed hold fails", async () => {
-		await summa.accounts.create({ holderId: "dbl-commit", holderType: "user" });
+		await summa.accounts.create({ holderId: "dbl-commit", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "dbl-commit",
 			amount: 20000,
@@ -146,7 +146,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("void releases held funds back to available balance", async () => {
-		await summa.accounts.create({ holderId: "void-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "void-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "void-user",
 			amount: 25000,
@@ -170,7 +170,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("voiding an already voided hold fails", async () => {
-		await summa.accounts.create({ holderId: "dbl-void", holderType: "user" });
+		await summa.accounts.create({ holderId: "dbl-void", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "dbl-void",
 			amount: 15000,
@@ -192,7 +192,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("expireAll expires holds past their expiration", async () => {
-		await summa.accounts.create({ holderId: "exp-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "exp-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "exp-user",
 			amount: 50000,
@@ -231,9 +231,9 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("multi-destination hold splits on commit", async () => {
-		await summa.accounts.create({ holderId: "md-payer", holderType: "user" });
-		await summa.accounts.create({ holderId: "md-seller", holderType: "user" });
-		await summa.accounts.create({ holderId: "md-platform", holderType: "user" });
+		await summa.accounts.create({ holderId: "md-payer", holderType: "individual" });
+		await summa.accounts.create({ holderId: "md-seller", holderType: "individual" });
+		await summa.accounts.create({ holderId: "md-platform", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "md-payer",
@@ -272,7 +272,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("listActive returns only inflight holds", async () => {
-		await summa.accounts.create({ holderId: "list-h", holderType: "user" });
+		await summa.accounts.create({ holderId: "list-h", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "list-h",
 			amount: 100000,
@@ -295,7 +295,7 @@ describe("Hold Lifecycle Tests", () => {
 	});
 
 	it("listAll returns holds in all statuses", async () => {
-		await summa.accounts.create({ holderId: "all-h", holderType: "user" });
+		await summa.accounts.create({ holderId: "all-h", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "all-h",
 			amount: 100000,
@@ -326,7 +326,7 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("get hold by ID returns correct hold", async () => {
-		await summa.accounts.create({ holderId: "get-h", holderType: "user" });
+		await summa.accounts.create({ holderId: "get-h", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "get-h",
 			amount: 20000,
@@ -349,8 +349,8 @@ describe("Hold Lifecycle Tests", () => {
 	// =========================================================================
 
 	it("complex hold scenario maintains double-entry invariant", async () => {
-		await summa.accounts.create({ holderId: "complex-a", holderType: "user" });
-		await summa.accounts.create({ holderId: "complex-b", holderType: "user" });
+		await summa.accounts.create({ holderId: "complex-a", holderType: "individual" });
+		await summa.accounts.create({ holderId: "complex-b", holderType: "individual" });
 
 		await summa.transactions.credit({
 			holderId: "complex-a",

@@ -101,16 +101,19 @@ describe("plugins", () => {
 			expect(plugin.hooks).toBeUndefined();
 		});
 
-		it("has workers for daily-reconciliation and block-checkpoint", () => {
+		it("has workers for daily-reconciliation, block-checkpoint, and fast-reconciliation", () => {
 			const plugin = reconciliation();
 			expect(plugin.workers).toBeDefined();
-			expect(plugin.workers).toHaveLength(2);
+			expect(plugin.workers).toHaveLength(3);
 			expect(plugin.workers?.[0].id).toBe("daily-reconciliation");
 			expect(plugin.workers?.[0].interval).toBe("1d");
 			expect(plugin.workers?.[0].leaseRequired).toBe(true);
 			expect(plugin.workers?.[1].id).toBe("block-checkpoint");
 			expect(plugin.workers?.[1].interval).toBe("1h");
 			expect(plugin.workers?.[1].leaseRequired).toBe(true);
+			expect(plugin.workers?.[2].id).toBe("fast-reconciliation");
+			expect(plugin.workers?.[2].interval).toBe("1h");
+			expect(plugin.workers?.[2].leaseRequired).toBe(true);
 		});
 
 		it("workers have handler functions", () => {
@@ -210,14 +213,14 @@ describe("plugins", () => {
 
 		it("outbox-processor worker has interval '5s' and leaseRequired false", () => {
 			const plugin = outbox({ publisher: mockPublisher });
-			const processor = plugin.workers!.find((w) => w.id === "outbox-processor")!;
+			const processor = plugin.workers?.find((w) => w.id === "outbox-processor")!;
 			expect(processor.interval).toBe("5s");
 			expect(processor.leaseRequired).toBe(false);
 		});
 
 		it("outbox-cleanup worker has interval '6h' and leaseRequired true", () => {
 			const plugin = outbox({ publisher: mockPublisher });
-			const cleanup = plugin.workers!.find((w) => w.id === "outbox-cleanup")!;
+			const cleanup = plugin.workers?.find((w) => w.id === "outbox-cleanup")!;
 			expect(cleanup.interval).toBe("6h");
 			expect(cleanup.leaseRequired).toBe(true);
 		});
@@ -272,16 +275,16 @@ describe("plugins", () => {
 			expect(workerIds).toContain("hot-account-cleanup");
 		});
 
-		it("hot-account-processor worker has interval '30s' and leaseRequired false", () => {
+		it("hot-account-processor worker has interval '30s' and leaseRequired true", () => {
 			const plugin = hotAccounts();
-			const processor = plugin.workers!.find((w) => w.id === "hot-account-processor")!;
+			const processor = plugin.workers?.find((w) => w.id === "hot-account-processor")!;
 			expect(processor.interval).toBe("30s");
-			expect(processor.leaseRequired).toBe(false);
+			expect(processor.leaseRequired).toBe(true);
 		});
 
 		it("hot-account-cleanup worker has interval '6h' and leaseRequired true", () => {
 			const plugin = hotAccounts();
-			const cleanup = plugin.workers!.find((w) => w.id === "hot-account-cleanup")!;
+			const cleanup = plugin.workers?.find((w) => w.id === "hot-account-cleanup")!;
 			expect(cleanup.interval).toBe("6h");
 			expect(cleanup.leaseRequired).toBe(true);
 		});
@@ -335,7 +338,7 @@ describe("plugins", () => {
 			expect(plugin.workers).toHaveLength(1);
 			expect(plugin.workers?.[0].id).toBe("scheduled-processor");
 			expect(plugin.workers?.[0].interval).toBe("1m");
-			expect(plugin.workers?.[0].leaseRequired).toBe(false);
+			expect(plugin.workers?.[0].leaseRequired).toBe(true);
 		});
 
 		it("worker has a handler function", () => {

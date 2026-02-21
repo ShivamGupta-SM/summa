@@ -16,4 +16,11 @@ export interface SecondaryStorage {
 
 	/** Increment a numeric value atomically. Returns the new value. */
 	increment(key: string, amount?: number): Promise<number>;
+
+	/**
+	 * Increment a numeric value atomically and set TTL if the key is new.
+	 * Returns the new value. Used by rate limiter to avoid TOCTOU race
+	 * between increment and TTL-set operations.
+	 */
+	incrementWithTTL?(key: string, ttl: number, amount?: number): Promise<number>;
 }

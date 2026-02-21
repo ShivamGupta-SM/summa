@@ -39,12 +39,34 @@ auditLog({
 
 ## How It Works
 
-The plugin hooks into `afterTransaction`, `afterAccountCreate`, and `afterHoldCommit` lifecycle events. Every mutation is recorded with:
+The plugin uses **operation hooks** (`operationHooks.after`) to intercept all ledger mutations. Every mutation is recorded with:
 
 - **operation** — what happened (e.g., `transaction.credit`, `account.freeze`, `hold.commit`)
-- **params** — the operation parameters
-- **actor** — who performed the action (if available)
+- **params** — the operation parameters (serialized as JSON)
+- **actor** — who performed the action (extracted from `x-actor-id` request header, or `null` for programmatic SDK calls)
+- **entryHash** — HMAC-SHA256 hash of the entry for integrity verification
 - **timestamp** — when the action occurred
+
+### Integrity Verification
+
+Each audit log entry includes an `entryHash` — an HMAC-SHA256 hash computed from the operation type, parameters, and actor. When `advanced.hmacSecret` is configured, this hash uses the HMAC secret, making it impossible to forge entries without the key.
+
+When querying audit logs via `queryAuditLog()`, Summa automatically verifies each entry's hash. If a mismatch is detected (indicating the entry was tampered with in the database), a warning is logged — but the entry is still returned. Audit reads never throw on integrity violations to avoid disrupting observability.
+
+### Actor Tracking
+
+When using the HTTP API, the `x-actor-id` header is automatically captured and stored in the audit log:
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/transactions/credit \
+  -H "Content-Type: application/json" \
+  -H "x-actor-id: admin@example.com" \
+  -d '{ "holderId": "user_123", "amount": 10000, "reference": "deposit-001" }'
+```
+
+The actor identity flows through Summa's `RequestContext` and is available to all operation hooks, not just the audit log.
+
+For programmatic SDK usage (not via HTTP), `actor` will be `null` unless you manually set `requestContext` on the context object.
 
 ## Querying Audit Logs
 
@@ -88,7 +110,7 @@ for (const entry of logs) {
 import type { AuditLogEntry } from "summa/plugins";
 
 type AuditEntry = typeof summa.$Infer.AuditLogEntry;
-// { id, operation, params, actor, timestamp }
+// { id, operation, params, actor, entryHash, timestamp }
 ```
 
 ## Tracked Operations
@@ -106,3 +128,6 @@ type AuditEntry = typeof summa.$Infer.AuditLogEntry;
 | `hold.create` | Hold created |
 | `hold.commit` | Hold committed |
 | `hold.void` | Hold voided |
+| `transaction.correct` | Transaction corrected |
+| `transaction.adjust` | Adjustment entry posted |
+| `transaction.journal` | Journal entry posted |

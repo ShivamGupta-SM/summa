@@ -117,3 +117,59 @@ Use the exported metrics to build dashboards:
 The plugin uses `onRequest` and `onResponse` hooks (not lifecycle hooks) to intercept every HTTP request at the handler level. Duration is measured with `performance.now()` for sub-millisecond accuracy. A sliding window of the last 10,000 request durations is maintained for percentile calculation.
 
 No external tracing SDK is required — the plugin provides lightweight, zero-dependency observability out of the box.
+
+## OpenTelemetry
+
+For production-grade distributed tracing with OpenTelemetry, use the `@summa/telemetry` package alongside the observability plugin:
+
+```bash
+pnpm add @summa/telemetry @opentelemetry/api
+```
+
+### OTEL Logger
+
+Wraps any `SummaLogger` to create OTEL spans for `warn` and `error` log entries, correlating logs with traces:
+
+```ts
+import { createOtelLogger } from "@summa/telemetry";
+import { createJsonLogger } from "@summa/core/logger";
+
+const innerLogger = createJsonLogger({ level: "info", service: "ledger" });
+const logger = createOtelLogger(innerLogger, {
+  serviceName: "summa-ledger",  // Default: "summa-ledger"
+  enabled: true,                // Default: true
+});
+
+const summa = createSumma({
+  database: adapter,
+  logger,
+});
+```
+
+When `enabled` is `true` and `@opentelemetry/api` is installed:
+- `warn()` calls create a span with `log.level = "warn"` and log data as span attributes
+- `error()` calls create a span with `log.level = "error"` and `SpanStatusCode.ERROR`
+- `debug()` and `info()` pass through to the inner logger without creating spans
+
+### Request Tracer
+
+Creates start/end span pairs for HTTP request tracing:
+
+```ts
+import { createRequestTracer } from "@summa/telemetry";
+
+const tracer = createRequestTracer({ serviceName: "summa-ledger" });
+
+// In your request handler:
+const span = tracer.startSpan(requestId, "POST", "/transactions/credit");
+// ... handle request ...
+tracer.endSpan(requestId, 200);
+```
+
+Spans include `http.method`, `http.route`, `http.request_id`, and `http.status_code` attributes. Status codes >= 500 automatically set `SpanStatusCode.ERROR`.
+
+Orphaned spans (e.g., from dropped connections) are automatically cleaned up after 60 seconds, preventing memory leaks in long-running processes.
+
+### Optional Peer Dependency
+
+`@opentelemetry/api` is an **optional peer dependency**. If not installed, all OTEL functions return no-op implementations — your application runs without tracing overhead. This makes it safe to include `@summa/telemetry` in your dependency tree without requiring OpenTelemetry in development.

@@ -3,6 +3,7 @@
 // =============================================================================
 
 import type { SummaLogger } from "../types/config.js";
+import { buildRedactKeys, redactData } from "./redact.js";
 
 type LogLevel = "debug" | "info" | "warn" | "error";
 
@@ -18,6 +19,8 @@ export interface JsonLoggerOptions {
 	level?: LogLevel;
 	/** Service name for structured output. Default: `"summa"` */
 	service?: string;
+	/** Keys to redact from log data. Values replaced with "[REDACTED]". Default: common PII keys */
+	redactKeys?: string[];
 }
 
 /**
@@ -36,16 +39,18 @@ export interface JsonLoggerOptions {
 export function createJsonLogger(options: JsonLoggerOptions = {}): SummaLogger {
 	const { level = "info", service = "summa" } = options;
 	const minPriority = LEVEL_PRIORITY[level];
+	const redactKeys = buildRedactKeys(options.redactKeys);
 
 	function emit(lvl: LogLevel, message: string, data?: Record<string, unknown>) {
 		if (LEVEL_PRIORITY[lvl] < minPriority) return;
 
+		const safeData = redactData(data, redactKeys);
 		const entry: Record<string, unknown> = {
 			timestamp: new Date().toISOString(),
 			level: lvl,
 			service,
 			message,
-			...data,
+			...safeData,
 		};
 
 		const line = JSON.stringify(entry);

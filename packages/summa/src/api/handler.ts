@@ -15,6 +15,7 @@ import type {
 	TransactionType,
 } from "@summa/core";
 import { SummaError } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 import type { Summa } from "../summa/base.js";
 import type { RateLimiter, RateLimitResult } from "./rate-limiter.js";
 
@@ -118,9 +119,70 @@ function validateBody(body: unknown, fields: Record<string, FieldSpec>): { error
 			if (!optional) return { error: `Missing required field: "${key}"` };
 			continue;
 		}
-		if (typeof value !== expectedType) {
+		if (expectedType === "array") {
+			if (!Array.isArray(value)) {
+				return { error: `Field "${key}" must be an array, got ${typeof value}` };
+			}
+		} else if (typeof value !== expectedType) {
 			return { error: `Field "${key}" must be ${expectedType}, got ${typeof value}` };
 		}
+	}
+	return null;
+}
+
+function validatePositiveIntegerAmount(body: unknown): { error: string } | null {
+	const obj = body as Record<string, unknown>;
+	const amount = obj.amount;
+	if (typeof amount === "number") {
+		if (!Number.isFinite(amount) || amount <= 0 || !Number.isInteger(amount)) {
+			return { error: "amount must be a positive integer (in smallest currency units)" };
+		}
+	}
+	return null;
+}
+
+// =============================================================================
+// ENUM VALIDATION SETS
+// =============================================================================
+
+const VALID_ACCOUNT_STATUSES: ReadonlySet<string> = new Set(["active", "frozen", "closed"]);
+const VALID_HOLDER_TYPES: ReadonlySet<string> = new Set(["individual", "organization", "system"]);
+const VALID_TX_STATUSES: ReadonlySet<string> = new Set([
+	"pending",
+	"inflight",
+	"posted",
+	"expired",
+	"voided",
+	"reversed",
+]);
+const VALID_TX_TYPES: ReadonlySet<string> = new Set([
+	"credit",
+	"debit",
+	"transfer",
+	"journal",
+	"correction",
+	"adjustment",
+]);
+const VALID_HOLD_STATUSES: ReadonlySet<string> = new Set([
+	"inflight",
+	"posted",
+	"voided",
+	"expired",
+]);
+const VALID_TXN_TYPES: ReadonlySet<string> = new Set(["credit", "debit", "hold"]);
+
+function validateEnum(
+	value: string | undefined,
+	validSet: ReadonlySet<string>,
+	label: string,
+): PluginApiResponse | null {
+	if (value && !validSet.has(value)) {
+		return json(400, {
+			error: {
+				code: "INVALID_ARGUMENT",
+				message: `Invalid ${label}: "${value}". Must be one of: ${[...validSet].join(", ")}`,
+			},
+		});
 	}
 	return null;
 }
@@ -152,7 +214,13 @@ function checkOrigin(req: ApiRequest, trustedOrigins: string[]): boolean {
 	const origin = req.headers?.origin ?? req.headers?.Origin;
 	// No Origin header = server-to-server call, allow
 	if (!origin) return true;
-	return trustedOrigins.some((trusted) => origin === trusted || origin === new URL(trusted).origin);
+	return trustedOrigins.some((trusted) => {
+		try {
+			return origin === trusted || origin === new URL(trusted).origin;
+		} catch {
+			return origin === trusted;
+		}
+	});
 }
 
 // =============================================================================
@@ -167,8 +235,47 @@ const routes: Route[] = [
 		return json(200, { ok: true });
 	}),
 
+	// --- Deep Health Check ---
+	defineRoute("GET", "/health", async (_req, summa) => {
+		const ctx = await summa.$context;
+		const t = createTableResolver(ctx.options.schema);
+		const checks: Record<string, unknown> = {};
+		let healthy = true;
+
+		// DB connectivity
+		try {
+			await ctx.adapter.raw<{ ok: number }>("SELECT 1 AS ok", []);
+			checks.database = { status: "ok" };
+		} catch (err) {
+			checks.database = { status: "error", message: String(err) };
+			healthy = false;
+		}
+
+		// Schema accessible
+		try {
+			const rows = await ctx.adapter.raw<{ cnt: string }>(
+				`SELECT COUNT(*) as cnt FROM ${t("worker_lease")}`,
+				[],
+			);
+			checks.schema = { status: "ok", workerLeases: Number(rows[0]?.cnt ?? 0) };
+		} catch (err) {
+			checks.schema = { status: "error", message: String(err) };
+			healthy = false;
+		}
+
+		return json(healthy ? 200 : 503, {
+			status: healthy ? "healthy" : "degraded",
+			checks,
+			timestamp: new Date().toISOString(),
+		});
+	}),
+
 	// --- Accounts ---
 	defineRoute("GET", "/accounts", async (req, summa) => {
+		const statusErr = validateEnum(req.query.status, VALID_ACCOUNT_STATUSES, "status");
+		if (statusErr) return statusErr;
+		const holderTypeErr = validateEnum(req.query.holderType, VALID_HOLDER_TYPES, "holderType");
+		if (holderTypeErr) return holderTypeErr;
 		const result = await summa.accounts.list({
 			page: req.query.page ? Number(req.query.page) : undefined,
 			perPage: req.query.perPage ? Number(req.query.perPage) : undefined,
@@ -181,11 +288,13 @@ const routes: Route[] = [
 	defineRoute("POST", "/accounts", async (req, summa) => {
 		const err = validateBody(req.body, {
 			holderId: "string",
-			currency: "string",
-			holderType: "string?",
-			name: "string?",
+			holderType: "string",
+			currency: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const { holderType } = req.body as { holderType: string };
+		const holderTypeErr = validateEnum(holderType, VALID_HOLDER_TYPES, "holderType");
+		if (holderTypeErr) return holderTypeErr;
 		const result = await summa.accounts.create(
 			req.body as Parameters<Summa["accounts"]["create"]>[0],
 		);
@@ -197,15 +306,15 @@ const routes: Route[] = [
 	}),
 	defineRoute("POST", "/accounts/:holderId/freeze", async (req, summa, params) => {
 		const err = validateBody(req.body, { reason: "string", frozenBy: "string" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { reason: string; frozenBy: string };
 		const result = await summa.accounts.freeze({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/unfreeze", async (req, summa, params) => {
-		const err = validateBody(req.body, { unfrozenBy: "string" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
-		const body = req.body as { unfrozenBy: string };
+		const err = validateBody(req.body, { unfrozenBy: "string", reason: "string?" });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const body = req.body as { unfrozenBy: string; reason?: string };
 		const result = await summa.accounts.unfreeze({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
 	}),
@@ -215,7 +324,7 @@ const routes: Route[] = [
 			reason: "string?",
 			transferToHolderId: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { closedBy: string; reason?: string; transferToHolderId?: string };
 		const result = await summa.accounts.close({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
@@ -225,8 +334,38 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 
+	// --- Chart of Accounts ---
+	defineRoute("GET", "/chart-of-accounts/by-type", async (req, summa) => {
+		const accountType = req.query.accountType;
+		if (!accountType) {
+			return json(400, {
+				error: { code: "INVALID_ARGUMENT", message: 'Missing required query param: "accountType"' },
+			});
+		}
+		const result = await summa.chartOfAccounts.getByType(
+			accountType as Parameters<Summa["chartOfAccounts"]["getByType"]>[0],
+		);
+		return json(200, result);
+	}),
+	defineRoute("GET", "/chart-of-accounts/hierarchy", async (req, summa) => {
+		const result = await summa.chartOfAccounts.getHierarchy(req.query.rootAccountId);
+		return json(200, result);
+	}),
+	defineRoute("GET", "/chart-of-accounts/validate", async (_req, summa) => {
+		const result = await summa.chartOfAccounts.validateEquation();
+		return json(200, result);
+	}),
+	defineRoute("GET", "/chart-of-accounts/:accountId/children", async (_req, summa, params) => {
+		const result = await summa.chartOfAccounts.getChildren(params.accountId ?? "");
+		return json(200, result);
+	}),
+
 	// --- Transactions ---
 	defineRoute("GET", "/transactions", async (req, summa) => {
+		const statusErr = validateEnum(req.query.status, VALID_TX_STATUSES, "status");
+		if (statusErr) return statusErr;
+		const typeErr = validateEnum(req.query.type, VALID_TX_TYPES, "type");
+		if (typeErr) return typeErr;
 		const result = await summa.transactions.list({
 			holderId: req.query.holderId ?? "",
 			page: req.query.page ? Number(req.query.page) : undefined,
@@ -245,9 +384,15 @@ const routes: Route[] = [
 		const err = validateBody(req.body, {
 			holderId: "string",
 			amount: "number",
-			currency: "string",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			sourceSystemAccount: "string?",
+			idempotencyKey: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.transactions.credit(
 			req.body as Parameters<Summa["transactions"]["credit"]>[0],
 		);
@@ -257,9 +402,16 @@ const routes: Route[] = [
 		const err = validateBody(req.body, {
 			holderId: "string",
 			amount: "number",
-			currency: "string",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			destinationSystemAccount: "string?",
+			allowOverdraft: "boolean?",
+			idempotencyKey: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.transactions.debit(
 			req.body as Parameters<Summa["transactions"]["debit"]>[0],
 		);
@@ -267,30 +419,101 @@ const routes: Route[] = [
 	}),
 	defineRoute("POST", "/transactions/transfer", async (req, summa) => {
 		const err = validateBody(req.body, {
-			fromHolderId: "string",
-			toHolderId: "string",
+			sourceHolderId: "string",
+			destinationHolderId: "string",
 			amount: "number",
-			currency: "string",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			exchangeRate: "number?",
+			idempotencyKey: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.transactions.transfer(
 			req.body as Parameters<Summa["transactions"]["transfer"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/multi-transfer", async (req, summa) => {
-		const err = validateBody(req.body, { entries: "object", currency: "string" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		const err = validateBody(req.body, {
+			sourceHolderId: "string",
+			amount: "number",
+			destinations: "object",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			idempotencyKey: "string?",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.transactions.multiTransfer(
 			req.body as Parameters<Summa["transactions"]["multiTransfer"]>[0],
 		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/transactions/refund", async (req, summa) => {
-		const err = validateBody(req.body, { transactionId: "string" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		const err = validateBody(req.body, {
+			transactionId: "string",
+			reason: "string",
+			amount: "number?",
+			idempotencyKey: "string?",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const result = await summa.transactions.refund(
 			req.body as Parameters<Summa["transactions"]["refund"]>[0],
+		);
+		return json(201, result);
+	}),
+	defineRoute("POST", "/transactions/correct", async (req, summa) => {
+		const err = validateBody(req.body, {
+			transactionId: "string",
+			correctionEntries: "object",
+			reason: "string",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const result = await summa.transactions.correct(
+			req.body as Parameters<Summa["transactions"]["correct"]>[0],
+		);
+		return json(201, result);
+	}),
+	defineRoute("POST", "/transactions/adjust", async (req, summa) => {
+		const err = validateBody(req.body, {
+			entries: "object",
+			reference: "string",
+			adjustmentType: "string",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const VALID_ADJUSTMENT_TYPES: ReadonlySet<string> = new Set([
+			"accrual",
+			"depreciation",
+			"correction",
+			"reclassification",
+		]);
+		const { adjustmentType } = req.body as { adjustmentType: string };
+		if (!VALID_ADJUSTMENT_TYPES.has(adjustmentType)) {
+			return json(400, {
+				error: {
+					code: "INVALID_ARGUMENT",
+					message: `Invalid adjustmentType: "${adjustmentType}". Must be one of: accrual, depreciation, correction, reclassification`,
+				},
+			});
+		}
+		const result = await summa.transactions.adjust(
+			req.body as Parameters<Summa["transactions"]["adjust"]>[0],
+		);
+		return json(201, result);
+	}),
+	defineRoute("POST", "/transactions/journal", async (req, summa) => {
+		const err = validateBody(req.body, {
+			entries: "object",
+			reference: "string",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const result = await summa.transactions.journal(
+			req.body as Parameters<Summa["transactions"]["journal"]>[0],
 		);
 		return json(201, result);
 	}),
@@ -311,6 +534,8 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("GET", "/holds", async (req, summa) => {
+		const statusErr = validateEnum(req.query.status, VALID_HOLD_STATUSES, "status");
+		if (statusErr) return statusErr;
 		const result = await summa.holds.listAll({
 			holderId: req.query.holderId ?? "",
 			page: req.query.page ? Number(req.query.page) : undefined,
@@ -324,22 +549,49 @@ const routes: Route[] = [
 		const err = validateBody(req.body, {
 			holderId: "string",
 			amount: "number",
-			currency: "string",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			destinationHolderId: "string?",
+			destinationSystemAccount: "string?",
+			expiresInMinutes: "number?",
+			idempotencyKey: "string?",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.holds.create(req.body as Parameters<Summa["holds"]["create"]>[0]);
+		return json(201, result);
+	}),
+	defineRoute("POST", "/holds/multi-destination", async (req, summa) => {
+		const err = validateBody(req.body, {
+			holderId: "string",
+			amount: "number",
+			reference: "string",
+			description: "string?",
+			category: "string?",
+			destinations: "object",
+			expiresInMinutes: "number?",
+			idempotencyKey: "string?",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
+		const result = await summa.holds.createMultiDestination(
+			req.body as Parameters<Summa["holds"]["createMultiDestination"]>[0],
+		);
 		return json(201, result);
 	}),
 	defineRoute("POST", "/holds/:holdId/commit", async (req, summa, params) => {
 		const err = validateBody(req.body, { amount: "number?" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { amount?: number };
 		const result = await summa.holds.commit({ ...body, holdId: params.holdId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/holds/:holdId/void", async (req, summa, params) => {
 		const err = validateBody(req.body, { reason: "string?" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { reason?: string };
 		const result = await summa.holds.void({ ...body, holdId: params.holdId ?? "" });
 		return json(200, result);
@@ -354,16 +606,15 @@ const routes: Route[] = [
 		const err = validateBody(req.body, {
 			holderId: "string",
 			limitType: "string",
-			amount: "number",
-			currency: "string",
+			maxAmount: "number",
 		});
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const VALID_LIMIT_TYPES = new Set(["per_transaction", "daily", "monthly"]);
 		const { limitType } = req.body as { limitType: string };
 		if (!VALID_LIMIT_TYPES.has(limitType)) {
 			return json(400, {
 				error: {
-					code: "VALIDATION_ERROR",
+					code: "INVALID_ARGUMENT",
 					message: `Invalid limitType: "${limitType}". Must be one of: per_transaction, daily, monthly`,
 				},
 			});
@@ -372,6 +623,8 @@ const routes: Route[] = [
 		return json(201, result);
 	}),
 	defineRoute("GET", "/limits/:holderId/usage", async (req, summa, params) => {
+		const txnTypeErr = validateEnum(req.query.txnType, VALID_TXN_TYPES, "txnType");
+		if (txnTypeErr) return txnTypeErr;
 		const result = await summa.limits.getUsage({
 			holderId: params.holderId ?? "",
 			txnType: req.query.txnType as "credit" | "debit" | "hold" | undefined,
@@ -385,7 +638,7 @@ const routes: Route[] = [
 	}),
 	defineRoute("DELETE", "/limits/:holderId", async (req, summa, params) => {
 		const err = validateBody(req.body, { limitType: "string", category: "string?" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { limitType: LimitType; category?: string };
 		await summa.limits.remove({
 			...body,
@@ -402,7 +655,7 @@ const routes: Route[] = [
 	}),
 	defineRoute("POST", "/events/verify", async (req, summa) => {
 		const err = validateBody(req.body, { aggregateType: "string", aggregateId: "string" });
-		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
 		const body = req.body as { aggregateType: string; aggregateId: string };
 		const result = await summa.events.verifyChain(body.aggregateType, body.aggregateId);
 		return json(200, result);
@@ -550,6 +803,13 @@ export async function handleRequest(
 
 	// --- Plugin onRequest hooks ---
 	const ctx = await summa.$context;
+
+	// Inject per-request context for actor tracking / audit trail
+	ctx.requestContext = {
+		requestId: String(requestId),
+		actor: currentReq.headers?.["x-actor-id"] ?? currentReq.headers?.["X-Actor-Id"],
+	};
+
 	const pluginReq = toPluginReq(currentReq);
 	for (const plugin of ctx.plugins) {
 		if (!plugin.onRequest) continue;
@@ -567,6 +827,33 @@ export async function handleRequest(
 		}
 		// Plugin transformed the request — update for downstream
 		Object.assign(pluginReq, hookResult);
+	}
+
+	// --- Plugin-level rate limiting ---
+	// Plugins can declare per-operation rate limits via `rateLimit` field.
+	if (options?.rateLimiter) {
+		const operation = `${method}:${currentReq.path}`;
+		for (const plugin of ctx.plugins) {
+			if (!plugin.rateLimit) continue;
+			for (const rule of plugin.rateLimit) {
+				const matches =
+					typeof rule.operation === "function"
+						? rule.operation(operation)
+						: operation.includes(rule.operation);
+				if (!matches) continue;
+				const pluginKey = `plugin:${plugin.id}:${options.rateLimitKeyExtractor?.(currentReq) ?? "global"}`;
+				const pluginResult = await options.rateLimiter.consume(pluginKey);
+				if (!pluginResult.allowed) {
+					return withHeaders({
+						status: 429,
+						body: {
+							error: { code: "RATE_LIMITED", message: `Rate limited by ${plugin.id} plugin` },
+						},
+						headers: { "Content-Type": "application/json", ...rateLimitHeaders(pluginResult) },
+					});
+				}
+			}
+		}
 	}
 
 	// --- Route dispatch helper (shared error handling) ---
@@ -602,11 +889,15 @@ export async function handleRequest(
 	} catch (error) {
 		if (error instanceof SummaError) {
 			response = json(error.status, {
-				error: { code: error.code, message: error.message },
+				error: { code: error.code, message: error.message, docs: error.docsUrl },
 			});
 		} else {
 			response = json(500, {
-				error: { code: "INTERNAL", message: "Internal server error" },
+				error: {
+					code: "INTERNAL",
+					message: "Internal server error",
+					docs: `${SummaError.docsBaseUrl}#internal`,
+				},
 			});
 		}
 	}
@@ -631,6 +922,9 @@ export async function handleRequest(
 	if (options?.onResponse) {
 		response = await options.onResponse(currentReq, response);
 	}
+
+	// Clean up per-request context to prevent leaking between requests
+	ctx.requestContext = undefined;
 
 	return withHeaders(response);
 }

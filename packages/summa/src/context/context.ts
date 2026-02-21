@@ -17,6 +17,7 @@ import { SummaError } from "@summa/core";
 import { postgresDialect } from "@summa/core/db";
 import { createConsoleLogger } from "@summa/core/logger";
 import { validateConfig } from "../config/index.js";
+import { buildHookCache } from "./hooks.js";
 
 // =============================================================================
 // DEFAULT CONFIG VALUES
@@ -28,8 +29,19 @@ const DEFAULT_ADVANCED: ResolvedAdvancedOptions = {
 	transactionTimeoutMs: 5000,
 	lockTimeoutMs: 3000,
 	maxTransactionAmount: 1_000_000_000_00,
+	// Event sourcing and hash chains are always-on by design.
+	// These flags exist for forward compatibility but MUST remain true in production.
+	// Disabling them will not actually skip event/hash logic — the code paths are unconditional.
 	enableEventSourcing: true,
 	enableHashChain: true,
+	hmacSecret: null,
+	verifyHashOnRead: true,
+	// Performance scaling defaults — preserve current behavior
+	useDenormalizedBalance: false,
+	lockRetryCount: 0,
+	lockRetryBaseDelayMs: 50,
+	lockRetryMaxDelayMs: 500,
+	lockMode: "wait",
 };
 
 // =============================================================================
@@ -65,11 +77,21 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 		...(options.advanced ?? {}),
 	};
 
+	const defaultCurrency = options.currency ?? "USD";
+	const schema = options.schema ?? "summa";
 	const resolvedOptions: ResolvedSummaOptions = {
-		currency: options.currency ?? "USD",
+		currency: defaultCurrency,
+		functionalCurrency: options.functionalCurrency ?? defaultCurrency,
 		systemAccounts,
 		advanced,
+		schema,
 	};
+
+	// Propagate schema and hmacSecret to adapter options for sub-function access
+	if (adapter.options) {
+		adapter.options.schema = schema;
+		adapter.options.hmacSecret = advanced.hmacSecret;
+	}
 
 	// Resolve dialect from adapter options, default to postgres
 	const dialect = adapter.options?.dialect ?? postgresDialect;
@@ -77,12 +99,32 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 	// Validate and sort plugins by dependencies
 	const plugins = sortPlugins(options.plugins ?? []);
 
+	// Warn about missing financial-grade plugins
+	const pluginIds = new Set(plugins.map((p) => p.id));
+	if (!pluginIds.has("audit-log")) {
+		logger.warn(
+			"audit-log plugin is not registered. For financial-grade deployments, audit logging is strongly recommended.",
+		);
+	}
+	if (!pluginIds.has("reconciliation")) {
+		logger.warn(
+			"reconciliation plugin is not registered. For financial-grade deployments, periodic reconciliation is strongly recommended.",
+		);
+	}
+
+	if (!advanced.hmacSecret) {
+		logger.warn(
+			"hmacSecret is not configured. Without HMAC, hash chains use plain SHA-256 and an attacker with DB access can recompute valid hashes. Set advanced.hmacSecret for tamper-proof integrity.",
+		);
+	}
+
 	return {
 		adapter,
 		dialect,
 		options: resolvedOptions,
 		logger,
 		plugins,
+		_hookCache: buildHookCache(plugins),
 	};
 }
 
@@ -95,6 +137,9 @@ function sortPlugins(plugins: SummaPlugin[]): SummaPlugin[] {
 
 	const pluginMap = new Map<string, SummaPlugin>();
 	for (const plugin of plugins) {
+		if (pluginMap.has(plugin.id)) {
+			throw SummaError.invalidArgument(`Duplicate plugin ID: "${plugin.id}"`);
+		}
 		pluginMap.set(plugin.id, plugin);
 	}
 

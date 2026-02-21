@@ -6,6 +6,7 @@
 // balance. This avoids row-level lock contention on high-throughput accounts.
 
 import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // OPTIONS
@@ -44,6 +45,54 @@ export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 		id: "hot-accounts",
 
 		$Infer: {} as { HotAccountStats: HotAccountStats },
+
+		schema: {
+			hotAccountEntry: {
+				columns: {
+					id: { type: "uuid", primaryKey: true, notNull: true },
+					sequence_number: { type: "bigint", notNull: true },
+					account_id: {
+						type: "uuid",
+						notNull: true,
+						references: { table: "account_balance", column: "id" },
+					},
+					amount: { type: "bigint", notNull: true },
+					entry_type: { type: "text", notNull: true },
+					transaction_id: {
+						type: "uuid",
+						notNull: true,
+						references: { table: "transaction_record", column: "id" },
+					},
+					status: { type: "text", notNull: true, default: "'pending'" },
+					created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+					processed_at: { type: "timestamp" },
+				},
+				indexes: [
+					{
+						name: "idx_hot_account_pending",
+						columns: ["status", "account_id", "sequence_number"],
+					},
+					{ name: "idx_hot_account_entry_txn", columns: ["transaction_id"] },
+				],
+			},
+			hotAccountFailedSequence: {
+				columns: {
+					id: { type: "uuid", primaryKey: true, notNull: true },
+					account_id: {
+						type: "uuid",
+						notNull: true,
+						references: { table: "account_balance", column: "id" },
+					},
+					entry_ids: { type: "jsonb", notNull: true },
+					error_message: { type: "text" },
+					net_delta: { type: "bigint", notNull: true, default: "0" },
+					credit_delta: { type: "bigint", notNull: true, default: "0" },
+					debit_delta: { type: "bigint", notNull: true, default: "0" },
+					created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+				},
+				indexes: [{ name: "idx_hot_account_failed_account", columns: ["account_id"] }],
+			},
+		},
 
 		workers: [
 			{
@@ -87,99 +136,96 @@ interface AggregatedGroup {
 }
 
 async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Promise<number> {
-	// Use a CTE to lock pending entries and aggregate by account_id in a single query.
-	// FOR UPDATE SKIP LOCKED ensures concurrent workers don't process the same entries.
+	// Lock, aggregate, and process pending entries within a single transaction
+	// so that FOR UPDATE SKIP LOCKED locks are held through the entire processing.
 	const { dialect } = ctx;
-	const groups = await ctx.adapter.raw<AggregatedGroup>(
-		`WITH locked_entries AS (
-       SELECT id, account_id, amount
-       FROM hot_account_entry
-       WHERE status = 'pending'
-       ORDER BY created_at ASC
-       LIMIT $1
-       ${dialect.forUpdateSkipLocked()}
-     )
-     SELECT
-       account_id,
-       SUM(amount)::bigint AS net_delta,
-       SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)::bigint AS credit_delta,
-       SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END)::bigint AS debit_delta,
-       array_agg(id) AS entry_ids
-     FROM locked_entries
-     GROUP BY account_id`,
-		[batchSize],
-	);
-
-	if (groups.length === 0) {
-		return 0;
-	}
+	const t = createTableResolver(ctx.options.schema);
 
 	let totalProcessed = 0;
 
-	for (const group of groups) {
-		const entryIds: string[] =
-			typeof group.entry_ids === "string" ? JSON.parse(group.entry_ids) : group.entry_ids;
+	await ctx.adapter
+		.transaction(async (tx) => {
+			const groups = await tx.raw<AggregatedGroup>(
+				`WITH locked_entries AS (
+         SELECT id, account_id, amount
+         FROM ${t("hot_account_entry")}
+         WHERE status = 'pending'
+         ORDER BY created_at ASC
+         LIMIT $1
+         ${dialect.forUpdateSkipLocked()}
+       )
+       SELECT
+         account_id,
+         SUM(amount)::bigint AS net_delta,
+         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)::bigint AS credit_delta,
+         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END)::bigint AS debit_delta,
+         array_agg(id) AS entry_ids
+       FROM locked_entries
+       GROUP BY account_id`,
+				[batchSize],
+			);
 
-		try {
-			await ctx.adapter.transaction(async (tx) => {
-				// Update system_account balance atomically
-				await tx.rawMutate(
-					`UPDATE system_account
-           SET balance = balance + $1,
-               credit_balance = credit_balance + $2,
-               debit_balance = debit_balance + $3
-           WHERE id = $4`,
+			if (groups.length === 0) {
+				return;
+			}
+
+			for (const group of groups) {
+				const entryIds: string[] =
+					typeof group.entry_ids === "string" ? JSON.parse(group.entry_ids) : group.entry_ids;
+
+				// INSERT new system_account_version row (APPEND-ONLY — replaces UPDATE system_account)
+				// Lock the immutable system_account parent, read latest version, insert new version.
+				await tx.raw(`SELECT id FROM ${t("system_account")} WHERE id = $1 FOR UPDATE`, [
+					group.account_id,
+				]);
+				const versionRows = await tx.raw<{
+					version: number;
+					balance: number;
+					credit_balance: number;
+					debit_balance: number;
+				}>(
+					`SELECT version, balance, credit_balance, debit_balance
+         FROM ${t("system_account_version")}
+         WHERE account_id = $1
+         ORDER BY version DESC LIMIT 1`,
+					[group.account_id],
+				);
+				const current = versionRows[0];
+				const prevVersion = current ? Number(current.version) : 0;
+				const prevBalance = current ? Number(current.balance) : 0;
+				const prevCredit = current ? Number(current.credit_balance) : 0;
+				const prevDebit = current ? Number(current.debit_balance) : 0;
+
+				await tx.raw(
+					`INSERT INTO ${t("system_account_version")} (account_id, version, balance, credit_balance, debit_balance, change_type)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
 					[
-						Number(group.net_delta),
-						Number(group.credit_delta),
-						Number(group.debit_delta),
 						group.account_id,
+						prevVersion + 1,
+						prevBalance + Number(group.net_delta),
+						prevCredit + Number(group.credit_delta),
+						prevDebit + Number(group.debit_delta),
+						"batch_aggregate",
 					],
 				);
 
 				// Mark all entries in this group as processed
 				await tx.rawMutate(
-					`UPDATE hot_account_entry
-           SET status = 'processed', processed_at = ${dialect.now()}
-           WHERE id = ANY($1::uuid[])`,
+					`UPDATE ${t("hot_account_entry")}
+         SET status = 'processed', processed_at = ${dialect.now()}
+         WHERE id = ANY($1::uuid[])`,
 					[entryIds],
 				);
-			});
 
-			totalProcessed += entryIds.length;
-		} catch (error) {
-			// On failure, record a failed sequence for traceable recovery
-			const errorMessage = error instanceof Error ? error.message : String(error);
-
-			try {
-				await ctx.adapter.raw(
-					`INSERT INTO hot_account_failed_sequence (account_id, entry_ids, error_message, net_delta, credit_delta, debit_delta)
-           VALUES ($1, $2, $3, $4, $5, $6)`,
-					[
-						group.account_id,
-						JSON.stringify(entryIds),
-						errorMessage,
-						Number(group.net_delta),
-						Number(group.credit_delta),
-						Number(group.debit_delta),
-					],
-				);
-			} catch (insertError) {
-				// Log but don't throw -- the original entries remain pending and
-				// will be retried on the next cycle.
-				ctx.logger.info("Failed to record hot account failed sequence", {
-					accountId: group.account_id,
-					error: insertError instanceof Error ? insertError.message : String(insertError),
-				});
+				totalProcessed += entryIds.length;
 			}
-
-			ctx.logger.info("Hot account batch failed for account", {
-				accountId: group.account_id,
-				entryCount: entryIds.length,
-				error: errorMessage,
-			});
-		}
-	}
+		})
+		.catch((error) => {
+			// On failure, the entire transaction rolls back — all entries remain
+			// pending and will be retried on the next cycle.
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			ctx.logger.error("Hot account batch processing failed", { error: errorMessage });
+		});
 
 	return totalProcessed;
 }
@@ -193,8 +239,9 @@ async function cleanupProcessedHotEntries(
 	retentionHours: number,
 ): Promise<number> {
 	const { dialect } = ctx;
+	const t = createTableResolver(ctx.options.schema);
 	const deleted = await ctx.adapter.rawMutate(
-		`DELETE FROM hot_account_entry
+		`DELETE FROM ${t("hot_account_entry")}
      WHERE processed_at IS NOT NULL
        AND processed_at < ${dialect.now()} - ${dialect.interval("1 hour")} * $1`,
 		[retentionHours],
@@ -208,12 +255,13 @@ async function cleanupProcessedHotEntries(
 // =============================================================================
 
 export async function getHotAccountStats(ctx: SummaContext): Promise<HotAccountStats> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		status: string;
 		count: number;
 	}>(
 		`SELECT status, ${ctx.dialect.countAsInt()} AS count
-     FROM hot_account_entry
+     FROM ${t("hot_account_entry")}
      GROUP BY status`,
 		[],
 	);
@@ -227,7 +275,7 @@ export async function getHotAccountStats(ctx: SummaContext): Promise<HotAccountS
 
 	// Count failed sequences separately from the dedicated table
 	const failedRows = await ctx.adapter.raw<{ count: number }>(
-		`SELECT ${ctx.dialect.countAsInt()} AS count FROM hot_account_failed_sequence`,
+		`SELECT ${ctx.dialect.countAsInt()} AS count FROM ${t("hot_account_failed_sequence")}`,
 		[],
 	);
 

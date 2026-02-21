@@ -16,7 +16,7 @@ export const Logo = (props: SVGProps<SVGSVGElement>) => {
 		>
 			<path
 				d="M12 8H48V16H24L34 30L24 44H48V52H12V44L26 30L12 16V8Z"
-				className="fill-black dark:fill-white"
+				className="fill-current"
 			/>
 		</svg>
 	);

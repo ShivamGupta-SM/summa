@@ -21,11 +21,32 @@ const summa = createSumma({
 });
 ```
 
-The `reconciliation()` factory takes no configuration options. It registers two background workers:
+## Configuration
+
+```ts
+reconciliation({
+  reconciliationInterval: "1d",      // Full reconciliation interval (default: "1d")
+  fastReconciliationInterval: "1h",  // Fast integrity check interval (default: "1h")
+  onBlockCheckpoint: async (anchor) => {
+    // Called after each block checkpoint is created
+    // Use this to anchor block hashes to an external store
+    await externalStore.put(`block-${anchor.blockSequence}`, anchor);
+  },
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `reconciliationInterval` | `string` | `"1d"` | How often the full 5-step reconciliation runs |
+| `fastReconciliationInterval` | `string` | `"1h"` | How often the fast integrity check runs |
+| `onBlockCheckpoint` | `function` | — | Callback for external anchoring of block hashes |
+
+The plugin registers three background workers:
 
 | Worker | Interval | Lease Required | Description |
 |--------|----------|:-:|-------------|
-| `daily-reconciliation` | `1d` | Yes | Runs the full 5-step verification |
+| `daily-reconciliation` | Configurable | Yes | Runs the full 5-step verification |
+| `fast-reconciliation` | Configurable | Yes | Lightweight double-entry + block chain check |
 | `block-checkpoint` | `1h` | Yes | Creates hash chain checkpoints |
 
 ## Verification Steps
@@ -37,6 +58,40 @@ The reconciliation process runs these checks:
 3. **Lock version monotonicity** — account lock versions must be monotonically increasing
 4. **User account balance verification** — stored balance matches SUM of all entries
 5. **System account balance with hot entries** — includes pending hot account entries in the sum
+
+## Fast Reconciliation
+
+The `fast-reconciliation` worker runs a lightweight integrity check (default: every hour) that covers:
+
+- **Step 0**: Double-entry balance verification (incremental — only new entries since last run)
+- **Step 3**: Block hash chain verification (last 2 hours of blocks)
+
+This reduces the detection gap from 24 hours to 1 hour without the cost of a full reconciliation scan. Fast reconciliation results are stored with `run_type: "fast"` in the reconciliation results table.
+
+## External Anchoring
+
+The `onBlockCheckpoint` callback fires after each block checkpoint is created, providing a `BlockCheckpointAnchor` object:
+
+```ts
+interface BlockCheckpointAnchor {
+  blockHash: string;         // SHA-256/HMAC hash of the block
+  blockSequence: number;     // Monotonically increasing block number
+  eventCount: number;        // Number of events in this block
+  fromEventSequence: number; // First event sequence in the block
+  toEventSequence: number;   // Last event sequence in the block
+  timestamp: string;         // ISO 8601 timestamp
+}
+```
+
+Write these anchors to an external store (S3, blockchain, separate database) to provide cryptographic proof that the ledger state was not altered retroactively. Verify later with:
+
+```ts
+const result = await summa.events.verifyExternalAnchor(
+  blockSequence,
+  externallyStoredBlockHash,
+);
+// result.valid === true means the database hash matches your external copy
+```
 
 ## Querying Reconciliation Status
 

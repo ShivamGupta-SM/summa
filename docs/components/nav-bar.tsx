@@ -1,5 +1,10 @@
+"use client";
+
+import { Plus } from "lucide-react";
 import Link from "next/link";
+import { useEffect, useRef, useState } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { cn } from "@/lib/utils";
 import { Logo } from "./logo";
 import { NavLink } from "./nav-link";
 import { NavbarMobile, NavbarMobileBtn } from "./nav-mobile";
@@ -16,22 +21,56 @@ export const navMenu = [
 ];
 
 export const Navbar = () => {
-	return (
-		<div className="flex flex-col sticky top-0 z-30">
-			<nav className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800 backdrop-blur-xl bg-zinc-50/80 dark:bg-zinc-950/80 supports-backdrop-filter:bg-zinc-50/60 dark:supports-backdrop-filter:bg-zinc-950/60">
-				{/* Vertical rules aligned to page structural lines */}
-				<div className="pointer-events-none absolute top-0 bottom-0 left-6 w-px hidden lg:block lg:left-12 xl:left-16 border-l border-dashed border-zinc-200 dark:border-zinc-800" />
-				<div className="pointer-events-none absolute top-0 bottom-0 right-6 w-px hidden lg:block lg:right-12 xl:right-16 border-r border-dashed border-zinc-200 dark:border-zinc-800" />
+	const [hidden, setHidden] = useState(false);
+	const lastScrollY = useRef(0);
 
-				<div className="max-w-400 mx-auto w-full flex items-center justify-between px-6 lg:px-12">
+	useEffect(() => {
+		const onScroll = () => {
+			const y = window.scrollY;
+			// Hide when scrolling down past 80px, show when scrolling up
+			if (y > lastScrollY.current && y > 80) {
+				setHidden(true);
+			} else {
+				setHidden(false);
+			}
+			lastScrollY.current = y;
+		};
+
+		window.addEventListener("scroll", onScroll, { passive: true });
+		return () => window.removeEventListener("scroll", onScroll);
+	}, []);
+
+	return (
+		<div
+			className={cn(
+				"flex flex-col sticky top-0 z-50 transition-transform duration-300",
+				hidden && "-translate-y-full",
+			)}
+		>
+			<nav className="relative bg-background border-b border-dashed border-border">
+				{/* Vertical lines through the navbar — dashed + brand overlay to match layout lines */}
+				<div className="pointer-events-none absolute inset-y-0 left-6 lg:left-12 xl:left-16 w-px hidden lg:block border-l border-dashed border-border" />
+				<div className="pointer-events-none absolute inset-y-0 right-6 lg:right-12 xl:right-16 w-px hidden lg:block border-r border-dashed border-border" />
+				<div className="pointer-events-none absolute inset-y-0 left-6 lg:left-12 xl:left-16 w-px hidden lg:block bg-brand/25" />
+				<div className="pointer-events-none absolute inset-y-0 right-6 lg:right-12 xl:right-16 w-px hidden lg:block bg-brand/25" />
+				{/* Brand tint on navbar bottom border */}
+				<div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-brand/25 hidden lg:block" />
+				{/* Intersection markers at navbar bottom border */}
+				<div className="pointer-events-none absolute -bottom-2 left-6 lg:left-12 xl:left-16 -translate-x-1/2 hidden lg:block z-60">
+					<Plus className="size-4 text-border" strokeWidth={1} />
+				</div>
+				<div className="pointer-events-none absolute -bottom-2 right-6 lg:right-12 xl:right-16 translate-x-1/2 hidden lg:block z-60">
+					<Plus className="size-4 text-border" strokeWidth={1} />
+				</div>
+				<div className="max-w-400 mx-auto w-full flex items-center justify-between px-4 sm:px-6 lg:px-12">
 					<Link
 						href="/"
-						className="flex items-center gap-2.5 h-14 text-foreground shrink-0 transition-colors"
+						className="flex items-center gap-2.5 py-7 text-foreground shrink-0 transition-colors"
 					>
-						<Logo />
-						<span className="text-sm font-medium tracking-tight select-none">SUMMA.</span>
+						<Logo className="size-5" />
+						<span className="text-sm font-medium tracking-widest uppercase select-none">Summa</span>
 					</Link>
-					<div className="flex items-center">
+					<div className="flex items-center gap-1">
 						<ul className="navbar:flex items-center hidden">
 							{navMenu.map((menu) => (
 								<NavLink key={menu.name} href={menu.path}>
@@ -57,9 +96,7 @@ export const Navbar = () => {
 								</svg>
 							</NavLink>
 						</ul>
-						<div className="navbar:border-l navbar:border-dashed navbar:border-zinc-200 navbar:dark:border-zinc-800">
-							<ThemeToggle />
-						</div>
+						<ThemeToggle />
 						<NavbarMobileBtn />
 					</div>
 				</div>

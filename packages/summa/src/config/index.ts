@@ -112,6 +112,17 @@ export function validateConfig(options: SummaOptions): void {
 		}
 	}
 
+	if (options.schema !== undefined) {
+		if (typeof options.schema !== "string" || options.schema.length === 0) {
+			throw SummaError.invalidArgument("Summa config: 'schema' must be a non-empty string");
+		}
+		if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(options.schema)) {
+			throw SummaError.invalidArgument(
+				`Summa config: 'schema' must contain only alphanumeric characters and underscores, got "${options.schema}"`,
+			);
+		}
+	}
+
 	if (options.systemAccounts) {
 		for (const [key, value] of Object.entries(options.systemAccounts)) {
 			if (typeof value === "string") {

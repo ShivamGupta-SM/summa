@@ -5,6 +5,8 @@
 // Records operation type, actor, parameters, and result with timestamps.
 
 import type { SummaContext, SummaOperation, SummaPlugin, TableDefinition } from "@summa/core";
+import { computeHash } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // TYPES
@@ -24,6 +26,7 @@ export interface AuditLogEntry {
 	operation: string;
 	params: Record<string, unknown>;
 	actor: string | null;
+	entryHash: string | null;
 	timestamp: string;
 }
 
@@ -32,13 +35,14 @@ export interface AuditLogEntry {
 // =============================================================================
 
 const auditLogSchema: Record<string, TableDefinition> = {
-	auditLog: {
+	audit_log: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
 			operation: { type: "text", notNull: true },
 			params: { type: "jsonb", notNull: true },
 			actor: { type: "text" },
 			result: { type: "jsonb" },
+			entry_hash: { type: "text" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
@@ -73,12 +77,23 @@ export function auditLog(options?: AuditLogOptions): SummaPlugin {
 			after: [
 				{
 					matcher: (op) => shouldAudit(op.type),
-					handler: async ({ operation, context }) => {
+					handler: async ({ operation, context, requestContext }) => {
 						const d = context.dialect;
+						const t = createTableResolver(context.options.schema);
+						const actor = requestContext?.actor ?? null;
+						const entryHash = computeHash(
+							null,
+							{
+								operation: operation.type,
+								params: operation.params,
+								actor,
+							},
+							context.options.advanced.hmacSecret,
+						);
 						await context.adapter.rawMutate(
-							`INSERT INTO audit_log (id, operation, params, created_at)
-							 VALUES (${d.generateUuid()}, $1, $2, ${d.now()})`,
-							[operation.type, JSON.stringify(operation.params)],
+							`INSERT INTO ${t("audit_log")} (id, operation, params, actor, entry_hash, created_at)
+							 VALUES (${d.generateUuid()}, $1, $2, $3, $4, ${d.now()})`,
+							[operation.type, JSON.stringify(operation.params), actor, entryHash],
 						);
 					},
 				},
@@ -90,8 +105,9 @@ export function auditLog(options?: AuditLogOptions): SummaPlugin {
 				id: "audit-log-cleanup",
 				description: `Remove audit log entries older than ${retentionDays} days`,
 				handler: async (ctx: SummaContext) => {
+					const t = createTableResolver(ctx.options.schema);
 					const deleted = await ctx.adapter.rawMutate(
-						`DELETE FROM audit_log
+						`DELETE FROM ${t("audit_log")}
 						 WHERE created_at < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 day")} * $1`,
 						[retentionDays],
 					);
@@ -125,6 +141,7 @@ export async function queryAuditLog(
 		offset?: number;
 	},
 ): Promise<AuditLogEntry[]> {
+	const t = createTableResolver(ctx.options.schema);
 	const conditions: string[] = [];
 	const queryParams: unknown[] = [];
 	let paramIndex = 1;
@@ -152,12 +169,37 @@ export async function queryAuditLog(
 
 	queryParams.push(limit, offset);
 
-	return ctx.adapter.raw<AuditLogEntry>(
-		`SELECT id, operation, params, actor, created_at as timestamp
-		 FROM audit_log
+	const entries = await ctx.adapter.raw<AuditLogEntry>(
+		`SELECT id, operation, params, actor, entry_hash as "entryHash", created_at as timestamp
+		 FROM ${t("audit_log")}
 		 ${whereClause}
 		 ORDER BY created_at DESC
 		 LIMIT $${paramIndex++} OFFSET $${paramIndex}`,
 		queryParams,
 	);
+
+	// Verify integrity of each entry (log warnings, don't throw — audit reads shouldn't crash)
+	for (const entry of entries) {
+		if (entry.entryHash) {
+			const entryParams =
+				typeof entry.params === "string" ? JSON.parse(entry.params) : entry.params;
+			const expected = computeHash(
+				null,
+				{
+					operation: entry.operation,
+					params: entryParams,
+					actor: entry.actor,
+				},
+				ctx.options.advanced.hmacSecret,
+			);
+			if (expected !== entry.entryHash) {
+				ctx.logger.error("Audit log entry integrity violation — hash mismatch", {
+					entryId: entry.id,
+					operation: entry.operation,
+				});
+			}
+		}
+	}
+
+	return entries;
 }

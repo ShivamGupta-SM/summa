@@ -48,7 +48,7 @@ The spec includes all core routes organized by tags:
 
 | Tag | Endpoints |
 |-----|-----------|
-| **System** | `GET /ok` |
+| **System** | `GET /ok`, `GET /health` |
 | **Accounts** | 7 endpoints (list, create, get, balance, freeze, unfreeze, close) |
 | **Transactions** | 7 endpoints (list, credit, debit, transfer, multi-transfer, refund, get) |
 | **Holds** | 6 endpoints (list all, list active, create, commit, void, get) |
@@ -69,6 +69,52 @@ app.route("/api/ledger", createSummaHono(summa));
 
 // Serve Swagger UI
 app.get("/docs", swaggerUI({ url: "/api/ledger/openapi.json" }));
+```
+
+## Response Schemas
+
+The OpenAPI spec includes **JSON Schema response definitions** for all core endpoints. This enables accurate client SDK generation and request/response validation in tools like Swagger UI.
+
+Schemas are defined for:
+- **Accounts** — `id`, `holderId`, `balance`, `currency`, `status`, `accountType`, timestamps
+- **Transactions** — `id`, `type`, `amount`, `currency`, `status`, `reference`, `holderId`, timestamps
+- **Holds** — `id`, `holderId`, `amount`, `currency`, `status`, `expiresAt`, timestamps
+- **Balances** — `balance`, `availableBalance`, `heldBalance`, `currency`
+- **Errors** — `code`, `message`
+- **Paginated lists** — `data[]` + `pagination` with `page`, `perPage`, `total`, `totalPages`
+- **Health** — `/health` endpoint with `status`, `checks`, `timestamp`
+
+Example response schema (from the generated spec):
+
+```json
+{
+  "200": {
+    "description": "Paginated list of accounts",
+    "content": {
+      "application/json": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "data": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": { "type": "string", "format": "uuid" },
+                  "holderId": { "type": "string" },
+                  "balance": { "type": "number" },
+                  "currency": { "type": "string" },
+                  "status": { "type": "string", "enum": ["active", "frozen", "closed"] }
+                }
+              }
+            },
+            "pagination": { ... }
+          }
+        }
+      }
+    }
+  }
+}
 ```
 
 ## Caching

@@ -8,7 +8,7 @@
 //   client.admin.accounts.$get()           → GET /admin/accounts
 //   client.admin.accounts("x").freeze.$post({ reason: "..." })
 //                                          → POST /admin/accounts/x/freeze
-//   client.accounts.$post({ holderId: "u1", holderType: "user" })
+//   client.accounts.$post({ holderId: "u1", holderType: "individual" })
 //                                          → POST /accounts
 
 import { createFetchClient, type FetchClient } from "./fetch.js";
@@ -45,7 +45,7 @@ function buildProxy(http: FetchClient, path: string): ProxyNode {
 				case "$post":
 					return (body?: unknown) => http.post(path, body);
 				case "$put":
-					return (body?: unknown) => http.post(path, body);
+					return (body?: unknown) => http.put(path, body);
 				case "$delete":
 					return (body?: unknown) => http.del(path, body);
 				case "then":

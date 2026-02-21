@@ -5,8 +5,9 @@
 // the Web Fetch API (Request/Response).
 
 import type { Summa } from "../summa/base.js";
-import type { ApiHandlerOptions, ApiRequest } from "./handler.js";
+import type { ApiHandlerOptions } from "./handler.js";
 import { handleRequest } from "./handler.js";
+import { parseWebApiRequest } from "./request-helpers.js";
 
 /**
  * Create a Web Fetch API compatible handler for the Summa API.
@@ -34,40 +35,7 @@ export function createSummaFetchHandler(
 	const basePath = options.basePath ?? "";
 
 	return async (request: Request): Promise<Response> => {
-		const url = new URL(request.url);
-		let path = url.pathname;
-		if (basePath && path.startsWith(basePath)) {
-			path = path.slice(basePath.length) || "/";
-		}
-
-		let body: unknown;
-		if (request.method !== "GET" && request.method !== "HEAD") {
-			try {
-				body = await request.json();
-			} catch {
-				body = {};
-			}
-		}
-
-		const query: Record<string, string | undefined> = {};
-		for (const [key, value] of url.searchParams) {
-			query[key] = value;
-		}
-
-		// Extract headers
-		const headers: Record<string, string> = {};
-		request.headers.forEach((value, key) => {
-			headers[key] = value;
-		});
-
-		const apiReq: ApiRequest = {
-			method: request.method,
-			path,
-			body,
-			query,
-			headers,
-		};
-
+		const apiReq = await parseWebApiRequest(request, basePath);
 		const apiRes = await handleRequest(summa, apiReq, options);
 
 		return new Response(apiRes.status === 204 ? null : JSON.stringify(apiRes.body), {

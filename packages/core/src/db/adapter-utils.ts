@@ -30,14 +30,25 @@ export function keysToCamel(obj: Record<string, unknown>): Record<string, unknow
 	return result;
 }
 
+/** Default placeholder function: PostgreSQL-style $1, $2, etc. */
+function defaultPlaceholder(index: number): string {
+	return `$${index}`;
+}
+
 /**
  * Build a SQL WHERE clause from an array of Where conditions.
  * Returns the clause string (without the WHERE keyword) and parameter values.
  * Parameter numbering starts at startIndex (for $1, $2, etc.).
+ *
+ * @param where - Array of conditions
+ * @param startIndex - Starting parameter index (default: 1)
+ * @param placeholder - Parameter placeholder function, e.g. `dialect.paramPlaceholder`.
+ *                      Defaults to PostgreSQL-style `$N` placeholders.
  */
 export function buildWhereClause(
 	where: Where[],
 	startIndex: number = 1,
+	placeholder: (index: number) => string = defaultPlaceholder,
 ): { clause: string; params: unknown[] } {
 	if (where.length === 0) {
 		return { clause: "TRUE", params: [] };
@@ -52,45 +63,45 @@ export function buildWhereClause(
 
 		switch (w.operator) {
 			case "eq":
-				conditions.push(`"${col}" = $${paramIdx}`);
+				conditions.push(`"${col}" = ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "ne":
-				conditions.push(`"${col}" != $${paramIdx}`);
+				conditions.push(`"${col}" != ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "gt":
-				conditions.push(`"${col}" > $${paramIdx}`);
+				conditions.push(`"${col}" > ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "gte":
-				conditions.push(`"${col}" >= $${paramIdx}`);
+				conditions.push(`"${col}" >= ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "lt":
-				conditions.push(`"${col}" < $${paramIdx}`);
+				conditions.push(`"${col}" < ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "lte":
-				conditions.push(`"${col}" <= $${paramIdx}`);
+				conditions.push(`"${col}" <= ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;
 			case "in": {
 				const values = w.value as unknown[];
-				const placeholders = values.map((_, i) => `$${paramIdx + i}`).join(", ");
+				const placeholders = values.map((_, i) => placeholder(paramIdx + i)).join(", ");
 				conditions.push(`"${col}" IN (${placeholders})`);
 				params.push(...values);
 				paramIdx += values.length;
 				break;
 			}
 			case "like":
-				conditions.push(`"${col}" LIKE $${paramIdx}`);
+				conditions.push(`"${col}" LIKE ${placeholder(paramIdx)}`);
 				params.push(w.value);
 				paramIdx++;
 				break;

@@ -1,0 +1,51 @@
+---
+title: Interactive API Explorer
+description: Browse and test the Summa Ledger API with an interactive OpenAPI viewer powered by Scalar.
+icon: Beaker
+full: true
+---
+
+import { OpenApiViewer } from "@/components/openapi-viewer";
+
+## Interactive API Reference
+
+The interactive explorer below renders the OpenAPI 3.1 spec served by the [`openApi()`](/docs/plugins/open-api) plugin. Point it at your running Summa instance to browse endpoints, view schemas, and send test requests.
+
+<Callout type="info">
+  Enable the `openApi()` plugin in your `summa.config.ts` to serve the spec at `GET /openapi.json`.
+</Callout>
+
+```ts title="summa.config.ts"
+import { createSumma } from "summa";
+import { openApi } from "summa/plugins";
+
+export const summa = createSumma({
+  // ...
+  plugins: [
+    openApi({
+      title: "My Ledger API",
+      version: "1.0.0",
+      servers: [{ url: "http://localhost:3000/api/ledger" }],
+    }),
+  ],
+});
+```
+
+Once your server is running, enter the spec URL below or use the default:
+
+<OpenApiViewer specUrl="/api/ledger/openapi.json" />
+
+### Self-hosting the spec
+
+If you want to serve the spec statically (e.g. for CI/CD or public docs), you can generate it at build time:
+
+```ts title="scripts/generate-spec.ts"
+import { writeFileSync } from "fs";
+
+// Start your Summa server, then fetch the spec
+const res = await fetch("http://localhost:3000/api/ledger/openapi.json");
+const spec = await res.json();
+writeFileSync("public/openapi.json", JSON.stringify(spec, null, 2));
+```
+
+Then point the viewer at `/openapi.json` instead of the live API endpoint.

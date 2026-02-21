@@ -20,6 +20,8 @@ const Section = ({
       ${className || " "}`}
 		>
 			{children}
+			{/* Brand tint on bottom border — matches vertical brand lines */}
+			<div className="pointer-events-none absolute inset-x-0 bottom-0 h-px bg-brand/25 hidden lg:block" />
 		</div>
 	);
 };

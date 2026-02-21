@@ -28,7 +28,7 @@ throw new SummaError("ACCOUNT_NOT_FOUND", "No account for holder");
 | Export             | Description                          |
 | ------------------ | ------------------------------------ |
 | `@summa/core`      | Core types and error classes         |
-| `@summa/core/db`   | Database adapter interfaces          |
+| `@summa/core/db`   | Database adapter interfaces, `SqlExecutor`, pool types, read replicas |
 | `@summa/core/error` | Error codes and `SummaError`        |
 | `@summa/core/logger` | Logger interface                   |
 | `@summa/core/utils` | Internal utilities                  |

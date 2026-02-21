@@ -57,7 +57,7 @@ describe("createSummaProxyClient", () => {
 	describe("$post sends POST requests", () => {
 		it("client.accounts.$post(body) calls POST /accounts", async () => {
 			const client = createSummaProxyClient({ baseURL: "http://localhost:3000" });
-			const body = { holderId: "user_1", holderType: "user" };
+			const body = { holderId: "user_1", holderType: "individual" };
 			await client.accounts.$post(body);
 			expect(mockPost).toHaveBeenCalledWith("/accounts", body);
 		});

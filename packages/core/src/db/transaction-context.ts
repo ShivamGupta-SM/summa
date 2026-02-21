@@ -41,18 +41,31 @@ export function queueAfterTransactionHook(cb: AfterCommitCallback): void {
  * after `fn` resolves successfully. If `fn` throws, callbacks are discarded.
  *
  * This should wrap the adapter's `transaction()` call in the event store.
+ *
+ * @param onCallbackError - Optional handler invoked when an after-commit
+ *   callback throws. Receives the error and the callback index. If not
+ *   provided, failures are logged to stderr as a fallback.
  */
-export async function runWithTransactionContext<T>(fn: () => Promise<T>): Promise<T> {
+export async function runWithTransactionContext<T>(
+	fn: () => Promise<T>,
+	onCallbackError?: (error: unknown, index: number) => void,
+): Promise<T> {
 	const store: TransactionStore = { callbacks: [] };
 
 	const result = await storage.run(store, fn);
 
 	// Drain callbacks after successful commit
-	for (const cb of store.callbacks) {
+	for (let i = 0; i < store.callbacks.length; i++) {
 		try {
-			await cb();
-		} catch {
-			// After-commit callbacks should not throw — silently ignore
+			const cb = store.callbacks[i];
+			if (cb) await cb();
+		} catch (error) {
+			if (onCallbackError) {
+				onCallbackError(error, i);
+			} else {
+				// Fallback: log to stderr so failures are never fully silent
+				console.error("[summa] after-commit callback failed", error);
+			}
 		}
 	}
 

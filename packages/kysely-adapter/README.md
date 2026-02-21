@@ -27,6 +27,17 @@ const summa = createSumma({
 });
 ```
 
+### Connection Pooling
+
+The package exports `createPooledAdapter` and `RECOMMENDED_POOL_CONFIG` for production-ready pool management:
+
+```ts
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/kysely-adapter";
+```
+
 ### Peer Dependencies
 
 - `kysely` ^0.27.0 || ^0.28.0

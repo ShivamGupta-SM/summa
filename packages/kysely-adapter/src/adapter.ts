@@ -2,20 +2,15 @@
 // KYSELY ADAPTER — SummaAdapter implementation backed by Kysely
 // =============================================================================
 // Uses raw SQL via Kysely's `sql` template for all operations.
-// This gives full control over locking, RETURNING, parameterized queries,
-// and avoids the complexity of dynamically mapping Where[] to Kysely's
-// type-safe query builder across many tables.
+// CRUD logic is shared via buildSqlAdapterMethods from @summa/core/db.
 
 import {
-	buildWhereClause,
-	keysToCamel,
-	keysToSnake,
+	buildSqlAdapterMethods,
 	postgresDialect,
-	type SortBy,
+	type SqlExecutor,
 	type SummaAdapter,
+	type SummaAdapterOptions,
 	type SummaTransactionAdapter,
-	toSnakeCase,
-	type Where,
 } from "@summa/core/db";
 import type { Kysely, Transaction } from "kysely";
 import { sql } from "kysely";
@@ -56,173 +51,27 @@ function buildKyselySql(query: string, params: unknown[]) {
 }
 
 // =============================================================================
-// ADAPTER METHODS BUILDER
+// SQL EXECUTOR — Kysely-specific query execution
 // =============================================================================
 
-/**
- * Build the core adapter methods for a given Kysely database or transaction handle.
- */
-function buildAdapterMethods(
-	db: Kysely<any> | Transaction<any>,
-): Omit<SummaTransactionAdapter, "id" | "options"> {
+// biome-ignore lint/suspicious/noExplicitAny: Kysely generic type varies by schema
+function createKyselyExecutor(db: Kysely<any> | Transaction<any>): SqlExecutor {
 	return {
-		create: async <T extends Record<string, unknown>>({
-			model,
-			data,
-		}: {
-			model: string;
-			data: T;
-		}): Promise<T> => {
-			const snakeData = keysToSnake(data as Record<string, unknown>);
-			const columns = Object.keys(snakeData);
-			const values = Object.values(snakeData);
-
-			if (columns.length === 0) {
-				throw new Error(`Cannot insert empty data into ${model}`);
-			}
-
-			const columnList = columns.map((c) => `"${c}"`).join(", ");
-			const placeholders = columns.map((_, i) => `$${i + 1}`).join(", ");
-			const query = `INSERT INTO "${model}" (${columnList}) VALUES (${placeholders}) RETURNING *`;
-
-			const result = await buildKyselySql(query, values).execute(db);
-			const rows = (result as { rows: Record<string, unknown>[] }).rows ?? [];
-			const row = rows[0];
-			if (!row) {
-				throw new Error(`Insert into ${model} returned no rows`);
-			}
-			return keysToCamel(row) as T;
-		},
-
-		findOne: async <T>({
-			model,
-			where,
-			forUpdate,
-		}: {
-			model: string;
-			where: Where[];
-			forUpdate?: boolean;
-		}): Promise<T | null> => {
-			const { clause, params } = buildWhereClause(where);
-			let query = `SELECT * FROM "${model}" WHERE ${clause} LIMIT 1`;
-			if (forUpdate) {
-				query += " FOR UPDATE";
-			}
-
-			const result = await buildKyselySql(query, params).execute(db);
-			const rows = (result as { rows: Record<string, unknown>[] }).rows ?? [];
-			const row = rows[0];
-			if (!row) return null;
-			return keysToCamel(row) as T;
-		},
-
-		findMany: async <T>({
-			model,
-			where,
-			limit,
-			offset,
-			sortBy,
-		}: {
-			model: string;
-			where?: Where[];
-			limit?: number;
-			offset?: number;
-			sortBy?: SortBy;
-		}): Promise<T[]> => {
-			const { clause, params } = buildWhereClause(where ?? []);
-			let query = `SELECT * FROM "${model}" WHERE ${clause}`;
-			let paramIdx = params.length + 1;
-
-			if (sortBy) {
-				const col = toSnakeCase(sortBy.field);
-				const dir = sortBy.direction === "desc" ? "DESC" : "ASC";
-				query += ` ORDER BY "${col}" ${dir}`;
-			}
-
-			if (limit !== undefined) {
-				query += ` LIMIT $${paramIdx}`;
-				params.push(limit);
-				paramIdx++;
-			}
-
-			if (offset !== undefined) {
-				query += ` OFFSET $${paramIdx}`;
-				params.push(offset);
-				paramIdx++;
-			}
-
-			const result = await buildKyselySql(query, params).execute(db);
-			const rows = (result as { rows: Record<string, unknown>[] }).rows ?? [];
-			return rows.map((r) => keysToCamel(r) as T);
-		},
-
-		update: async <T>({
-			model,
-			where,
-			update: updateData,
-		}: {
-			model: string;
-			where: Where[];
-			update: Record<string, unknown>;
-		}): Promise<T | null> => {
-			const snakeData = keysToSnake(updateData);
-			const setCols = Object.keys(snakeData);
-			const setValues = Object.values(snakeData);
-
-			if (setCols.length === 0) {
-				throw new Error(`Cannot update ${model} with empty data`);
-			}
-
-			const setClause = setCols.map((c, i) => `"${c}" = $${i + 1}`).join(", ");
-			const { clause: whereClause, params: whereParams } = buildWhereClause(
-				where,
-				setCols.length + 1,
-			);
-
-			const allParams = [...setValues, ...whereParams];
-			const query = `UPDATE "${model}" SET ${setClause} WHERE ${whereClause} RETURNING *`;
-
-			const result = await buildKyselySql(query, allParams).execute(db);
-			const rows = (result as { rows: Record<string, unknown>[] }).rows ?? [];
-			const row = rows[0];
-			if (!row) return null;
-			return keysToCamel(row) as T;
-		},
-
-		delete: async ({ model, where }: { model: string; where: Where[] }): Promise<void> => {
-			const { clause, params } = buildWhereClause(where);
-			const query = `DELETE FROM "${model}" WHERE ${clause}`;
-			await buildKyselySql(query, params).execute(db);
-		},
-
-		count: async ({ model, where }: { model: string; where?: Where[] }): Promise<number> => {
-			const { clause, params } = buildWhereClause(where ?? []);
-			const query = `SELECT COUNT(*)::int AS count FROM "${model}" WHERE ${clause}`;
-
-			const result = await buildKyselySql(query, params).execute(db);
-			const rows = (result as { rows: { count: number }[] }).rows ?? [];
-			const row = rows[0];
-			return row?.count ?? 0;
-		},
-
-		advisoryLock: async (key: number): Promise<void> => {
-			await sql`SELECT pg_advisory_xact_lock(${key})`.execute(db);
-		},
-
-		raw: async <T>(sqlStr: string, params: unknown[]): Promise<T[]> => {
+		query: async <T>(sqlStr: string, params: unknown[]): Promise<T[]> => {
 			const result = await buildKyselySql(sqlStr, params).execute(db);
 			const rows = (result as { rows: T[] }).rows ?? [];
 			return rows;
 		},
-
-		rawMutate: async (sqlStr: string, params: unknown[]): Promise<number> => {
+		mutate: async (sqlStr: string, params: unknown[]): Promise<number> => {
 			const result = await buildKyselySql(sqlStr, params).execute(db);
-			// Kysely returns numAffectedRows as a bigint on the result for mutation queries
 			const numAffected = (result as { numAffectedRows?: bigint }).numAffectedRows;
 			if (numAffected !== undefined) {
 				return Number(numAffected);
 			}
 			return 0;
+		},
+		advisoryLock: async (key: number): Promise<void> => {
+			await sql`SELECT pg_advisory_xact_lock(${key})`.execute(db);
 		},
 	};
 }
@@ -249,7 +98,17 @@ function buildAdapterMethods(
  */
 // biome-ignore lint/suspicious/noExplicitAny: Kysely generic type varies by schema
 export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
-	const methods = buildAdapterMethods(db);
+	// Shared mutable options — schema is set later by buildContext()
+	const sharedOptions: SummaAdapterOptions = {
+		supportsAdvisoryLocks: true,
+		supportsForUpdate: true,
+		supportsReturning: true,
+		dialectName: "postgres",
+		dialect: postgresDialect,
+	};
+
+	const executor = createKyselyExecutor(db);
+	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
 
 	return {
 		id: "kysely",
@@ -257,28 +116,17 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return db.transaction().execute(async (tx) => {
-				const txMethods = buildAdapterMethods(tx);
+				const txExecutor = createKyselyExecutor(tx);
+				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
 				const txAdapter: SummaTransactionAdapter = {
 					id: "kysely",
 					...txMethods,
-					options: {
-						supportsAdvisoryLocks: true,
-						supportsForUpdate: true,
-						supportsReturning: true,
-						dialectName: "postgres",
-						dialect: postgresDialect,
-					},
+					options: sharedOptions,
 				};
 				return fn(txAdapter);
 			});
 		},
 
-		options: {
-			supportsAdvisoryLocks: true,
-			supportsForUpdate: true,
-			supportsReturning: true,
-			dialectName: "postgres",
-			dialect: postgresDialect,
-		},
+		options: sharedOptions,
 	};
 }

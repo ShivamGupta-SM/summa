@@ -3,8 +3,14 @@
 // =============================================================================
 
 import type { Summa } from "../summa/base.js";
-import type { ApiHandlerOptions, ApiRequest } from "./handler.js";
+import type { ApiHandlerOptions } from "./handler.js";
 import { handleRequest } from "./handler.js";
+import {
+	parseSearchParams,
+	parseWebBody,
+	parseWebHeaders,
+	stripBasePath,
+} from "./request-helpers.js";
 
 /**
  * Create a Hono-compatible handler for the Summa API.
@@ -36,37 +42,13 @@ export function createSummaHono(
 		json: (body: unknown, status: number, headers?: Record<string, string>) => unknown;
 	}) => {
 		const url = new URL(c.req.url);
-		let path = url.pathname;
-		if (basePath && path.startsWith(basePath)) {
-			path = path.slice(basePath.length) || "/";
-		}
 
-		let body: unknown;
-		if (c.req.method !== "GET" && c.req.method !== "HEAD") {
-			try {
-				body = await c.req.json();
-			} catch {
-				body = {};
-			}
-		}
-
-		const query: Record<string, string | undefined> = {};
-		for (const [key, value] of url.searchParams) {
-			query[key] = value;
-		}
-
-		// Extract headers
-		const headers: Record<string, string> = {};
-		c.req.raw.headers.forEach((value, key) => {
-			headers[key] = value;
-		});
-
-		const apiReq: ApiRequest = {
+		const apiReq = {
 			method: c.req.method,
-			path,
-			body,
-			query,
-			headers,
+			path: stripBasePath(url.pathname, basePath),
+			body: await parseWebBody(c.req),
+			query: parseSearchParams(url.searchParams),
+			headers: parseWebHeaders(c.req.raw.headers),
 		};
 
 		const res = await handleRequest(summa, apiReq, options);

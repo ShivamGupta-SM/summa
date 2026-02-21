@@ -10,84 +10,15 @@ Summa provides a framework-agnostic HTTP API handler that can be mounted on **Ho
 
 ## Framework Integrations
 
-### Hono
+See the dedicated framework guides for setup, authentication, rate limiting, and production examples:
 
-```ts
-import { Hono } from "hono";
-import { createSumma } from "summa";
-import { createSummaHono } from "summa/api/hono";
-
-const summa = createSumma({ ... });
-const app = new Hono();
-
-// Mount Summa API at /api/ledger
-app.route("/api/ledger", createSummaHono(summa));
-
-export default app;
-```
-
-### Express
-
-```ts
-import express from "express";
-import { createSumma } from "summa";
-import { createSummaExpress } from "summa/api/express";
-
-const summa = createSumma({ ... });
-const app = express();
-
-app.use(express.json());
-app.use("/api/ledger", createSummaExpress(summa));
-
-app.listen(3000);
-```
-
-### Fastify
-
-```ts
-import Fastify from "fastify";
-import { createSumma } from "summa";
-import { createSummaFastify } from "summa/api/fastify";
-
-const summa = createSumma({ ... });
-const app = Fastify();
-
-app.register(createSummaFastify(summa), { prefix: "/api/ledger" });
-
-await app.listen({ port: 3000 });
-```
-
-### Next.js (App Router)
-
-```ts title="app/api/ledger/[...path]/route.ts"
-import { createSummaNextHandler } from "summa/api/next";
-import { summa } from "@/lib/summa";
-
-const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
-  basePath: "/api/ledger",
-});
-
-export { GET, POST, PUT, PATCH, DELETE };
-```
-
-### Fetch API (Deno / Bun / Cloudflare Workers)
-
-```ts
-import { createSummaFetchHandler } from "summa/api/fetch";
-import { createSumma } from "summa";
-
-const summa = createSumma({ ... });
-const handler = createSummaFetchHandler(summa, { basePath: "/api/ledger" });
-
-// Deno
-Deno.serve(handler);
-
-// Bun
-export default { fetch: handler };
-
-// Cloudflare Workers
-export default { fetch: handler };
-```
+- [Hono](/docs/frameworks/hono) — `createSummaHono()`
+- [Express](/docs/frameworks/express) — `createSummaExpress()`
+- [Fastify](/docs/frameworks/fastify) — `createSummaFastify()`
+- [Next.js](/docs/frameworks/next) — `createSummaNextHandler()`
+- [Elysia](/docs/frameworks/elysia) — `createSummaElysia()`
+- [Encore](/docs/frameworks/encore) — `createSummaEncore()`
+- [Fetch API](/docs/frameworks/fetch) — `createSummaFetchHandler()` (Deno, Bun, Cloudflare Workers)
 
 ## Handler Options
 
@@ -137,13 +68,40 @@ const handler = createSummaHono(summa, {
 
 Every response includes an `X-Request-Id` header. The handler extracts it from the incoming `x-request-id` header (for distributed tracing) or generates a UUID if not present. Use this for correlating logs and traces across services.
 
+### Actor Identity
+
+Pass the `x-actor-id` header to associate the requesting user/service with the operation. This is used by the audit log plugin and is available to all operation hooks via `RequestContext`:
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/transactions/credit \
+  -H "Content-Type: application/json" \
+  -H "x-actor-id: admin@example.com" \
+  -d '{ "holderId": "user_123", "amount": 10000, "reference": "dep-001" }'
+```
+
+The actor is stored in audit log entries and can be queried for compliance reporting. See [Audit Log — Actor Tracking](/docs/plugins/audit-log#actor-tracking).
+
 ## API Endpoints
 
 ### Health
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/ok` | Health check — returns `{ ok: true }` |
+| `GET` | `/ok` | Liveness probe — returns `{ ok: true }` |
+| `GET` | `/health` | Readiness probe — deep health check with DB connectivity and schema verification |
+
+The `/health` endpoint returns `200` when healthy or `503` when degraded:
+
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "database": { "status": "ok" },
+    "schema": { "status": "ok", "workerLeases": 3 }
+  },
+  "timestamp": "2026-02-21T10:30:00.000Z"
+}
+```
 
 ### Accounts
 
@@ -177,6 +135,9 @@ Every response includes an `X-Request-Id` header. The handler extracts it from t
 | `POST` | `/transactions/transfer` | Transfer between accounts |
 | `POST` | `/transactions/multi-transfer` | Multi-destination transfer |
 | `POST` | `/transactions/refund` | Refund a transaction (full or partial) |
+| `POST` | `/transactions/correct` | Correct a posted transaction (reversal + new entry) |
+| `POST` | `/transactions/adjust` | Create an adjustment entry (accrual, depreciation, etc.) |
+| `POST` | `/transactions/journal` | Create a free-form journal entry |
 | `GET` | `/transactions/:id` | Get transaction by ID |
 
 **List transactions query parameters:**
@@ -201,6 +162,7 @@ Every response includes an `X-Request-Id` header. The handler extracts it from t
 | `GET` | `/holds` | List all holds with filtering |
 | `GET` | `/holds/active` | List active (inflight) holds only |
 | `POST` | `/holds` | Create a hold |
+| `POST` | `/holds/multi-destination` | Create a multi-destination hold |
 | `POST` | `/holds/:holdId/commit` | Commit a hold (optional partial amount) |
 | `POST` | `/holds/:holdId/void` | Void a hold |
 | `GET` | `/holds/:id` | Get hold by ID |
@@ -301,7 +263,24 @@ Plugins can register additional endpoints via their `endpoints` array. These are
 | `GET` | `/statements/:holderId` | Full account statement (JSON, CSV, or PDF) |
 | `GET` | `/statements/:holderId/summary` | Statement summary only (no line items) |
 
-## Rate Limiting
+**FX Engine plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/fx/rate` | Get current exchange rate (`?from=USD&to=EUR`) |
+| `POST` | `/fx/quote` | Create a rate quote |
+| `POST` | `/fx/quote/:id/use` | Mark a quote as used and record gain/loss |
+| `GET` | `/fx/gain-loss` | Query realized FX gain/loss entries (paginated) |
+
+**Data Retention plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/retention/status` | Current retention status with per-table row counts |
+
+## Security & Protection
+
+### Rate Limiting
 
 Summa includes built-in rate limiting with configurable presets:
 
@@ -316,7 +295,7 @@ const handler = createSummaHono(summa, {
 });
 ```
 
-### Presets
+#### Presets
 
 | Preset | Max Requests | Window |
 |--------|-------------|--------|
@@ -325,7 +304,7 @@ const handler = createSummaHono(summa, {
 | `lenientRateLimit` | 500 | 60 seconds |
 | `burstRateLimit` | 10 | 1 second |
 
-### Custom Configuration
+#### Custom Configuration
 
 ```ts
 const rateLimiter = createRateLimiter({
@@ -340,7 +319,7 @@ Rate limit state can be stored in:
 - **Database** — PostgreSQL sliding window (shared across instances)
 - **Secondary** — Redis-compatible store with TTL (requires `secondaryStorage` config)
 
-### Response Headers
+#### Response Headers
 
 When rate limiting is enabled, every response includes:
 
@@ -351,7 +330,7 @@ When rate limiting is enabled, every response includes:
 | `X-RateLimit-Reset` | Unix timestamp when the window resets |
 | `Retry-After` | Seconds to wait (only present when rate limited) |
 
-## Security Headers
+### Security Headers
 
 Every API response includes the following security headers by default:
 
@@ -377,7 +356,7 @@ const handler = createSummaHono(summa, {
 });
 ```
 
-## CSRF Protection
+### CSRF Protection
 
 Enable origin checking for mutating requests:
 
@@ -389,14 +368,14 @@ const handler = createSummaHono(summa, {
 
 When `trustedOrigins` is set, POST/PUT/PATCH/DELETE requests must include a valid `Origin` header. Server-to-server calls without an `Origin` header are allowed through.
 
-## Request Validation
+### Request Validation
 
-All POST endpoints validate the request body at the handler level. Missing or invalid required fields return a `VALIDATION_ERROR`:
+All POST endpoints validate the request body at the handler level. Missing or invalid required fields return an `INVALID_ARGUMENT` error:
 
 ```json
 {
   "error": {
-    "code": "VALIDATION_ERROR",
+    "code": "INVALID_ARGUMENT",
     "message": "Missing required field: holderId (expected string)"
   }
 }
@@ -404,11 +383,15 @@ All POST endpoints validate the request body at the handler level. Missing or in
 
 Validation checks that required fields are present and have the correct type (`string`, `number`, `object`). Optional fields (suffixed with `?` internally) are allowed to be absent.
 
-## Request/Response Format
+Financial endpoints (credit, debit, transfer, multi-transfer, holds) additionally validate that `amount` is a **positive integer** — negative, zero, fractional, `Infinity`, and `NaN` values are rejected with `INVALID_ARGUMENT`.
+
+## Examples
+
+### Request/Response Format
 
 All requests and responses use JSON. Amounts are always in the **smallest currency unit** (cents/paise).
 
-### Example: Create Account
+### Create Account
 
 ```bash
 curl -X POST http://localhost:3000/api/ledger/accounts \
@@ -420,7 +403,7 @@ curl -X POST http://localhost:3000/api/ledger/accounts \
   }'
 ```
 
-### Example: Transfer
+### Transfer
 
 ```bash
 curl -X POST http://localhost:3000/api/ledger/transactions/transfer \
@@ -433,7 +416,7 @@ curl -X POST http://localhost:3000/api/ledger/transactions/transfer \
   }'
 ```
 
-### Example: Set Velocity Limit
+### Set Velocity Limit
 
 ```bash
 curl -X POST http://localhost:3000/api/ledger/limits \
@@ -445,7 +428,7 @@ curl -X POST http://localhost:3000/api/ledger/limits \
   }'
 ```
 
-### Example: List Transactions
+### List Transactions
 
 ```bash
 curl "http://localhost:3000/api/ledger/transactions?holderId=user_123&status=posted&dateFrom=2026-01-01"

@@ -3,6 +3,7 @@
 // =============================================================================
 
 import { get, type Readable, type Writable, writable } from "svelte/store";
+import { normalizeError } from "./async-helpers.js";
 import { createSummaClient, type SummaClient } from "./client.js";
 import type { SummaClientOptions } from "./types.js";
 
@@ -55,7 +56,7 @@ export function createSummaStore(options: SummaClientOptions): SummaStore {
 			} catch (err) {
 				store.set({
 					...get(store),
-					error: err instanceof Error ? err : new Error(String(err)),
+					error: normalizeError(err),
 					loading: false,
 				});
 			}
@@ -83,7 +84,7 @@ export function createSummaStore(options: SummaClientOptions): SummaStore {
 				store.set({ data, error: undefined, loading: false });
 				return data;
 			} catch (err) {
-				const e = err instanceof Error ? err : new Error(String(err));
+				const e = normalizeError(err);
 				store.set({ ...get(store), error: e, loading: false });
 				throw e;
 			}

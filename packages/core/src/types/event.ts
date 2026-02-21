@@ -18,6 +18,7 @@ export const TRANSACTION_EVENTS = {
 	INITIATED: "TransactionInitiated",
 	POSTED: "TransactionPosted",
 	REVERSED: "TransactionReversed",
+	CORRECTED: "TransactionCorrected",
 } as const satisfies Record<string, string>;
 
 export const HOLD_EVENTS = {
@@ -104,6 +105,12 @@ export interface TransactionPostedData {
 
 export interface TransactionReversedData {
 	reversalId: string;
+	reason: string;
+}
+
+export interface TransactionCorrectedData {
+	reversalId: string;
+	correctionId: string;
 	reason: string;
 }
 

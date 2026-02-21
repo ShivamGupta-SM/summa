@@ -1,0 +1,106 @@
+---
+title: GL / Sub-Ledger
+description: General ledger and sub-ledger separation with reconciliation.
+icon: Layers
+---
+
+## Overview
+
+The GL / Sub-ledger plugin separates detail-level accounts (sub-ledger) from summary accounts (general ledger). Sub-ledger activity auto-summarizes into GL via queries, and a background worker periodically verifies that GL balances match the sum of their sub-ledger accounts.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { glSubLedger } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [glSubLedger()],
+});
+```
+
+## Configuration
+
+```ts
+glSubLedger({
+  reconcileInterval: "1h",  // How often to verify GL/sub-ledger balance (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `reconcileInterval` | `string` | `"1h"` | Reconciliation check interval |
+
+## Mapping Accounts
+
+Register sub-ledger accounts under a GL account:
+
+```ts
+import { registerSubLedger } from "summa/plugins";
+
+await registerSubLedger(summa.$context, {
+  glAccountId: glAccount.id,
+  subLedgerAccountIds: [customer1.id, customer2.id, customer3.id],
+});
+```
+
+## GL Summary
+
+Get the aggregated balance across all sub-ledger accounts:
+
+```ts
+import { getGlSummary } from "summa/plugins";
+
+const summary = await getGlSummary(summa.$context, glAccount.id);
+// {
+//   glAccountId: "...",
+//   totalBalance: 150000,
+//   totalCreditBalance: 200000,
+//   totalDebitBalance: 50000,
+//   subLedgerCount: 3,
+// }
+```
+
+## Reconciliation
+
+Verify that GL balances match their sub-ledger sums:
+
+```ts
+import { reconcile } from "summa/plugins";
+
+// Reconcile a specific GL account
+const results = await reconcile(summa.$context, glAccount.id);
+
+// Or reconcile all GL accounts
+const allResults = await reconcile(summa.$context);
+
+for (const r of allResults) {
+  if (!r.balanced) {
+    console.warn(`Mismatch: GL ${r.glAccountId} balance ${r.glBalance} vs sub-ledger sum ${r.subLedgerSum}`);
+  }
+}
+```
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `gl-reconciliation` | 1h | Yes | Verifies GL balance matches sub-ledger sum |
+
+Mismatches are logged as warnings with the full mismatch details.
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/gl/mapping` | Register sub-ledger accounts under a GL account |
+| `GET` | `/gl/:accountId/summary` | Get aggregated GL summary |
+| `GET` | `/gl/reconcile` | Run reconciliation (optional `?glAccountId=` filter) |
+
+## Schema
+
+| Table | Description |
+|-------|-------------|
+| `gl_sub_ledger_mapping` | Maps GL accounts to their sub-ledger accounts |

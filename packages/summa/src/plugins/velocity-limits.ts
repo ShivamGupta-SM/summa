@@ -38,10 +38,21 @@ export function velocityLimits(options?: VelocityLimitsOptions): SummaPlugin {
 						const holderId = params.holderId ?? params.sourceHolderId;
 						if (!holderId) return;
 
+						// Map transaction types to velocity limit types
+						const txnTypeMap: Record<string, "debit" | "credit"> = {
+							credit: "credit",
+							debit: "debit",
+							transfer: "debit",
+							correction: "debit",
+							adjustment: "debit",
+							journal: "debit",
+						};
+						const txnType = txnTypeMap[params.type] ?? "debit";
+
 						await enforceLimits(params.ctx, {
 							holderId,
 							amount: params.amount,
-							txnType: params.type === "transfer" ? "debit" : params.type,
+							txnType,
 							category: params.category,
 						});
 					},

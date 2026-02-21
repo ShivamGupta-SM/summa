@@ -8,30 +8,6 @@ icon: Wallet
 
 Accounts are the fundamental building block in Summa. Every account belongs to a **holder** (identified by `holderId`) and tracks separate credit, debit, and pending balances using double-entry bookkeeping.
 
-## Creating an Account
-
-```ts
-const account = await summa.accounts.create({
-  holderId: "user_123",
-  holderType: "individual",
-  currency: "USD",
-  allowOverdraft: false,
-  indicator: "ACC-001",
-  metadata: { tier: "premium" },
-});
-```
-
-<TypeTable
-  type={{
-    holderId: { type: "string", description: "Your external user/entity ID. One account per holderId.", required: true },
-    holderType: { type: '"individual" | "organization" | "system"', description: "The type of account holder.", required: true },
-    currency: { type: "string", description: "ISO 4217 code. Defaults to the instance currency.", default: "Instance currency" },
-    allowOverdraft: { type: "boolean", description: "Allow balance to go negative.", default: "false" },
-    indicator: { type: "string", description: "Unique human-readable identifier (e.g., ACC-001)." },
-    metadata: { type: "Record<string, unknown>", description: "Arbitrary key-value data stored with the account." },
-  }}
-/>
-
 ## Account Object
 
 Every account returns the following fields:
@@ -49,6 +25,10 @@ interface Account {
   pendingCredit: number;         // Inflight credits
   pendingDebit: number;          // Held amounts (reduces available balance)
   allowOverdraft: boolean;
+  accountType: AccountType | null;     // "asset" | "liability" | "equity" | "revenue" | "expense"
+  accountCode: string | null;          // Unique chart-of-accounts code (e.g., "1000")
+  parentAccountId: string | null;      // FK to parent account for hierarchy
+  normalBalance: NormalBalance | null;  // "debit" | "credit" — auto-derived from accountType
   indicator: string | null;      // Human-friendly identifier
   freezeReason: string | null;
   frozenAt: Date | null;
@@ -62,22 +42,165 @@ interface Account {
 }
 ```
 
-## Getting an Account
+## Creating & Configuring Accounts
 
-<Tabs items={["By holder ID", "By internal ID"]}>
-<Tab value="By holder ID">
+### Creating an Account
+
 ```ts
-const account = await summa.accounts.get("user_123");
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+  allowOverdraft: false,
+  indicator: "ACC-001",
+  accountType: "asset",
+  accountCode: "1100",
+  metadata: { tier: "premium" },
+});
 ```
+
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Your external user/entity ID. One account per holderId.", required: true },
+    holderType: { type: '"individual" | "organization" | "system"', description: "The type of account holder.", required: true },
+    currency: { type: "string", description: "ISO 4217 code. Defaults to the instance currency.", default: "Instance currency" },
+    allowOverdraft: { type: "boolean", description: "Allow balance to go negative.", default: "false" },
+    indicator: { type: "string", description: "Unique human-readable identifier (e.g., ACC-001)." },
+    accountType: { type: '"asset" | "liability" | "equity" | "revenue" | "expense"', description: "Accounting classification. Determines the normal balance direction." },
+    accountCode: { type: "string", description: "Unique account code (e.g., 1000, 2100). Used for chart of accounts ordering." },
+    parentAccountId: { type: "string", description: "UUID of the parent account for hierarchical charts." },
+    metadata: { type: "Record<string, unknown>", description: "Arbitrary key-value data stored with the account." },
+  }}
+/>
+
+### Overdrafts
+
+By default, transactions that would result in a negative balance are rejected with `INSUFFICIENT_BALANCE`. You can enable overdrafts at two levels:
+
+<Tabs items={["Account-level", "Per-transaction"]}>
+<Tab value="Account-level">
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "merchant_1",
+  holderType: "organization",
+  currency: "USD",
+  allowOverdraft: true,
+});
+```
+
 </Tab>
-<Tab value="By internal ID">
+<Tab value="Per-transaction">
+
 ```ts
-const account = await summa.accounts.getById(accountId);
+await summa.transactions.debit({
+  holderId: "merchant_1",
+  amount: 500_00,
+  reference: "chargeback-001",
+  allowOverdraft: true,  // Override for this transaction only
+});
 ```
+
 </Tab>
 </Tabs>
 
-## Checking Balance
+### Account Indicators
+
+Indicators are optional, unique human-friendly identifiers for accounts:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+  indicator: "ACC-00001",
+});
+```
+
+### Metadata
+
+Accounts support arbitrary key-value metadata for storing application-specific data:
+
+```ts
+const account = await summa.accounts.create({
+  holderId: "user_123",
+  holderType: "individual",
+  currency: "USD",
+  metadata: {
+    tier: "premium",
+    signupSource: "referral",
+    kycVerified: true,
+  },
+});
+```
+
+## Account Lifecycle
+
+### Freezing an Account
+
+Frozen accounts reject all transactions and holds but preserve their state. Useful for fraud investigations or compliance holds.
+
+```ts
+await summa.accounts.freeze({
+  holderId: "user_123",
+  reason: "Suspicious activity — under review",
+  frozenBy: "admin@example.com",
+});
+```
+
+<Callout type="warn" title="Frozen accounts">
+  Attempting any transaction on a frozen account throws `ACCOUNT_FROZEN` error (HTTP 403).
+</Callout>
+
+### Unfreezing
+
+```ts
+await summa.accounts.unfreeze({
+  holderId: "user_123",
+  unfrozenBy: "admin@example.com",
+  reason: "Customer verified identity",  // Optional
+});
+```
+
+### Closing an Account
+
+<Callout type="error" title="Permanent action">
+  Closing is **permanent** and cannot be undone. If there's a remaining balance, you must sweep funds to another account.
+</Callout>
+
+```ts
+await summa.accounts.close({
+  holderId: "user_123",
+  closedBy: "admin@example.com",
+  reason: "Customer request",
+  transferToHolderId: "treasury",  // Optional — sweep remaining balance
+});
+```
+
+Attempting any operation on a closed account throws `ACCOUNT_CLOSED` error (HTTP 403).
+
+## Querying Accounts
+
+### Getting an Account
+
+<Tabs items={["By holder ID", "By internal ID"]}>
+<Tab value="By holder ID">
+
+```ts
+const account = await summa.accounts.get("user_123");
+```
+
+</Tab>
+<Tab value="By internal ID">
+
+```ts
+const account = await summa.accounts.getById(accountId);
+```
+
+</Tab>
+</Tabs>
+
+### Checking Balance
 
 ```ts
 const balance = await summa.accounts.getBalance("user_123");
@@ -99,7 +222,7 @@ const balance = await summa.accounts.getBalance("user_123");
   `availableBalance` is the key field — it's what the user can actually spend, accounting for pending holds.
 </Callout>
 
-## Listing Accounts
+### Listing Accounts
 
 ```ts
 const result = await summa.accounts.list({
@@ -115,101 +238,67 @@ const result = await summa.accounts.list({
 // result.total    — number
 ```
 
-## Freezing an Account
+## Chart of Accounts
 
-Frozen accounts reject all transactions and holds but preserve their state. Useful for fraud investigations or compliance holds.
+Summa supports full accounting primitives through the `chartOfAccounts` namespace. Assign an `accountType` when creating accounts to classify them as asset, liability, equity, revenue, or expense.
+
+### Account Types & Normal Balance
+
+The `normalBalance` is automatically derived from `accountType`:
+
+| Account Type | Normal Balance | Increases with |
+|-------------|---------------|----------------|
+| `asset` | `debit` | Debits |
+| `expense` | `debit` | Debits |
+| `liability` | `credit` | Credits |
+| `equity` | `credit` | Credits |
+| `revenue` | `credit` | Credits |
+
+### Account Hierarchy
+
+Create parent–child relationships for hierarchical charts:
 
 ```ts
-await summa.accounts.freeze({
-  holderId: "user_123",
-  reason: "Suspicious activity — under review",
-  frozenBy: "admin@example.com",
+// Parent account
+const cashAccounts = await summa.accounts.create({
+  holderId: "cash_parent",
+  holderType: "system",
+  currency: "USD",
+  accountType: "asset",
+  accountCode: "1000",
+});
+
+// Child account
+const bankAccount = await summa.accounts.create({
+  holderId: "bank_checking",
+  holderType: "system",
+  currency: "USD",
+  accountType: "asset",
+  accountCode: "1010",
+  parentAccountId: cashAccounts.id,
 });
 ```
 
-<Callout type="warn" title="Frozen accounts">
-  Attempting any transaction on a frozen account throws `ACCOUNT_FROZEN` error (HTTP 403).
+### Querying the Chart
+
+```ts
+// Get all accounts of a specific type
+const assets = await summa.chartOfAccounts.getByType("asset");
+
+// Get child accounts
+const children = await summa.chartOfAccounts.getChildren(parentAccountId);
+
+// Get the full hierarchy tree
+const tree = await summa.chartOfAccounts.getHierarchy();
+
+// Validate the accounting equation (Assets = Liabilities + Equity)
+const result = await summa.chartOfAccounts.validateEquation();
+console.log(result.balanced);   // true
+console.log(result.assets);     // total asset balance
+console.log(result.liabilities); // total liability balance
+console.log(result.equity);     // total equity balance
+```
+
+<Callout type="info" title="Backward compatible">
+  All chart-of-accounts fields are optional. Existing accounts without `accountType` continue to work as before — they simply won't appear in chart-of-accounts queries.
 </Callout>
-
-## Unfreezing
-
-```ts
-await summa.accounts.unfreeze({
-  holderId: "user_123",
-  unfrozenBy: "admin@example.com",
-});
-```
-
-## Closing an Account
-
-<Callout type="error" title="Permanent action">
-  Closing is **permanent** and cannot be undone. If there's a remaining balance, you must sweep funds to another account.
-</Callout>
-
-```ts
-await summa.accounts.close({
-  holderId: "user_123",
-  closedBy: "admin@example.com",
-  reason: "Customer request",
-  transferToHolderId: "treasury",  // Optional — sweep remaining balance
-});
-```
-
-Attempting any operation on a closed account throws `ACCOUNT_CLOSED` error (HTTP 403).
-
-## Overdrafts
-
-By default, transactions that would result in a negative balance are rejected with `INSUFFICIENT_BALANCE`. You can enable overdrafts at two levels:
-
-<Tabs items={["Account-level", "Per-transaction"]}>
-<Tab value="Account-level">
-```ts
-const account = await summa.accounts.create({
-  holderId: "merchant_1",
-  holderType: "organization",
-  currency: "USD",
-  allowOverdraft: true,
-});
-```
-</Tab>
-<Tab value="Per-transaction">
-```ts
-await summa.transactions.debit({
-  holderId: "merchant_1",
-  amount: 500_00,
-  reference: "chargeback-001",
-  allowOverdraft: true,  // Override for this transaction only
-});
-```
-</Tab>
-</Tabs>
-
-## Account Indicators
-
-Indicators are optional, unique human-friendly identifiers for accounts:
-
-```ts
-const account = await summa.accounts.create({
-  holderId: "user_123",
-  holderType: "individual",
-  currency: "USD",
-  indicator: "ACC-00001",
-});
-```
-
-## Metadata
-
-Accounts support arbitrary key-value metadata for storing application-specific data:
-
-```ts
-const account = await summa.accounts.create({
-  holderId: "user_123",
-  holderType: "individual",
-  currency: "USD",
-  metadata: {
-    tier: "premium",
-    signupSource: "referral",
-    kycVerified: true,
-  },
-});
-```

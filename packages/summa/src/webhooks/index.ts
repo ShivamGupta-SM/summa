@@ -4,6 +4,15 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+export class WebhookError extends Error {
+	readonly code: "INVALID_SIGNATURE" | "PAYLOAD_EXPIRED";
+	constructor(code: "INVALID_SIGNATURE" | "PAYLOAD_EXPIRED", message: string) {
+		super(message);
+		this.name = "WebhookError";
+		this.code = code;
+	}
+}
+
 export interface WebhookHandlerOptions {
 	/** HMAC-SHA256 secret for signature verification */
 	secret: string;
@@ -46,9 +55,7 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
 	const { secret, tolerance = 5 * 60 * 1000 } = options;
 
 	function computeSignature(body: string | Buffer): string {
-		return createHmac("sha256", secret)
-			.update(typeof body === "string" ? body : body)
-			.digest("hex");
+		return createHmac("sha256", secret).update(body).digest("hex");
 	}
 
 	function verify(body: string | Buffer, signature: string): boolean {
@@ -66,7 +73,7 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
 
 	function receive(body: string | Buffer, signature: string): WebhookPayload {
 		if (!verify(body, signature)) {
-			throw new Error("Invalid webhook signature");
+			throw new WebhookError("INVALID_SIGNATURE", "Invalid webhook signature");
 		}
 
 		const payload = JSON.parse(
@@ -77,7 +84,7 @@ export function createWebhookHandler(options: WebhookHandlerOptions): WebhookHan
 		if (tolerance > 0 && payload.timestamp) {
 			const age = Date.now() - new Date(payload.timestamp).getTime();
 			if (age > tolerance) {
-				throw new Error("Webhook payload is too old");
+				throw new WebhookError("PAYLOAD_EXPIRED", "Webhook payload is too old");
 			}
 		}
 

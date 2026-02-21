@@ -1,0 +1,128 @@
+---
+title: Period Close
+description: Lock accounting periods to prevent backdated transactions.
+icon: LockClosed
+---
+
+## Overview
+
+The period close plugin manages accounting period lifecycle — create, close, reopen, and permanently lock periods. Once a period is closed, the `beforeTransaction` hook rejects any transactions that would post to that period. Required for compliance and immutable financial reports.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { periodClose } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [periodClose()],
+});
+```
+
+## Configuration
+
+```ts
+periodClose({
+  basePath: "/periods",  // Base path for endpoints (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `basePath` | `string` | `"/periods"` | Base URL path for period management endpoints |
+
+## Period Lifecycle
+
+Periods move through four states:
+
+```
+open → closed → locked (permanent)
+       ↓
+       → open (reopen — increments reopenedCount)
+```
+
+| Status | Transactions allowed? | Can reopen? |
+|--------|:--------------------:|:-----------:|
+| `open` | Yes | N/A |
+| `closing` | No | N/A |
+| `closed` | No | Yes |
+| `locked` | No | No (permanent) |
+
+## How It Works
+
+The plugin registers a `beforeTransaction` hook that checks if the current date falls within any closed or locked period. If it does, the transaction is rejected with a conflict error.
+
+```ts
+// This transaction will be rejected if today falls in a closed period
+await summa.transactions.credit({
+  holderId: "user_123",
+  amount: 100_00,
+  reference: "deposit-001",
+});
+// → throws SummaError: "Cannot post transactions in a closed or locked period"
+```
+
+## Utility Functions
+
+### `isPeriodClosed`
+
+Check if a specific date falls within a closed period:
+
+```ts
+import { isPeriodClosed } from "summa/plugins";
+
+const closed = await isPeriodClosed(summa.$context, new Date("2025-03-15"));
+if (closed) {
+  console.log("March 2025 is closed — no transactions allowed");
+}
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/periods` | List all accounting periods |
+| `POST` | `/periods` | Create a new period |
+| `POST` | `/periods/:id/close` | Close a period |
+| `POST` | `/periods/:id/reopen` | Reopen a closed period |
+| `POST` | `/periods/:id/lock` | Permanently lock a period |
+
+### Create a Period
+
+```json
+POST /periods
+{
+  "name": "March 2026",
+  "startDate": "2026-03-01T00:00:00Z",
+  "endDate": "2026-03-31T23:59:59Z"
+}
+```
+
+### Close a Period
+
+```json
+POST /periods/:id/close
+{ "closedBy": "cfo@company.com" }
+```
+
+### Reopen a Closed Period
+
+```json
+POST /periods/:id/reopen
+{
+  "reopenedBy": "cfo@company.com",
+  "reason": "Late adjustment needed"
+}
+```
+
+Reopening increments the `reopenedCount` for audit purposes. Locked periods cannot be reopened.
+
+## Schema
+
+The plugin creates one table:
+
+| Table | Description |
+|-------|-------------|
+| `accounting_period` | Period records with status, dates, and audit fields |

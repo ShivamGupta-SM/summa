@@ -12,6 +12,7 @@ import {
 	useRef,
 	useState,
 } from "react";
+import { normalizeError } from "./async-helpers.js";
 import { createSummaClient, type SummaClient } from "./client.js";
 import type { SummaClientOptions } from "./types.js";
 
@@ -55,13 +56,13 @@ export interface SummaQueryResult<T> {
 
 export function useSummaQuery<T>(
 	fn: (client: SummaClient) => Promise<T>,
-	deps: unknown[] = [],
+	_deps: unknown[] = [],
 ): SummaQueryResult<T> {
 	const client = useSumma();
 	const [data, setData] = useState<T | undefined>(undefined);
 	const [error, setError] = useState<Error | undefined>(undefined);
 	const [loading, setLoading] = useState(true);
-	const [trigger, setTrigger] = useState(0);
+	const [_trigger, setTrigger] = useState(0);
 
 	const refetch = useCallback(() => setTrigger((n) => n + 1), []);
 
@@ -79,7 +80,7 @@ export function useSummaQuery<T>(
 				}
 			} catch (err: unknown) {
 				if (!cancelled) {
-					setError(err instanceof Error ? err : new Error(String(err)));
+					setError(normalizeError(err));
 					setLoading(false);
 				}
 			}
@@ -89,7 +90,7 @@ export function useSummaQuery<T>(
 			cancelled = true;
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [client, trigger, ...deps]);
+	}, [client, fn, _trigger]);
 
 	return { data, error, loading, refetch };
 }
@@ -122,7 +123,7 @@ export function useSummaMutation<T, V = void>(
 				setData(result);
 				return result;
 			} catch (err) {
-				const e = err instanceof Error ? err : new Error(String(err));
+				const e = normalizeError(err);
 				setError(e);
 				throw e;
 			} finally {

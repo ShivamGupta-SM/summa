@@ -11,6 +11,7 @@ import type {
 	SummaContext,
 	SummaPlugin,
 } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 import * as accounts from "../managers/account-manager.js";
 import * as holds from "../managers/hold-manager.js";
 import * as transactions from "../managers/transaction-manager.js";
@@ -67,11 +68,6 @@ export function admin(options?: AdminOptions): SummaPlugin {
 	const authorize = options?.authorize;
 
 	if (!authorize) {
-		console.warn(
-			"[summa/admin] WARNING: Admin plugin initialized without an `authorize` callback. " +
-				"All admin endpoints are publicly accessible. " +
-				"Pass an `authorize` function to protect admin routes.",
-		);
 	}
 
 	// Wrap each endpoint handler with authorization check
@@ -178,6 +174,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/transactions`,
 			handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+				const tbl = createTableResolver(ctx.options.schema);
 				const { perPage, offset } = parsePagination(req.query);
 
 				const conditions: string[] = [];
@@ -220,14 +217,14 @@ export function admin(options?: AdminOptions): SummaPlugin {
 				const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
 				const countRows = await ctx.adapter.raw<{ cnt: string }>(
-					`SELECT COUNT(*) as cnt FROM transaction_record t ${whereClause}`,
+					`SELECT COUNT(*) as cnt FROM ${tbl("transaction_record")} t ${whereClause}`,
 					params,
 				);
 				const total = Number(countRows[0]?.cnt ?? 0);
 
 				const dataParams = [...params, perPage, offset];
 				const rows = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT * FROM transaction_record t ${whereClause} ORDER BY t.created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
+					`SELECT * FROM ${tbl("transaction_record")} t ${whereClause} ORDER BY t.created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
 					dataParams,
 				);
 
@@ -238,9 +235,10 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/transactions/:id`,
 			handler: async (req, ctx) => {
+				const tbl = createTableResolver(ctx.options.schema);
 				const txn = await transactions.getTransaction(ctx, req.params.id ?? "");
 				const entries = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT * FROM entry_record WHERE transaction_id = $1 ORDER BY created_at ASC`,
+					`SELECT * FROM ${tbl("entry_record")} WHERE transaction_id = $1 ORDER BY created_at ASC`,
 					[txn.id],
 				);
 				return json(200, { transaction: txn, entries });
@@ -264,6 +262,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/holds`,
 			handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+				const tbl = createTableResolver(ctx.options.schema);
 				const { perPage, offset } = parsePagination(req.query);
 
 				const conditions: string[] = [];
@@ -286,14 +285,14 @@ export function admin(options?: AdminOptions): SummaPlugin {
 				const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
 				const countRows = await ctx.adapter.raw<{ cnt: string }>(
-					`SELECT COUNT(*) as cnt FROM hold ${whereClause}`,
+					`SELECT COUNT(*) as cnt FROM ${tbl("hold")} ${whereClause}`,
 					params,
 				);
 				const total = Number(countRows[0]?.cnt ?? 0);
 
 				const dataParams = [...params, perPage, offset];
 				const rows = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT * FROM hold ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
+					`SELECT * FROM ${tbl("hold")} ${whereClause} ORDER BY created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
 					dataParams,
 				);
 
@@ -332,15 +331,44 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/system-accounts`,
 			handler: async (_req, ctx) => {
+				const tbl = createTableResolver(ctx.options.schema);
 				const rows = await ctx.adapter.raw<Record<string, unknown>>(
 					`SELECT sa.id, sa.identifier, sa.name, sa.created_at,
 					        ab.currency, ab.balance, ab.available_balance, ab.status
-					 FROM system_account sa
-					 JOIN account_balance ab ON ab.id = sa.account_id
+					 FROM ${tbl("system_account")} sa
+					 JOIN ${tbl("account_balance")} ab ON ab.id = sa.account_id
 					 ORDER BY sa.identifier ASC`,
 					[],
 				);
 				return json(200, { systemAccounts: rows });
+			},
+		},
+
+		// --- Impersonation ---
+		{
+			method: "POST",
+			path: `${prefix}/impersonate/:holderId`,
+			handler: async (req, ctx) => {
+				const holderId = req.params.holderId ?? "";
+				// Verify the account exists
+				const account = await accounts.getAccountByHolder(ctx, holderId);
+				const balance = await accounts.getAccountBalance(ctx, account);
+				const txns = await transactions.listAccountTransactions(ctx, {
+					holderId,
+					perPage: 20,
+				});
+				const activeHolds = await holds.listActiveHolds(ctx, {
+					holderId,
+					perPage: 10,
+				});
+
+				return json(200, {
+					impersonating: holderId,
+					account,
+					balance,
+					recentTransactions: txns.transactions,
+					activeHolds: activeHolds.holds,
+				});
 			},
 		},
 
@@ -349,6 +377,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/stats`,
 			handler: async (_req, ctx) => {
+				const tbl = createTableResolver(ctx.options.schema);
 				const [accountStats, txnStats, holdStats] = await Promise.all([
 					ctx.adapter.raw<Record<string, string>>(
 						`SELECT
@@ -356,7 +385,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 							COUNT(*) FILTER (WHERE status = 'active') AS active,
 							COUNT(*) FILTER (WHERE status = 'frozen') AS frozen,
 							COUNT(*) FILTER (WHERE status = 'closed') AS closed
-						 FROM account_balance`,
+						 FROM ${tbl("account_balance")}`,
 						[],
 					),
 					ctx.adapter.raw<Record<string, string>>(
@@ -365,7 +394,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 							COALESCE(SUM(amount), 0) AS total_volume,
 							COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_count,
 							COALESCE(SUM(amount) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_volume
-						 FROM transaction_record
+						 FROM ${tbl("transaction_record")}
 						 WHERE status = 'posted'`,
 						[],
 					),
@@ -373,7 +402,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 						`SELECT
 							COUNT(*) AS total_active,
 							COALESCE(SUM(amount), 0) AS total_amount
-						 FROM hold
+						 FROM ${tbl("hold")}
 						 WHERE status = 'inflight'`,
 						[],
 					),

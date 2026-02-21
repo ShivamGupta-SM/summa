@@ -15,6 +15,7 @@ import {
   snapshots,
   velocityLimits,
   holdExpiry,
+  freezeExpiry,
   outbox,
   dlqManager,
   hotAccounts,
@@ -24,6 +25,17 @@ import {
   openApi,
   observability,
   statements,
+  periodClose,
+  financialReporting,
+  fxEngine,
+  glSubLedger,
+  approvalWorkflow,
+  batchImport,
+  accrualAccounting,
+  dataRetention,
+  versionRetention,
+  i18n,
+  mcp,
 } from "summa/plugins";
 
 const summa = createSumma({
@@ -66,6 +78,18 @@ const summa = createSumma({
 | [`openApi`](/docs/plugins/open-api) | Documentation | No | Auto-generated OpenAPI 3.1 specification |
 | [`observability`](/docs/plugins/observability) | Monitoring | No | Distributed tracing and Prometheus metrics via `/metrics` endpoint |
 | [`statements`](/docs/plugins/statements) | Reporting | No | Account statement generation with JSON, CSV, and PDF download |
+| [`periodClose`](/docs/plugins/period-close) | Compliance | No | Lock accounting periods to prevent backdated transactions |
+| [`financialReporting`](/docs/plugins/financial-reporting) | Reporting | No | Trial balance, balance sheet, and income statement |
+| [`fxEngine`](/docs/plugins/fx-engine) | Finance | Yes | Auto-resolves exchange rates for cross-currency transfers, rate caching, quotes, and gain/loss tracking |
+| [`glSubLedger`](/docs/plugins/gl-sub-ledger) | Finance | Yes | General ledger / sub-ledger separation with reconciliation |
+| [`approvalWorkflow`](/docs/plugins/approval-workflow) | Compliance | Yes | Maker-checker dual authorization for sensitive transactions |
+| [`batchImport`](/docs/plugins/batch-import) | Operations | Yes | Bulk CSV/JSON transaction import with staged validation |
+| [`accrualAccounting`](/docs/plugins/accrual-accounting) | Finance | Yes | Revenue/expense recognition over time |
+| [`dataRetention`](/docs/plugins/data-retention) | Operations | Yes | Unified data retention policies across all tables |
+| [`versionRetention`](/docs/plugins/version-retention) | Performance | Yes | Archive and prune old `account_balance_version` rows to keep the table bounded |
+| [`freezeExpiry`](/docs/plugins/freeze-expiry) | Automation | Yes | TTL-based auto-unfreeze for frozen accounts |
+| [`i18n`](/docs/plugins/i18n) | Localization | No | Multi-locale error message translation with Accept-Language detection |
+| [`mcp`](/docs/plugins/mcp) | Integration | No | Model Context Protocol tools for AI agent access to the ledger |
 
 ## Plugin Architecture
 
@@ -177,7 +201,7 @@ In addition to the named lifecycle hooks, plugins can use **matcher-based operat
 }
 ```
 
-**Available operation types:** `account.create`, `account.freeze`, `account.unfreeze`, `account.close`, `transaction.credit`, `transaction.debit`, `transaction.transfer`, `transaction.refund`, `hold.create`, `hold.commit`, `hold.void`
+**Available operation types:** `account.create`, `account.freeze`, `account.unfreeze`, `account.close`, `transaction.credit`, `transaction.debit`, `transaction.transfer`, `transaction.refund`, `transaction.correct`, `transaction.adjust`, `transaction.journal`, `hold.create`, `hold.commit`, `hold.void`
 
 A `before` hook returning `{ cancel: true, reason }` rejects the operation with `INVALID_ARGUMENT`.
 
@@ -217,6 +241,12 @@ If a required plugin is missing, `createSumma()` throws immediately:
 
 ```
 Plugin "my-plugin" requires plugin "audit-log" which is not registered
+```
+
+Duplicate plugin IDs are also detected at startup — if two plugins share the same `id`, `createSumma()` throws:
+
+```
+Duplicate plugin ID: "my-plugin"
 ```
 
 ### Request/Response Interceptors

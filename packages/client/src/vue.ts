@@ -3,6 +3,7 @@
 // =============================================================================
 
 import { type InjectionKey, inject, onMounted, provide, type Ref, ref } from "vue";
+import { normalizeError } from "./async-helpers.js";
 import { createSummaClient, type SummaClient } from "./client.js";
 import type { SummaClientOptions } from "./types.js";
 
@@ -49,7 +50,7 @@ export function useSummaQuery<T>(fn: (client: SummaClient) => Promise<T>): Summa
 		try {
 			data.value = await fn(client);
 		} catch (err) {
-			error.value = err instanceof Error ? err : new Error(String(err));
+			error.value = normalizeError(err);
 		} finally {
 			loading.value = false;
 		}
@@ -89,7 +90,7 @@ export function useSummaMutation<T, V = void>(
 			data.value = result;
 			return result;
 		} catch (err) {
-			const e = err instanceof Error ? err : new Error(String(err));
+			const e = normalizeError(err);
 			error.value = e;
 			throw e;
 		} finally {

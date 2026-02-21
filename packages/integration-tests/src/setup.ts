@@ -18,29 +18,32 @@ export function getPool(): pg.Pool {
 export async function createTestSchema(): Promise<void> {
 	const client = await getPool().connect();
 	try {
+		// Ensure summa schema exists
+		await client.query(`CREATE SCHEMA IF NOT EXISTS summa`);
+
 		// Drop all summa tables if they exist (clean slate per test suite)
 		await client.query(`
 			DROP TABLE IF EXISTS
-				failed_event,
-				account_transaction_log,
-				account_limit,
-				worker_lease,
-				block_checkpoint,
-				scheduled_transaction,
-				account_snapshot,
-				reconciliation_watermark,
-				reconciliation_result,
-				idempotency_key,
-				processed_event,
-				hot_account_failed_sequence,
-				hot_account_entry,
-				dead_letter_queue,
-				outbox,
-				entry_record,
-				transaction_record,
-				system_account,
-				account_balance,
-				ledger_event
+				summa.failed_event,
+				summa.account_transaction_log,
+				summa.account_limit,
+				summa.worker_lease,
+				summa.block_checkpoint,
+				summa.scheduled_transaction,
+				summa.account_snapshot,
+				summa.reconciliation_watermark,
+				summa.reconciliation_result,
+				summa.idempotency_key,
+				summa.processed_event,
+				summa.hot_account_failed_sequence,
+				summa.hot_account_entry,
+				summa.dead_letter_queue,
+				summa.outbox,
+				summa.entry_record,
+				summa.transaction_record,
+				summa.system_account,
+				summa.account_balance,
+				summa.ledger_event
 			CASCADE
 		`);
 
@@ -52,7 +55,7 @@ export async function createTestSchema(): Promise<void> {
 		});
 
 		await client.query(`
-			CREATE TABLE ledger_event (
+			CREATE TABLE summa.ledger_event (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				sequence_number BIGSERIAL UNIQUE NOT NULL,
 				aggregate_type VARCHAR(50) NOT NULL,
@@ -65,13 +68,12 @@ export async function createTestSchema(): Promise<void> {
 				prev_hash VARCHAR(64),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE UNIQUE INDEX uq_ledger_event_aggregate_version ON ledger_event(aggregate_type, aggregate_id, aggregate_version);
-			CREATE INDEX idx_ledger_event_aggregate ON ledger_event(aggregate_type, aggregate_id);
-			CREATE INDEX idx_ledger_event_correlation ON ledger_event(correlation_id);
+			CREATE UNIQUE INDEX uq_ledger_event_aggregate_version ON summa.ledger_event(aggregate_type, aggregate_id, aggregate_version);
+			CREATE INDEX idx_ledger_event_aggregate ON summa.ledger_event(aggregate_type, aggregate_id);
+			CREATE INDEX idx_ledger_event_correlation ON summa.ledger_event(correlation_id);
 
-			CREATE TABLE account_balance (
+			CREATE TABLE summa.account_balance (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				ledger_id UUID NOT NULL DEFAULT gen_random_uuid(),
 				indicator VARCHAR(255) UNIQUE,
 				holder_id VARCHAR(255) NOT NULL,
 				holder_type VARCHAR(100) NOT NULL,
@@ -96,13 +98,12 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE UNIQUE INDEX uq_account_balance_holder ON account_balance(ledger_id, holder_id, holder_type, currency);
-			CREATE UNIQUE INDEX uq_account_balance_holder_currency ON account_balance(holder_id, currency);
-			CREATE INDEX idx_account_balance_sequence ON account_balance(last_sequence_number);
-			CREATE INDEX idx_account_balance_status ON account_balance(status);
-			CREATE INDEX idx_account_balance_holder_lookup ON account_balance(holder_id, holder_type);
+			CREATE UNIQUE INDEX uq_account_balance_holder_currency ON summa.account_balance(holder_id, currency);
+			CREATE INDEX idx_account_balance_sequence ON summa.account_balance(last_sequence_number);
+			CREATE INDEX idx_account_balance_status ON summa.account_balance(status);
+			CREATE INDEX idx_account_balance_holder_lookup ON summa.account_balance(holder_id, holder_type);
 
-			CREATE TABLE system_account (
+			CREATE TABLE summa.system_account (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				identifier VARCHAR(100) UNIQUE NOT NULL,
 				name VARCHAR(255) NOT NULL,
@@ -116,7 +117,7 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
 
-			CREATE TABLE transaction_record (
+			CREATE TABLE summa.transaction_record (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				reference VARCHAR(255) UNIQUE NOT NULL,
 				status VARCHAR(20) NOT NULL DEFAULT 'pending',
@@ -139,20 +140,20 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				posted_at TIMESTAMPTZ
 			);
-			CREATE INDEX idx_txn_record_status ON transaction_record(status);
-			CREATE INDEX idx_txn_record_reference ON transaction_record(reference);
-			CREATE INDEX idx_txn_record_source ON transaction_record(source_account_id);
-			CREATE INDEX idx_txn_record_destination ON transaction_record(destination_account_id);
-			CREATE INDEX idx_txn_record_hold_expiry ON transaction_record(hold_expires_at);
-			CREATE INDEX idx_txn_record_parent ON transaction_record(parent_id);
-			CREATE INDEX idx_txn_record_correlation ON transaction_record(correlation_id);
-			CREATE INDEX idx_txn_record_created_at ON transaction_record(created_at);
+			CREATE INDEX idx_txn_record_status ON summa.transaction_record(status);
+			CREATE INDEX idx_txn_record_reference ON summa.transaction_record(reference);
+			CREATE INDEX idx_txn_record_source ON summa.transaction_record(source_account_id);
+			CREATE INDEX idx_txn_record_destination ON summa.transaction_record(destination_account_id);
+			CREATE INDEX idx_txn_record_hold_expiry ON summa.transaction_record(hold_expires_at);
+			CREATE INDEX idx_txn_record_parent ON summa.transaction_record(parent_id);
+			CREATE INDEX idx_txn_record_correlation ON summa.transaction_record(correlation_id);
+			CREATE INDEX idx_txn_record_created_at ON summa.transaction_record(created_at);
 
-			CREATE TABLE entry_record (
+			CREATE TABLE summa.entry_record (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				transaction_id UUID NOT NULL REFERENCES transaction_record(id),
-				account_id UUID REFERENCES account_balance(id),
-				system_account_id UUID REFERENCES system_account(id),
+				transaction_id UUID NOT NULL REFERENCES summa.transaction_record(id),
+				account_id UUID REFERENCES summa.account_balance(id),
+				system_account_id UUID REFERENCES summa.system_account(id),
 				entry_type VARCHAR(10) NOT NULL,
 				amount BIGINT NOT NULL,
 				currency CHAR(3) NOT NULL DEFAULT 'INR',
@@ -162,15 +163,15 @@ export async function createTestSchema(): Promise<void> {
 				account_lock_version INTEGER,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_entry_record_transaction ON entry_record(transaction_id);
-			CREATE INDEX idx_entry_record_account ON entry_record(account_id);
-			CREATE INDEX idx_entry_record_system_account ON entry_record(system_account_id);
-			CREATE INDEX idx_entry_record_version ON entry_record(account_id, account_lock_version);
-			CREATE INDEX idx_entry_record_created_at ON entry_record(created_at);
+			CREATE INDEX idx_entry_record_transaction ON summa.entry_record(transaction_id);
+			CREATE INDEX idx_entry_record_account ON summa.entry_record(account_id);
+			CREATE INDEX idx_entry_record_system_account ON summa.entry_record(system_account_id);
+			CREATE INDEX idx_entry_record_version ON summa.entry_record(account_id, account_lock_version);
+			CREATE INDEX idx_entry_record_created_at ON summa.entry_record(created_at);
 
-			CREATE TABLE outbox (
+			CREATE TABLE summa.outbox (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				event_id UUID REFERENCES ledger_event(id),
+				event_id UUID REFERENCES summa.ledger_event(id),
 				topic VARCHAR(100) NOT NULL,
 				payload JSONB NOT NULL,
 				status VARCHAR(20) NOT NULL DEFAULT 'pending',
@@ -180,12 +181,12 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				processed_at TIMESTAMPTZ
 			);
-			CREATE INDEX idx_outbox_pending ON outbox(status, created_at);
-			CREATE INDEX idx_outbox_cleanup ON outbox(processed_at);
+			CREATE INDEX idx_outbox_pending ON summa.outbox(status, created_at);
+			CREATE INDEX idx_outbox_cleanup ON summa.outbox(processed_at);
 
-			CREATE TABLE dead_letter_queue (
+			CREATE TABLE summa.dead_letter_queue (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				outbox_id UUID REFERENCES outbox(id),
+				outbox_id UUID REFERENCES summa.outbox(id),
 				topic VARCHAR(100) NOT NULL,
 				payload JSONB NOT NULL,
 				error_message TEXT NOT NULL,
@@ -195,9 +196,9 @@ export async function createTestSchema(): Promise<void> {
 				resolved_by VARCHAR(100),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_dlq_status ON dead_letter_queue(status, created_at);
+			CREATE INDEX idx_dlq_status ON summa.dead_letter_queue(status, created_at);
 
-			CREATE TABLE hot_account_entry (
+			CREATE TABLE summa.hot_account_entry (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				sequence_number BIGSERIAL UNIQUE NOT NULL,
 				account_id UUID NOT NULL,
@@ -208,9 +209,9 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				processed_at TIMESTAMPTZ
 			);
-			CREATE INDEX idx_hot_account_pending ON hot_account_entry(status, account_id, sequence_number);
+			CREATE INDEX idx_hot_account_pending ON summa.hot_account_entry(status, account_id, sequence_number);
 
-			CREATE TABLE hot_account_failed_sequence (
+			CREATE TABLE summa.hot_account_failed_sequence (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				account_id UUID NOT NULL,
 				entry_ids JSONB NOT NULL,
@@ -220,27 +221,27 @@ export async function createTestSchema(): Promise<void> {
 				debit_delta BIGINT NOT NULL DEFAULT 0,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_hot_account_failed_account ON hot_account_failed_sequence(account_id);
+			CREATE INDEX idx_hot_account_failed_account ON summa.hot_account_failed_sequence(account_id);
 
-			CREATE TABLE processed_event (
+			CREATE TABLE summa.processed_event (
 				id UUID PRIMARY KEY,
 				topic VARCHAR(100) NOT NULL,
 				payload JSONB,
 				processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_processed_event_cleanup ON processed_event(processed_at);
+			CREATE INDEX idx_processed_event_cleanup ON summa.processed_event(processed_at);
 
-			CREATE TABLE idempotency_key (
+			CREATE TABLE summa.idempotency_key (
 				key VARCHAR(255) PRIMARY KEY,
 				reference VARCHAR(255),
 				result_event_id UUID,
 				result_data JSONB,
 				expires_at TIMESTAMPTZ NOT NULL DEFAULT NOW() + INTERVAL '24 hours'
 			);
-			CREATE INDEX idx_idempotency_reference ON idempotency_key(reference);
-			CREATE INDEX idx_idempotency_expires ON idempotency_key(expires_at);
+			CREATE INDEX idx_idempotency_reference ON summa.idempotency_key(reference);
+			CREATE INDEX idx_idempotency_expires ON summa.idempotency_key(expires_at);
 
-			CREATE TABLE reconciliation_result (
+			CREATE TABLE summa.reconciliation_result (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				run_date VARCHAR(50) UNIQUE NOT NULL,
 				status VARCHAR(20) NOT NULL,
@@ -255,9 +256,9 @@ export async function createTestSchema(): Promise<void> {
 				mismatches JSONB,
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_reconciliation_status ON reconciliation_result(status);
+			CREATE INDEX idx_reconciliation_status ON summa.reconciliation_result(status);
 
-			CREATE TABLE reconciliation_watermark (
+			CREATE TABLE summa.reconciliation_watermark (
 				id INTEGER PRIMARY KEY DEFAULT 1,
 				last_entry_created_at TIMESTAMPTZ,
 				last_run_date DATE,
@@ -265,7 +266,7 @@ export async function createTestSchema(): Promise<void> {
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
 
-			CREATE TABLE account_snapshot (
+			CREATE TABLE summa.account_snapshot (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				account_id UUID NOT NULL,
 				snapshot_date DATE NOT NULL,
@@ -280,11 +281,10 @@ export async function createTestSchema(): Promise<void> {
 				checkpoint_hash VARCHAR(64),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE UNIQUE INDEX uq_account_snapshot_account_date ON account_snapshot(account_id, snapshot_date);
+			CREATE UNIQUE INDEX uq_account_snapshot_account_date ON summa.account_snapshot(account_id, snapshot_date);
 
-			CREATE TABLE scheduled_transaction (
+			CREATE TABLE summa.scheduled_transaction (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				ledger_id UUID NOT NULL,
 				reference VARCHAR(255),
 				amount BIGINT NOT NULL,
 				currency CHAR(3) NOT NULL DEFAULT 'INR',
@@ -299,9 +299,9 @@ export async function createTestSchema(): Promise<void> {
 				retry_count INTEGER NOT NULL DEFAULT 0,
 				last_retry_at TIMESTAMPTZ
 			);
-			CREATE INDEX idx_scheduled_pending ON scheduled_transaction(next_execution_at);
+			CREATE INDEX idx_scheduled_pending ON summa.scheduled_transaction(next_execution_at);
 
-			CREATE TABLE block_checkpoint (
+			CREATE TABLE summa.block_checkpoint (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				block_sequence BIGSERIAL UNIQUE NOT NULL,
 				block_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -313,19 +313,19 @@ export async function createTestSchema(): Promise<void> {
 				prev_block_id UUID,
 				prev_block_hash VARCHAR(64)
 			);
-			CREATE INDEX idx_block_checkpoint_sequence ON block_checkpoint(to_event_sequence);
+			CREATE INDEX idx_block_checkpoint_sequence ON summa.block_checkpoint(to_event_sequence);
 
-			CREATE TABLE worker_lease (
+			CREATE TABLE summa.worker_lease (
 				worker_id VARCHAR(100) PRIMARY KEY,
 				lease_holder VARCHAR(100) NOT NULL,
 				lease_until TIMESTAMPTZ NOT NULL,
 				acquired_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_worker_lease_until ON worker_lease(lease_until);
+			CREATE INDEX idx_worker_lease_until ON summa.worker_lease(lease_until);
 
-			CREATE TABLE account_limit (
+			CREATE TABLE summa.account_limit (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				account_id UUID NOT NULL REFERENCES account_balance(id) ON DELETE CASCADE,
+				account_id UUID NOT NULL REFERENCES summa.account_balance(id) ON DELETE CASCADE,
 				limit_type VARCHAR(20) NOT NULL,
 				max_amount BIGINT NOT NULL,
 				category VARCHAR(50),
@@ -333,12 +333,12 @@ export async function createTestSchema(): Promise<void> {
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 				updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE UNIQUE INDEX uq_account_limit ON account_limit(account_id, limit_type, category);
-			CREATE INDEX idx_account_limit_account ON account_limit(account_id);
+			CREATE UNIQUE INDEX uq_account_limit ON summa.account_limit(account_id, limit_type, category);
+			CREATE INDEX idx_account_limit_account ON summa.account_limit(account_id);
 
-			CREATE TABLE account_transaction_log (
+			CREATE TABLE summa.account_transaction_log (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-				account_id UUID NOT NULL REFERENCES account_balance(id) ON DELETE CASCADE,
+				account_id UUID NOT NULL REFERENCES summa.account_balance(id) ON DELETE CASCADE,
 				ledger_txn_id UUID NOT NULL,
 				txn_type VARCHAR(20) NOT NULL,
 				amount BIGINT NOT NULL,
@@ -346,11 +346,11 @@ export async function createTestSchema(): Promise<void> {
 				reference VARCHAR(255),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_txn_log_account_time ON account_transaction_log(account_id, created_at);
-			CREATE INDEX idx_txn_log_account_category ON account_transaction_log(account_id, category, created_at);
-			CREATE UNIQUE INDEX idx_txn_log_txn_account ON account_transaction_log(ledger_txn_id, account_id);
+			CREATE INDEX idx_txn_log_account_time ON summa.account_transaction_log(account_id, created_at);
+			CREATE INDEX idx_txn_log_account_category ON summa.account_transaction_log(account_id, category, created_at);
+			CREATE UNIQUE INDEX idx_txn_log_txn_account ON summa.account_transaction_log(ledger_txn_id, account_id);
 
-			CREATE TABLE failed_event (
+			CREATE TABLE summa.failed_event (
 				id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 				topic VARCHAR(100) NOT NULL,
 				event_data JSONB NOT NULL,
@@ -362,8 +362,11 @@ export async function createTestSchema(): Promise<void> {
 				resolved_by VARCHAR(100),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 			);
-			CREATE INDEX idx_failed_event_unresolved ON failed_event(resolved, created_at);
+			CREATE INDEX idx_failed_event_unresolved ON summa.failed_event(resolved, created_at);
 		`);
+
+		// Balance updates are now handled at the application level by insertEntryAndUpdateBalance()
+		// No triggers needed — this keeps the ledger DB-agnostic
 	} finally {
 		client.release();
 	}
@@ -374,26 +377,26 @@ export async function cleanupTables(): Promise<void> {
 	try {
 		await client.query(`
 			TRUNCATE TABLE
-				failed_event,
-				account_transaction_log,
-				account_limit,
-				worker_lease,
-				block_checkpoint,
-				scheduled_transaction,
-				account_snapshot,
-				reconciliation_watermark,
-				reconciliation_result,
-				idempotency_key,
-				processed_event,
-				hot_account_failed_sequence,
-				hot_account_entry,
-				dead_letter_queue,
-				outbox,
-				entry_record,
-				transaction_record,
-				system_account,
-				account_balance,
-				ledger_event
+				summa.failed_event,
+				summa.account_transaction_log,
+				summa.account_limit,
+				summa.worker_lease,
+				summa.block_checkpoint,
+				summa.scheduled_transaction,
+				summa.account_snapshot,
+				summa.reconciliation_watermark,
+				summa.reconciliation_result,
+				summa.idempotency_key,
+				summa.processed_event,
+				summa.hot_account_failed_sequence,
+				summa.hot_account_entry,
+				summa.dead_letter_queue,
+				summa.outbox,
+				summa.entry_record,
+				summa.transaction_record,
+				summa.system_account,
+				summa.account_balance,
+				summa.ledger_event
 			CASCADE
 		`);
 	} finally {

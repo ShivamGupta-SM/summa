@@ -15,11 +15,31 @@
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
 
 import type { SummaContext, SummaPlugin } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 import { createBlockCheckpoint, verifyRecentBlocks } from "../infrastructure/hash-chain.js";
 
 // =============================================================================
 // TYPES
 // =============================================================================
+
+export interface ReconciliationOptions {
+	/** Interval for full daily reconciliation. Default: "1d" */
+	reconciliationInterval?: string;
+	/** Interval for lightweight fast reconciliation. Default: "1h" */
+	fastReconciliationInterval?: string;
+	/** Callback invoked after each block checkpoint is created (for external anchoring). */
+	onBlockCheckpoint?: (anchor: BlockCheckpointAnchor) => Promise<void>;
+}
+
+export interface BlockCheckpointAnchor {
+	blockHash: string;
+	merkleRoot: string;
+	blockSequence: number;
+	eventCount: number;
+	fromEventSequence: number;
+	toEventSequence: number;
+	timestamp: string;
+}
 
 interface ReconciliationWatermark {
 	id: number;
@@ -61,14 +81,15 @@ const BATCH_SIZE = 500;
 // PLUGIN FACTORY
 // =============================================================================
 
-export function reconciliation(): SummaPlugin {
+export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 	return {
 		id: "reconciliation",
 
 		init: async (ctx: SummaContext) => {
+			const t = createTableResolver(ctx.options.schema);
 			// Create watermark row if it doesn't exist
 			await ctx.adapter.rawMutate(
-				`INSERT INTO reconciliation_watermark (id, last_entry_created_at, last_run_date, last_mismatches)
+				`INSERT INTO ${t("reconciliation_watermark")} (id, last_entry_created_at, last_run_date, last_mismatches)
 				 VALUES (1, NULL, NULL, 0)
 				 ${ctx.dialect.onConflictDoNothing(["id"])}`,
 				[],
@@ -83,22 +104,51 @@ export function reconciliation(): SummaPlugin {
 				handler: async (ctx: SummaContext) => {
 					await dailyReconciliation(ctx);
 				},
-				interval: "1d",
+				interval: options?.reconciliationInterval ?? "1d",
 				leaseRequired: true,
 			},
 			{
 				id: "block-checkpoint",
-				description: "Create hourly block checkpoint for hash chain integrity",
+				description: "Create block checkpoint for hash chain integrity",
 				handler: async (ctx: SummaContext) => {
 					const result = await createBlockCheckpoint(ctx);
 					if (result) {
 						ctx.logger.info("Block checkpoint created", {
 							blockHash: result.blockHash,
+							merkleRoot: result.merkleRoot,
 							eventCount: result.eventCount,
 						});
+
+						// External anchoring callback
+						if (options?.onBlockCheckpoint) {
+							try {
+								await options.onBlockCheckpoint({
+									blockHash: result.blockHash,
+									merkleRoot: result.merkleRoot,
+									blockSequence: 0, // sequence assigned by DB
+									eventCount: result.eventCount,
+									fromEventSequence: 0,
+									toEventSequence: result.toEventSequence,
+									timestamp: new Date().toISOString(),
+								});
+							} catch (err) {
+								ctx.logger.error("onBlockCheckpoint callback failed", {
+									error: err instanceof Error ? err.message : String(err),
+								});
+							}
+						}
 					}
 				},
 				interval: "1h",
+				leaseRequired: true,
+			},
+			{
+				id: "fast-reconciliation",
+				description: "Lightweight integrity check (double-entry + block chain)",
+				handler: async (ctx: SummaContext) => {
+					await fastReconciliation(ctx);
+				},
+				interval: options?.fastReconciliationInterval ?? "1h",
 				leaseRequired: true,
 			},
 		],
@@ -110,6 +160,7 @@ export function reconciliation(): SummaPlugin {
 // =============================================================================
 
 async function dailyReconciliation(ctx: SummaContext): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	const startMs = Date.now();
 	const runDate = new Date().toISOString();
 	const mismatches: Mismatch[] = [];
@@ -119,7 +170,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	// ---- Fetch watermark ----
 	const watermarkRows = await ctx.adapter.raw<ReconciliationWatermark>(
 		`SELECT id, last_entry_created_at, last_run_date, last_mismatches
-		 FROM reconciliation_watermark
+		 FROM ${t("reconciliation_watermark")}
 		 WHERE id = 1
 		 LIMIT 1`,
 		[],
@@ -138,7 +189,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			e.transaction_id,
 			SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END) AS total_credits,
 			SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END) AS total_debits
-		FROM entry_record e`;
+		FROM ${t("entry_record")} e`;
 
 	const step0Params: unknown[] = [];
 	if (watermarkDate) {
@@ -190,7 +241,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			COALESCE(e.system_account_id::text, '') AS system_account_id,
 			e.entry_type,
 			COUNT(*) AS cnt
-		FROM entry_record e
+		FROM ${t("entry_record")} e
 		WHERE e.is_hot_account = false`;
 
 	const step0bParams: unknown[] = [];
@@ -255,7 +306,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 					PARTITION BY e.account_id
 					ORDER BY e.created_at ASC, e.id ASC
 				) AS prev_lock_version
-			FROM entry_record e
+			FROM ${t("entry_record")} e
 			WHERE e.account_id IS NOT NULL
 			  AND e.account_lock_version IS NOT NULL`;
 
@@ -319,10 +370,15 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			credit_balance: number;
 			debit_balance: number;
 		}>(
-			`SELECT id, holder_id, balance, credit_balance, debit_balance
-			 FROM account_balance
-			 WHERE id > $1
-			 ORDER BY id ASC
+			`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
+			 FROM ${t("account_balance")} a
+			 JOIN LATERAL (
+			   SELECT balance, credit_balance, debit_balance
+			   FROM ${t("account_balance_version")}
+			   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
+			 ) v ON true
+			 WHERE a.id > $1
+			 ORDER BY a.id ASC
 			 LIMIT $2`,
 			[lastAccountId, BATCH_SIZE],
 		);
@@ -343,7 +399,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 				e.account_id,
 				COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
 				COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
-			 FROM entry_record e
+			 FROM ${t("entry_record")} e
 			 WHERE e.account_id = ANY($1::uuid[])
 			   AND e.is_hot_account = false
 			 GROUP BY e.account_id`,
@@ -436,7 +492,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	const systemAccounts = await ctx.adapter.raw<{
 		id: string;
 		identifier: string;
-	}>(`SELECT id, identifier FROM system_account ORDER BY id ASC`, []);
+	}>(`SELECT id, identifier FROM ${t("system_account")} ORDER BY id ASC`, []);
 
 	let step2Checked = 0;
 	let step2Mismatches = 0;
@@ -452,7 +508,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			`SELECT
 				COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
 				COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
-			 FROM entry_record e
+			 FROM ${t("entry_record")} e
 			 WHERE e.system_account_id = $1`,
 			[sysAcct.id],
 		);
@@ -467,7 +523,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			pending_sum: number;
 		}>(
 			`SELECT COALESCE(SUM(amount), 0) AS pending_sum
-			 FROM hot_account_entry
+			 FROM ${t("hot_account_entry")}
 			 WHERE account_id = $1
 			   AND status = 'pending'`,
 			[sysAcct.id],
@@ -487,7 +543,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 			processed_sum: number;
 		}>(
 			`SELECT COALESCE(SUM(amount), 0) AS processed_sum
-			 FROM hot_account_entry
+			 FROM ${t("hot_account_entry")}
 			 WHERE account_id = $1
 			   AND status = 'processed'`,
 			[sysAcct.id],
@@ -573,12 +629,12 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	// Get the latest entry created_at as the new watermark
 	const latestEntryRows = await ctx.adapter.raw<{
 		max_created_at: string | null;
-	}>(`SELECT MAX(created_at)::text AS max_created_at FROM entry_record`, []);
+	}>(`SELECT MAX(created_at)::text AS max_created_at FROM ${t("entry_record")}`, []);
 
 	const newWatermarkDate = latestEntryRows[0]?.max_created_at ?? watermarkDate;
 
 	await ctx.adapter.rawMutate(
-		`UPDATE reconciliation_watermark
+		`UPDATE ${t("reconciliation_watermark")}
 		 SET last_entry_created_at = $1,
 		     last_run_date = $2,
 		     last_mismatches = $3
@@ -594,7 +650,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	const status = mismatches.length === 0 ? "healthy" : "mismatches_found";
 
 	await ctx.adapter.rawMutate(
-		`INSERT INTO reconciliation_result (
+		`INSERT INTO ${t("reconciliation_result")} (
 			run_date,
 			status,
 			total_mismatches,
@@ -649,6 +705,112 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 }
 
 // =============================================================================
+// FAST RECONCILIATION (lightweight, runs hourly)
+// =============================================================================
+// Only runs Step 0 (double-entry balance check) + Step 3 (block chain).
+// Skips expensive Steps 1 & 2 (full account scans).
+
+async function fastReconciliation(ctx: SummaContext): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
+	const startMs = Date.now();
+	const mismatches: Mismatch[] = [];
+
+	ctx.logger.info("Fast reconciliation starting");
+
+	// Step 0: Double-entry balance check (last 2 hours only)
+	const sinceDate = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+
+	const step0Rows = await ctx.adapter.raw<{
+		transaction_id: string;
+		total_credits: number;
+		total_debits: number;
+	}>(
+		`SELECT
+			e.transaction_id,
+			SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END) AS total_credits,
+			SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END) AS total_debits
+		FROM ${t("entry_record")} e
+		WHERE e.created_at > $1
+		GROUP BY e.transaction_id
+		HAVING SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END)
+		    != SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END)`,
+		[sinceDate],
+	);
+
+	for (const row of step0Rows) {
+		mismatches.push({
+			step: "fast_step0_double_entry",
+			detail: {
+				transactionId: row.transaction_id,
+				totalCredits: Number(row.total_credits),
+				totalDebits: Number(row.total_debits),
+			},
+		});
+	}
+
+	// Step 3: Block chain verification (last 2 hours)
+	try {
+		const blockResult = await verifyRecentBlocks(ctx, new Date(Date.now() - 2 * 60 * 60 * 1000));
+		for (const failure of blockResult.failures) {
+			mismatches.push({
+				step: "fast_step3_block_chain",
+				detail: {
+					blockId: failure.blockId,
+					blockSequence: failure.blockSequence,
+					reason: failure.reason,
+				},
+			});
+		}
+	} catch (error) {
+		ctx.logger.error("Fast reconciliation block chain check failed", {
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+
+	const durationMs = Date.now() - startMs;
+
+	// Store result with run_type = "fast"
+	const runDate = new Date().toISOString();
+	const status = mismatches.length === 0 ? "healthy" : "mismatches_found";
+
+	await ctx.adapter.rawMutate(
+		`INSERT INTO ${t("reconciliation_result")} (
+			run_date, run_type, status, total_mismatches,
+			step0_result, step0b_result, step0c_result,
+			step1_result, step2_result, step3_result,
+			duration_ms, mismatches
+		 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		[
+			runDate,
+			"fast",
+			status,
+			mismatches.length,
+			JSON.stringify({ checked: true, imbalancedTransactions: step0Rows.length }),
+			JSON.stringify({ checked: false, skipped: true }),
+			JSON.stringify({ checked: false, skipped: true }),
+			JSON.stringify({ checked: false, skipped: true }),
+			JSON.stringify({ checked: false, skipped: true }),
+			JSON.stringify({ checked: true }),
+			durationMs,
+			JSON.stringify(mismatches),
+		],
+	);
+
+	ctx.logger.info("Fast reconciliation complete", {
+		status,
+		totalMismatches: mismatches.length,
+		durationMs,
+	});
+
+	if (mismatches.length > 0) {
+		ctx.logger.error("Fast reconciliation found mismatches", {
+			count: mismatches.length,
+			mismatches: mismatches.slice(0, 10),
+		});
+	}
+}
+
+// =============================================================================
 // QUERY RECONCILIATION STATUS
 // =============================================================================
 
@@ -663,13 +825,14 @@ export async function getReconciliationStatus(
 	};
 	recentResults: ReconciliationResult[];
 }> {
+	const t = createTableResolver(ctx.options.schema);
 	const limit = Math.min(params?.limit ?? 10, 100);
 	const offset = params?.offset ?? 0;
 
 	// Fetch watermark
 	const watermarkRows = await ctx.adapter.raw<ReconciliationWatermark>(
 		`SELECT id, last_entry_created_at, last_run_date, last_mismatches
-		 FROM reconciliation_watermark
+		 FROM ${t("reconciliation_watermark")}
 		 WHERE id = 1
 		 LIMIT 1`,
 		[],
@@ -695,7 +858,7 @@ export async function getReconciliationStatus(
 			step2_result,
 			step3_result,
 			duration_ms
-		 FROM reconciliation_result
+		 FROM ${t("reconciliation_result")}
 		 ORDER BY run_date DESC
 		 LIMIT $1
 		 OFFSET $2`,

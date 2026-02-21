@@ -23,7 +23,7 @@ const summa = createSumma({
 // Create an account
 const account = await summa.accounts.create({
   holderId: "user_123",
-  holderType: "user",
+  holderType: "individual",
 });
 
 // Post a transaction

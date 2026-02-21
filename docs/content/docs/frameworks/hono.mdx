@@ -1,0 +1,220 @@
+---
+title: Hono
+description: Mount Summa's HTTP API on Hono.
+icon: Hono
+---
+
+## Installation
+
+```bash
+pnpm add summa hono
+```
+
+## Quick Start
+
+```ts
+import { Hono } from "hono";
+import { createSumma } from "summa";
+import { createSummaHono } from "summa/api/hono";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+
+const app = new Hono();
+app.route("/api/ledger", createSummaHono(summa));
+
+export default app;
+```
+
+That's it — all 36+ Summa endpoints are now available under `/api/ledger`.
+
+## How It Works
+
+`createSummaHono()` returns a Hono handler function that:
+
+1. Extracts the path from the URL (stripping `basePath` if set)
+2. Parses the JSON body for non-GET requests
+3. Collects query parameters and headers
+4. Passes everything to Summa's universal `handleRequest()` router
+5. Returns the response via `c.json()`
+
+The adapter is ~50 lines of code — all business logic, validation, security headers, and rate limiting happen inside Summa's core handler.
+
+## Mounting Options
+
+### Using `app.route()` (recommended)
+
+```ts
+// All routes under /api/ledger are handled by Summa
+app.route("/api/ledger", createSummaHono(summa));
+```
+
+### Using `app.all()` with `basePath`
+
+```ts
+// Catch-all route — basePath tells Summa to strip the prefix
+app.all("/api/ledger/*", createSummaHono(summa, { basePath: "/api/ledger" }));
+```
+
+Both approaches work identically. Use `app.route()` for cleaner code.
+
+## Handler Options
+
+All framework integrations share the same options:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `basePath` | `string` | URL prefix to strip before routing (e.g., `"/api/ledger"`) |
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit (e.g., 401). |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+## Authentication
+
+Use the `onRequest` hook to add authentication:
+
+```ts
+const handler = createSummaHono(summa, {
+  onRequest: (req) => {
+    const apiKey = req.headers?.["x-api-key"];
+    if (!apiKey || !isValidApiKey(apiKey)) {
+      return {
+        status: 401,
+        body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+      };
+    }
+    return req; // Continue to route handler
+  },
+});
+```
+
+**Execution order:** `onRequest` → CSRF check → rate limiting → plugin hooks → route handler → plugin hooks (reverse) → `onResponse`
+
+## Rate Limiting
+
+```ts
+import { createSummaHono } from "summa/api/hono";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const handler = createSummaHono(summa, {
+  rateLimiter: createRateLimiter(standardRateLimit),
+  rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+});
+```
+
+| Preset | Limit | Window |
+|--------|:-----:|:------:|
+| `standardRateLimit` | 100 | 60s |
+| `strictRateLimit` | 20 | 60s |
+| `lenientRateLimit` | 500 | 60s |
+| `burstRateLimit` | 10 | 1s |
+
+Rate-limited responses include `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`, and `Retry-After` headers.
+
+## CSRF Protection
+
+```ts
+const handler = createSummaHono(summa, {
+  trustedOrigins: ["https://app.example.com", "https://admin.example.com"],
+});
+```
+
+Mutating requests (`POST`, `PUT`, `PATCH`, `DELETE`) with an `Origin` header not in the list are rejected with `403`. Server-to-server requests without an `Origin` header pass through.
+
+## Body Size Limits
+
+Hono has built-in body size limiting:
+
+```ts
+import { bodyLimit } from "hono/body-limit";
+
+app.use("/api/ledger/*", bodyLimit({ maxSize: 1024 * 1024 })); // 1 MB
+app.route("/api/ledger", createSummaHono(summa));
+```
+
+## Full Production Example
+
+```ts
+import { Hono } from "hono";
+import { createSumma } from "summa";
+import { createSummaHono } from "summa/api/hono";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+// Database
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const db = drizzle(pool);
+const { adapter, close } = createPooledAdapter({ pool, drizzle: db });
+
+// Summa
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Hono app
+const app = new Hono();
+
+app.route(
+  "/api/ledger",
+  createSummaHono(summa, {
+    rateLimiter: createRateLimiter(standardRateLimit),
+    rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+    trustedOrigins: [process.env.APP_ORIGIN!],
+    onRequest: (req) => {
+      const key = req.headers?.["x-api-key"];
+      if (!key) {
+        return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Missing API key" } } };
+      }
+      return req;
+    },
+  }),
+);
+
+// Start workers
+await summa.workers.start();
+
+// Graceful shutdown
+async function shutdown() {
+  await summa.workers.stop();
+  await close();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+
+export default app;
+```
+
+## Swagger UI
+
+Combine with the OpenAPI plugin and `@hono/swagger-ui`:
+
+```ts
+import { swaggerUI } from "@hono/swagger-ui";
+import { openApi } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [openApi({ title: "My Ledger API", version: "1.0.0" })],
+});
+
+app.route("/api/ledger", createSummaHono(summa));
+app.get("/docs", swaggerUI({ url: "/api/ledger/openapi.json" }));
+```

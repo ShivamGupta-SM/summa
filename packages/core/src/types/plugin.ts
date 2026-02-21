@@ -31,13 +31,16 @@ export type SummaPluginId = keyof SummaPluginRegistry;
 
 export type SummaOperation =
 	| { type: "account.create"; params: Record<string, unknown> }
-	| { type: "account.freeze"; params: { accountId: string } }
-	| { type: "account.unfreeze"; params: { accountId: string } }
+	| { type: "account.freeze"; params: Record<string, unknown> }
+	| { type: "account.unfreeze"; params: Record<string, unknown> }
 	| { type: "account.close"; params: Record<string, unknown> }
 	| { type: "transaction.credit"; params: Record<string, unknown> }
 	| { type: "transaction.debit"; params: Record<string, unknown> }
 	| { type: "transaction.transfer"; params: Record<string, unknown> }
 	| { type: "transaction.refund"; params: Record<string, unknown> }
+	| { type: "transaction.correct"; params: Record<string, unknown> }
+	| { type: "transaction.adjust"; params: Record<string, unknown> }
+	| { type: "transaction.journal"; params: Record<string, unknown> }
 	| { type: "hold.create"; params: Record<string, unknown> }
 	| { type: "hold.commit"; params: Record<string, unknown> }
 	| { type: "hold.void"; params: { holdId: string } };
@@ -45,6 +48,7 @@ export type SummaOperation =
 export interface SummaHookContext {
 	operation: SummaOperation;
 	context: SummaContext;
+	requestContext?: import("./context.js").RequestContext;
 }
 
 // =============================================================================
@@ -200,7 +204,7 @@ export interface SummaWorkerDefinition {
 // =============================================================================
 
 export interface TransactionHookParams {
-	type: "credit" | "debit" | "transfer";
+	type: "credit" | "debit" | "transfer" | "correction" | "adjustment" | "journal";
 	amount: number;
 	reference: string;
 	holderId?: string;

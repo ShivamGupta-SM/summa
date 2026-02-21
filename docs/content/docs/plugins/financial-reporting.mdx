@@ -1,0 +1,135 @@
+---
+title: Financial Reporting
+description: Generate trial balance, balance sheet, and income statement reports.
+icon: ChartBar
+---
+
+## Overview
+
+The financial reporting plugin provides read-only endpoints for generating standard financial reports — trial balance, balance sheet, and income statement. It relies on the Chart of Accounts feature (account types) to group accounts into their proper categories.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { financialReporting } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [financialReporting()],
+});
+```
+
+<Callout type="info" title="Requires Chart of Accounts">
+  For meaningful reports, accounts should have `accountType` set (asset, liability, equity, revenue, expense). Accounts without a type are excluded from financial reports.
+</Callout>
+
+## Multi-Currency Consolidation
+
+All report functions support optional multi-currency consolidation. When `convertTo` is provided (or when `functionalCurrency` differs from `currency`), foreign-currency account balances are converted using the provided FX rates:
+
+```ts
+const tb = await getTrialBalance(summa.$context, {
+  asOfDate: "2026-02-28",
+  convertTo: "USD",
+  fxRates: { EUR: 1.09, GBP: 1.27, JPY: 0.0067 },
+});
+```
+
+Each `AccountLineItem` includes:
+- `currency` — the account's native currency
+- `balance` — the balance in native currency
+- `convertedBalance` — the balance converted to the `convertTo` currency (only present for foreign-currency accounts)
+
+When using the HTTP API, pass `fxRates` as a JSON query parameter:
+
+```bash
+curl "http://localhost:3000/api/ledger/reports/trial-balance?asOfDate=2026-02-28&convertTo=USD&fxRates=%7B%22EUR%22%3A1.09%7D"
+```
+
+If `convertTo` is not provided but `functionalCurrency` differs from `currency` in the Summa config, `functionalCurrency` is used as the default consolidation currency.
+
+## Reports
+
+### Trial Balance
+
+Lists all accounts with their debit and credit balances. Verifies that total debits equal total credits.
+
+```ts
+import { getTrialBalance } from "summa/plugins";
+
+const tb = await getTrialBalance(summa.$context, {
+  asOfDate: "2026-02-28",
+});
+
+console.log(tb.totalDebits);   // Sum of all debit balances
+console.log(tb.totalCredits);  // Sum of all credit balances
+console.log(tb.balanced);      // true if debits === credits
+```
+
+**Return type:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `accounts` | `AccountLineItem[]` | All accounts with balances |
+| `totalDebits` | `number` | Sum of all debit balances |
+| `totalCredits` | `number` | Sum of all credit balances |
+| `balanced` | `boolean` | Whether debits equal credits |
+| `asOfDate` | `string` | Report date |
+
+### Balance Sheet
+
+Groups accounts into assets, liabilities, and equity. Verifies the accounting equation: Assets = Liabilities + Equity.
+
+```ts
+import { getBalanceSheet } from "summa/plugins";
+
+const bs = await getBalanceSheet(summa.$context, {
+  asOfDate: "2026-02-28",
+});
+
+console.log(bs.assets.total);      // Total assets
+console.log(bs.liabilities.total); // Total liabilities
+console.log(bs.equity.total);      // Total equity
+console.log(bs.balanced);          // assets === liabilities + equity
+```
+
+### Income Statement
+
+Summarizes revenue and expenses over a date range to compute net income.
+
+```ts
+import { getIncomeStatement } from "summa/plugins";
+
+const is = await getIncomeStatement(summa.$context, {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-01-31",
+});
+
+console.log(is.revenue.total);  // Total revenue
+console.log(is.expenses.total); // Total expenses
+console.log(is.netIncome);      // Revenue - Expenses
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/reports/trial-balance` | Trial balance report |
+| `GET` | `/reports/balance-sheet` | Balance sheet report |
+| `GET` | `/reports/income-statement` | Income statement report |
+
+Query parameters:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `asOfDate` | `string` | Report date (ISO 8601) — used by trial balance and balance sheet |
+| `dateFrom` | `string` | Start date (ISO 8601) — used by income statement |
+| `dateTo` | `string` | End date (ISO 8601) — used by income statement |
+| `convertTo` | `string` | Target currency for consolidation (ISO 4217) |
+| `fxRates` | `string` | JSON object of currency-to-rate mappings (e.g., `{"EUR":1.09}`) |
+
+## Schema
+
+This plugin creates no tables — it performs read-only queries on existing account and entry data.

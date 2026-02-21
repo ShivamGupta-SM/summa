@@ -5,6 +5,7 @@
 // Ported from the original Encore ledger's subscribers/dlq-handler.ts.
 
 import type { PaginatedResult, SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // TYPES
@@ -81,8 +82,9 @@ export function dlqManager(options?: DlqManagerOptions): SummaPlugin {
 				id: "dlq-auto-retry",
 				description: "Automatically retry DLQ entries that haven't exceeded max retries",
 				handler: async (ctx: SummaContext) => {
+					const t = createTableResolver(ctx.options.schema);
 					const retryable = await ctx.adapter.raw<FailedEvent>(
-						`SELECT * FROM dead_letter_queue
+						`SELECT * FROM ${t("dead_letter_queue")}
 						 WHERE resolved_at IS NULL AND retry_count < $1
 						 ORDER BY created_at ASC
 						 LIMIT 50`,
@@ -97,14 +99,14 @@ export function dlqManager(options?: DlqManagerOptions): SummaPlugin {
 						try {
 							// Re-insert into outbox for reprocessing
 							await ctx.adapter.rawMutate(
-								`INSERT INTO outbox (id, topic, payload, status, created_at)
+								`INSERT INTO ${t("outbox")} (id, topic, payload, status, created_at)
 								 VALUES (${ctx.dialect.generateUuid()}, $1, $2, 'pending', ${ctx.dialect.now()})`,
 								[entry.topic, JSON.stringify(entry.payload)],
 							);
 
 							// Increment retry count
 							await ctx.adapter.rawMutate(
-								`UPDATE dead_letter_queue SET retry_count = retry_count + 1 WHERE id = $1`,
+								`UPDATE ${t("dead_letter_queue")} SET retry_count = retry_count + 1 WHERE id = $1`,
 								[entry.id],
 							);
 
@@ -130,23 +132,24 @@ export function dlqManager(options?: DlqManagerOptions): SummaPlugin {
 
 /** Get DLQ statistics */
 export async function getDlqStats(ctx: SummaContext): Promise<DlqStats> {
+	const t = createTableResolver(ctx.options.schema);
 	const [unresolvedRows, resolvedRows, topicRows, oldestRows] = await Promise.all([
 		ctx.adapter.raw<{ cnt: string }>(
-			"SELECT COUNT(*) as cnt FROM dead_letter_queue WHERE resolved_at IS NULL",
+			`SELECT COUNT(*) as cnt FROM ${t("dead_letter_queue")} WHERE resolved_at IS NULL`,
 			[],
 		),
 		ctx.adapter.raw<{ cnt: string }>(
-			"SELECT COUNT(*) as cnt FROM dead_letter_queue WHERE resolved_at IS NOT NULL",
+			`SELECT COUNT(*) as cnt FROM ${t("dead_letter_queue")} WHERE resolved_at IS NOT NULL`,
 			[],
 		),
 		ctx.adapter.raw<{ topic: string; cnt: string }>(
-			`SELECT topic, COUNT(*) as cnt FROM dead_letter_queue
+			`SELECT topic, COUNT(*) as cnt FROM ${t("dead_letter_queue")}
 			 WHERE resolved_at IS NULL
 			 GROUP BY topic ORDER BY cnt DESC`,
 			[],
 		),
 		ctx.adapter.raw<{ created_at: string }>(
-			`SELECT created_at FROM dead_letter_queue
+			`SELECT created_at FROM ${t("dead_letter_queue")}
 			 WHERE resolved_at IS NULL
 			 ORDER BY created_at ASC LIMIT 1`,
 			[],
@@ -171,6 +174,7 @@ export async function listUnresolvedEvents(
 	ctx: SummaContext,
 	params?: { page?: number; perPage?: number; topic?: string },
 ): Promise<PaginatedResult<FailedEvent>> {
+	const t = createTableResolver(ctx.options.schema);
 	const page = params?.page ?? 1;
 	const perPage = params?.perPage ?? 20;
 	const offset = (page - 1) * perPage;
@@ -181,14 +185,14 @@ export async function listUnresolvedEvents(
 
 	const [rows, countRows] = await Promise.all([
 		ctx.adapter.raw<FailedEvent>(
-			`SELECT * FROM dead_letter_queue
+			`SELECT * FROM ${t("dead_letter_queue")}
 			 WHERE resolved_at IS NULL ${topicFilter}
 			 ORDER BY created_at DESC
 			 LIMIT $1 OFFSET $2`,
 			queryParams,
 		),
 		ctx.adapter.raw<{ cnt: string }>(
-			`SELECT COUNT(*) as cnt FROM dead_letter_queue
+			`SELECT COUNT(*) as cnt FROM ${t("dead_letter_queue")}
 			 WHERE resolved_at IS NULL ${topicFilter}`,
 			params?.topic ? [params.topic] : [],
 		),
@@ -205,8 +209,9 @@ export async function listUnresolvedEvents(
 
 /** Manually retry a specific DLQ event */
 export async function retryEvent(ctx: SummaContext, eventId: string): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<FailedEvent>(
-		"SELECT * FROM dead_letter_queue WHERE id = $1 AND resolved_at IS NULL",
+		`SELECT * FROM ${t("dead_letter_queue")} WHERE id = $1 AND resolved_at IS NULL`,
 		[eventId],
 	);
 
@@ -217,13 +222,13 @@ export async function retryEvent(ctx: SummaContext, eventId: string): Promise<vo
 	const entry = rows[0]!;
 
 	await ctx.adapter.rawMutate(
-		`INSERT INTO outbox (id, topic, payload, status, created_at)
+		`INSERT INTO ${t("outbox")} (id, topic, payload, status, created_at)
 		 VALUES (${ctx.dialect.generateUuid()}, $1, $2, 'pending', ${ctx.dialect.now()})`,
 		[entry.topic, JSON.stringify(entry.payload)],
 	);
 
 	await ctx.adapter.rawMutate(
-		"UPDATE dead_letter_queue SET retry_count = retry_count + 1 WHERE id = $1",
+		`UPDATE ${t("dead_letter_queue")} SET retry_count = retry_count + 1 WHERE id = $1`,
 		[eventId],
 	);
 
@@ -235,8 +240,9 @@ export async function resolveEvent(
 	ctx: SummaContext,
 	params: { eventId: string; resolvedBy: string },
 ): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	const updated = await ctx.adapter.rawMutate(
-		`UPDATE dead_letter_queue
+		`UPDATE ${t("dead_letter_queue")}
 		 SET resolved_at = ${ctx.dialect.now()}, resolved_by = $2
 		 WHERE id = $1 AND resolved_at IS NULL`,
 		[params.eventId, params.resolvedBy],

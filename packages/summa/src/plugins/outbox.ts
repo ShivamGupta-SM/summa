@@ -5,6 +5,7 @@
 // handles retries with dead-letter queue, and cleans up old entries.
 
 import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // OPTIONS
@@ -106,12 +107,14 @@ async function processOutboxBatch(
 ): Promise<number> {
 	let processed = 0;
 
+	const t = createTableResolver(ctx.options.schema);
+
 	await ctx.adapter.transaction(async (tx) => {
 		// Select pending outbox entries with row-level locking, skipping already-locked rows
 		const { dialect } = ctx;
 		const rows = await tx.raw<RawOutboxRow>(
 			`SELECT id, topic, payload, retry_count, created_at
-       FROM outbox
+       FROM ${t("outbox")}
        WHERE processed_at IS NULL
          AND retry_count < $1
        ORDER BY created_at ASC
@@ -131,7 +134,7 @@ async function processOutboxBatch(
 			try {
 				// Insert into processed_event for deduplication (idempotent via ON CONFLICT)
 				const insertedRows = await tx.raw<{ id: string }>(
-					`INSERT INTO processed_event (id, topic, payload, processed_at)
+					`INSERT INTO ${t("processed_event")} (id, topic, payload, processed_at)
            VALUES ($1, $2, $3, ${dialect.now()})
            ${dialect.onConflictDoNothing(["id"])}
            ${dialect.returning(["id"])}`,
@@ -142,7 +145,7 @@ async function processOutboxBatch(
 				if (insertedRows.length === 0) {
 					// Mark outbox entry as processed to prevent re-processing
 					await tx.rawMutate(
-						`UPDATE outbox
+						`UPDATE ${t("outbox")}
              SET processed_at = ${dialect.now()}, status = 'processed'
              WHERE id = $1`,
 						[row.id],
@@ -156,7 +159,7 @@ async function processOutboxBatch(
 
 				// Mark outbox entry as processed
 				await tx.rawMutate(
-					`UPDATE outbox
+					`UPDATE ${t("outbox")}
            SET processed_at = NOW(), status = 'processed'
            WHERE id = $1`,
 					[row.id],
@@ -170,13 +173,13 @@ async function processOutboxBatch(
 				if (newRetryCount >= options.maxRetries) {
 					// Max retries exceeded -- move to dead letter queue
 					await tx.raw(
-						`INSERT INTO dead_letter_queue (outbox_id, topic, payload, error_message, retry_count)
+						`INSERT INTO ${t("dead_letter_queue")} (outbox_id, topic, payload, error_message, retry_count)
              VALUES ($1, $2, $3, $4, $5)`,
 						[row.id, row.topic, JSON.stringify(payload), errorMessage, newRetryCount],
 					);
 
 					await tx.rawMutate(
-						`UPDATE outbox
+						`UPDATE ${t("outbox")}
              SET retry_count = $1, status = 'failed', last_error = $2
              WHERE id = $3`,
 						[newRetryCount, errorMessage, row.id],
@@ -191,7 +194,7 @@ async function processOutboxBatch(
 				} else {
 					// Increment retry count for next attempt
 					await tx.rawMutate(
-						`UPDATE outbox
+						`UPDATE ${t("outbox")}
              SET retry_count = $1, last_error = $2
              WHERE id = $3`,
 						[newRetryCount, errorMessage, row.id],
@@ -210,8 +213,9 @@ async function processOutboxBatch(
 
 async function cleanupProcessedOutbox(ctx: SummaContext, retentionHours: number): Promise<number> {
 	const { dialect } = ctx;
+	const t = createTableResolver(ctx.options.schema);
 	const deleted = await ctx.adapter.rawMutate(
-		`DELETE FROM outbox
+		`DELETE FROM ${t("outbox")}
      WHERE processed_at IS NOT NULL
        AND status = 'processed'
        AND processed_at < ${dialect.now()} - ${dialect.interval("1 hour")} * $1`,
@@ -226,6 +230,7 @@ async function cleanupProcessedOutbox(ctx: SummaContext, retentionHours: number)
 // =============================================================================
 
 export async function getOutboxStats(ctx: SummaContext): Promise<OutboxStats> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		status: string;
 		count: number;
@@ -237,7 +242,7 @@ export async function getOutboxStats(ctx: SummaContext): Promise<OutboxStats> {
          ELSE 'failed'
        END AS status,
        ${ctx.dialect.countAsInt()} AS count
-     FROM outbox
+     FROM ${t("outbox")}
      GROUP BY 1`,
 		[],
 	);

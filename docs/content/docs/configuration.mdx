@@ -14,6 +14,8 @@ import { createSumma } from "summa";
 const summa = createSumma({
   database: adapter,          // Required — database adapter
   currency: "USD",            // Default currency (ISO 4217)
+  functionalCurrency: "USD",  // Reporting consolidation currency
+  schema: "summa",            // PostgreSQL schema (default: "summa")
   systemAccounts: { ... },    // System account definitions
   plugins: [ ... ],           // Plugin instances
   advanced: { ... },          // Performance and safety tuning
@@ -22,7 +24,9 @@ const summa = createSumma({
 });
 ```
 
-## `database` (required)
+## Core Options
+
+### `database` (required)
 
 The database adapter instance. Summa supports four adapters:
 
@@ -41,7 +45,7 @@ database: () => drizzleAdapter(drizzle(process.env.DATABASE_URL!))
 
 See [Adapters](/docs/adapters/drizzle) for adapter-specific setup.
 
-## `currency`
+### `currency`
 
 Default ISO 4217 currency code. Defaults to `"USD"`. This is used when creating accounts without an explicit currency.
 
@@ -53,7 +57,41 @@ currency: "JPY"  // Japanese Yen — amounts in yen (no subdivision)
 
 All amounts throughout Summa are in the **smallest currency unit** (cents, paise, etc.).
 
-## `systemAccounts`
+### `functionalCurrency`
+
+The currency used for consolidated financial reporting. Defaults to the value of `currency`. This is relevant when you have accounts in multiple currencies and need to generate unified reports (e.g., trial balance, balance sheet) in a single currency.
+
+```ts
+functionalCurrency: "USD"  // All reports consolidate to USD
+```
+
+<Callout type="info" title="Multi-currency support">
+  Summa supports creating accounts in any of 50+ ISO 4217 currencies. Cross-currency transfers are supported — rates are auto-resolved when the [FX Engine plugin](/docs/plugins/fx-engine) is registered, or can be provided manually. See [Transactions — Cross-Currency Transfers](/docs/transactions#cross-currency-transfers) for details.
+</Callout>
+
+### `schema`
+
+PostgreSQL schema namespace for all Summa tables. Defaults to `"summa"`, which keeps all ledger tables isolated from your application's `public` schema.
+
+```ts
+schema: "summa"   // Default — tables in "summa"."account_balance", etc.
+schema: "ledger"  // Custom — tables in "ledger"."account_balance", etc.
+schema: "public"  // All tables in the public schema (not recommended)
+```
+
+All table references are automatically qualified at runtime (e.g., `"summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
+
+<Callout type="info" title="Schema naming">
+  The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"summa"`, `"ledger"`, `"fin_data"`.
+</Callout>
+
+<Callout type="warn" title="Changing the schema after deployment">
+  If you change the schema name on an existing deployment, you must migrate the tables manually. Summa does not automatically move tables between schemas.
+</Callout>
+
+## Extensibility
+
+### `systemAccounts`
 
 System accounts represent your platform's internal accounts. They are created automatically on startup and used as the counterparty for credits and debits.
 
@@ -85,24 +123,35 @@ await summa.transactions.credit({
 });
 ```
 
-## `plugins`
+### `plugins`
 
 Array of plugin instances. Plugins extend Summa with additional functionality through lifecycle hooks and background workers.
 
 ```ts
 import {
+  accrualAccounting,
+  admin,
+  approvalWorkflow,
   auditLog,
-  reconciliation,
-  snapshots,
-  velocityLimits,
-  holdExpiry,
-  outbox,
+  batchImport,
+  dataRetention,
   dlqManager,
+  financialReporting,
+  fxEngine,
+  glSubLedger,
+  holdExpiry,
   hotAccounts,
-  scheduledTransactions,
   maintenance,
   observability,
+  openApi,
+  outbox,
+  periodClose,
+  reconciliation,
+  scheduledTransactions,
+  snapshots,
   statements,
+  velocityLimits,
+  versionRetention,
 } from "summa/plugins";
 
 plugins: [
@@ -116,14 +165,28 @@ plugins: [
   hotAccounts(),
   scheduledTransactions(),
   maintenance(),
+  dataRetention({ idempotencyKeys: "24h", auditLogs: "7y" }),
+  openApi({ title: "My Ledger API" }),
   observability(),
   statements(),
+  periodClose(),
+  financialReporting(),
+  fxEngine({ rateProvider: myRateProvider }),
+  glSubLedger(),
+  approvalWorkflow({ rules: [] }),
+  batchImport(),
+  accrualAccounting(),
+  versionRetention({ retainVersions: 100, retainDays: 90 }),
 ]
 ```
 
+Plugins are automatically sorted by their declared dependencies using topological sort — you can list them in any order. If a plugin declares a dependency that isn't registered, or if there's a circular dependency, `createSumma()` throws immediately.
+
 See [Plugins](/docs/plugins) for details on each plugin.
 
-## `advanced`
+## Advanced Tuning
+
+### `advanced`
 
 Performance and safety tuning options:
 
@@ -134,7 +197,13 @@ advanced: {
   transactionTimeoutMs: 5000,      // Database transaction timeout
   lockTimeoutMs: 3000,             // Advisory lock acquisition timeout
   maxTransactionAmount: 1_000_000_000_00,  // $10M max per transaction
-  enableEventSourcing: true,       // Enable/disable event log
+  hmacSecret: process.env.SUMMA_HMAC_SECRET,  // HMAC secret for tamper-proof hashes
+  verifyHashOnRead: true,          // Verify integrity on every read
+  useDenormalizedBalance: true,    // O(1) balance reads (requires migrate push)
+  lockRetryCount: 3,               // Retry on lock contention
+  lockRetryBaseDelayMs: 50,        // Exponential backoff base delay
+  lockRetryMaxDelayMs: 500,        // Max backoff delay
+  lockMode: "nowait",              // Fail-fast + retry for contested accounts
 }
 ```
 
@@ -145,11 +214,22 @@ advanced: {
 | `transactionTimeoutMs` | `number` | `5000` | Maximum time for a database transaction |
 | `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
 | `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
-| `enableEventSourcing` | `boolean` | `true` | Write events to the event log |
-| `enableHashChain` | `boolean` | `true` | SHA-256 hash chain for tamper detection |
+| `enableEventSourcing` | `boolean` | `true` | Forward-compatibility flag (see note below) |
+| `enableHashChain` | `boolean` | `true` | Forward-compatibility flag (see note below) |
+| `hmacSecret` | `string \| null` | `null` | HMAC secret for tamper-proof hash chains and balance checksums |
+| `verifyHashOnRead` | `boolean` | `true` | Verify hash chain integrity on every read operation |
+| `useDenormalizedBalance` | `boolean` | `false` | Store cached balance on `account_balance` for O(1) reads. See [Scaling — Denormalized Balance](/docs/scaling#denormalized-balance-cache) |
+| `lockRetryCount` | `number` | `0` | Number of retry attempts on lock timeout or serialization failure |
+| `lockRetryBaseDelayMs` | `number` | `50` | Base delay in ms between lock retries (exponential backoff with jitter) |
+| `lockRetryMaxDelayMs` | `number` | `500` | Maximum delay in ms between lock retries |
+| `lockMode` | `"wait" \| "nowait"` | `"wait"` | Lock acquisition mode. `"nowait"` fails immediately if locked, triggering retry |
 
-<Callout type="warn" title="Hash chain is always enabled">
-  The SHA-256 hash chain is critical for tamper detection and is always enabled when event sourcing is on. It cannot be disabled independently.
+<Callout type="warn" title="enableEventSourcing and enableHashChain are no-ops">
+  These flags exist for forward compatibility only. The event sourcing and hash chain code paths are **unconditional** — setting these to `false` has no effect. Do not rely on them to disable functionality. They may become functional in a future version.
+</Callout>
+
+<Callout type="warn" title="Configure hmacSecret in production">
+  Without `hmacSecret`, hash chains use plain SHA-256 — an attacker with database access could recompute valid hashes. Set `advanced.hmacSecret` to a strong random string for tamper-proof integrity. Summa logs a warning at startup if this is not configured.
 </Callout>
 
 ### Configuration Validation
@@ -157,15 +237,30 @@ advanced: {
 `createSumma()` validates your configuration at startup:
 
 - **Currency** must be a valid ISO 4217 code (50+ supported currencies)
+- **Schema** must contain only alphanumeric characters and underscores, starting with a letter or underscore
 - **System account identifiers** must start with `@`
 - **Numeric options** (`transactionTimeoutMs`, `lockTimeoutMs`, etc.) must be positive finite numbers
 - **Database adapter** is required
 
 Invalid configuration throws `SummaError` with code `INVALID_ARGUMENT` immediately, not at first use.
 
-## `logger`
+### Startup Warnings
 
-Custom logger implementation. Defaults to `console`. Must implement:
+Even with valid configuration, Summa logs warnings at startup for common production oversights:
+
+| Condition | Warning |
+|-----------|---------|
+| `audit-log` plugin not registered | *"For financial-grade deployments, audit logging is strongly recommended."* |
+| `reconciliation` plugin not registered | *"For financial-grade deployments, periodic reconciliation is strongly recommended."* |
+| `advanced.hmacSecret` not set | *"Without HMAC, hash chains use plain SHA-256 and an attacker with DB access can recompute valid hashes."* |
+
+These are warnings only — Summa will still start. But in production, all three should be addressed.
+
+## Logging & Storage
+
+### `logger`
+
+Custom logger implementation. Defaults to `createConsoleLogger()` — a formatted, colored, PII-redacting console logger (not raw `console`). Must implement:
 
 ```ts
 interface SummaLogger {
@@ -176,7 +271,7 @@ interface SummaLogger {
 }
 ```
 
-### Built-in JSON Logger
+#### Built-in JSON Logger
 
 Summa ships with a structured JSON logger for production environments:
 
@@ -199,8 +294,51 @@ Each log line is emitted as single-line JSON, suitable for log aggregation (ELK,
 |--------|------|---------|-------------|
 | `level` | `"debug" \| "info" \| "warn" \| "error"` | `"info"` | Minimum log level to emit |
 | `service` | `string` | `"summa"` | Service name in structured output |
+| `redactKeys` | `string[]` | See below | Keys to redact from log data |
 
-### Custom Logger (Pino example)
+#### PII Redaction
+
+Both the console and JSON loggers support automatic PII redaction. Any matching key in log data is replaced with `"[REDACTED]"`.
+
+**Default redacted keys:** `email`, `phone`, `ssn`, `password`, `token`, `secret`
+
+```ts
+// Use defaults — redacts email, phone, ssn, password, token, secret
+const logger = createJsonLogger({ level: "info" });
+
+// Add custom keys to the default set
+const logger = createJsonLogger({
+  level: "info",
+  redactKeys: ["creditCard", "bankAccount", "taxId"],
+});
+```
+
+```ts
+logger.info("User created", { name: "Alice", email: "alice@example.com" });
+// Output: { ..., "data": { "name": "Alice", "email": "[REDACTED]" } }
+```
+
+The same `redactKeys` option is available on `createConsoleLogger()`:
+
+```ts
+import { createConsoleLogger } from "@summa/core/logger";
+
+const logger = createConsoleLogger({
+  level: "info",
+  prefix: "Ledger",       // Prefix before each message (default: "Summa")
+  timestamps: true,        // Include ISO timestamps (default: true)
+  redactKeys: ["ssn"],
+});
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `level` | `"debug" \| "info" \| "warn" \| "error"` | `"info"` | Minimum log level |
+| `prefix` | `string` | `"Summa"` | Prefix shown before each log message |
+| `timestamps` | `boolean` | `true` | Include ISO timestamps in output |
+| `redactKeys` | `string[]` | See above | Keys to redact from log data |
+
+#### Custom Logger (Pino example)
 
 ```ts
 import pino from "pino";
@@ -218,11 +356,11 @@ const summa = createSumma({
 });
 ```
 
-## `secondaryStorage`
+### `secondaryStorage`
 
 Optional key-value store for rate limiting, idempotency caching, and distributed state. **Recommended for multi-instance deployments** — without it, rate limiting is per-process only.
 
-### Using `@summa/redis-storage` (Recommended)
+#### Using `@summa/redis-storage` (Recommended)
 
 The `@summa/redis-storage` package provides a production-ready `SecondaryStorage` implementation:
 
@@ -252,7 +390,7 @@ const healthy = await ping(); // true if Redis is reachable
 await disconnect();
 ```
 
-### Custom Implementation
+#### Custom Implementation
 
 You can also implement the `SecondaryStorage` interface directly:
 
@@ -299,6 +437,6 @@ export default defineSummaConfig({
 });
 ```
 
-The `defineSummaConfig` helper is a no-op identity function that provides TypeScript autocompletion. You can also export a `summa` named export or a `createSumma()` instance directly.
+The `defineSummaConfig` helper provides TypeScript autocompletion **and** validates your configuration at define-time — invalid options (bad currency, malformed schema name, etc.) throw immediately rather than at runtime. You can also export a `summa` named export or a `createSumma()` instance directly.
 
 See [CLI Reference](/docs/cli#config-file-discovery) for the full config discovery path.

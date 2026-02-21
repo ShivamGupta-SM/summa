@@ -7,9 +7,11 @@ import type {
 	AccountBalance,
 	AccountLimitInfo,
 	AccountStatus,
+	AccountType,
 	Hold,
 	HoldDestination,
 	HolderType,
+	JournalEntryLeg,
 	LedgerTransaction,
 	LimitType,
 	StoredEvent,
@@ -40,7 +42,7 @@ export interface SummaClient {
 
 		freeze(params: { holderId: string; reason: string; frozenBy: string }): Promise<Account>;
 
-		unfreeze(params: { holderId: string; unfrozenBy: string }): Promise<Account>;
+		unfreeze(params: { holderId: string; unfrozenBy: string; reason?: string }): Promise<Account>;
 
 		close(params: {
 			holderId: string;
@@ -56,6 +58,19 @@ export interface SummaClient {
 			holderType?: HolderType;
 			search?: string;
 		}): Promise<{ accounts: Account[]; hasMore: boolean; total: number }>;
+	};
+
+	chartOfAccounts: {
+		getByType(accountType: AccountType): Promise<Account[]>;
+		getChildren(parentAccountId: string): Promise<Account[]>;
+		getHierarchy(rootAccountId?: string): Promise<unknown[]>;
+		validateEquation(): Promise<{
+			balanced: boolean;
+			assets: number;
+			liabilities: number;
+			equity: number;
+			difference: number;
+		}>;
 	};
 
 	transactions: {
@@ -90,6 +105,7 @@ export interface SummaClient {
 			description?: string;
 			category?: string;
 			metadata?: Record<string, unknown>;
+			exchangeRate?: number;
 			idempotencyKey?: string;
 		}): Promise<LedgerTransaction>;
 
@@ -108,6 +124,31 @@ export interface SummaClient {
 			transactionId: string;
 			reason: string;
 			amount?: number;
+			idempotencyKey?: string;
+		}): Promise<LedgerTransaction>;
+
+		correct(params: {
+			transactionId: string;
+			correctionEntries: JournalEntryLeg[];
+			reason: string;
+			reference?: string;
+			idempotencyKey?: string;
+		}): Promise<{ reversal: LedgerTransaction; correction: LedgerTransaction }>;
+
+		adjust(params: {
+			entries: JournalEntryLeg[];
+			reference: string;
+			adjustmentType: "accrual" | "depreciation" | "correction" | "reclassification";
+			description?: string;
+			metadata?: Record<string, unknown>;
+			idempotencyKey?: string;
+		}): Promise<LedgerTransaction>;
+
+		journal(params: {
+			entries: JournalEntryLeg[];
+			reference: string;
+			description?: string;
+			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
 		}): Promise<LedgerTransaction>;
 
@@ -164,6 +205,18 @@ export interface SummaClient {
 			perPage?: number;
 			category?: string;
 		}): Promise<{ holds: Hold[]; hasMore: boolean; total?: number }>;
+
+		createMultiDestination(params: {
+			holderId: string;
+			amount: number;
+			reference: string;
+			destinations: HoldDestination[];
+			description?: string;
+			category?: string;
+			expiresInMinutes?: number;
+			metadata?: Record<string, unknown>;
+			idempotencyKey?: string;
+		}): Promise<Hold>;
 
 		listAll(params: {
 			holderId: string;
@@ -234,18 +287,31 @@ export function createSummaClient(options: SummaClientOptions): SummaClient {
 			list: (params) => http.get("/accounts", toQuery(params ?? {})),
 		},
 
+		chartOfAccounts: {
+			getByType: (accountType) => http.get("/chart-of-accounts/by-type", { accountType }),
+			getChildren: (parentAccountId) =>
+				http.get(`/chart-of-accounts/${e(parentAccountId)}/children`),
+			getHierarchy: (rootAccountId) =>
+				http.get("/chart-of-accounts/hierarchy", rootAccountId ? { rootAccountId } : {}),
+			validateEquation: () => http.get("/chart-of-accounts/validate"),
+		},
+
 		transactions: {
 			credit: (params) => http.post("/transactions/credit", params),
 			debit: (params) => http.post("/transactions/debit", params),
 			transfer: (params) => http.post("/transactions/transfer", params),
 			multiTransfer: (params) => http.post("/transactions/multi-transfer", params),
 			refund: (params) => http.post("/transactions/refund", params),
+			correct: (params) => http.post("/transactions/correct", params),
+			adjust: (params) => http.post("/transactions/adjust", params),
+			journal: (params) => http.post("/transactions/journal", params),
 			get: (id) => http.get(`/transactions/${e(id)}`),
 			list: ({ holderId, ...rest }) => http.get("/transactions", toQuery({ holderId, ...rest })),
 		},
 
 		holds: {
 			create: (params) => http.post("/holds", params),
+			createMultiDestination: (params) => http.post("/holds/multi-destination", params),
 			commit: ({ holdId, ...body }) => http.post(`/holds/${e(holdId)}/commit`, body),
 			void: ({ holdId, ...body }) => http.post(`/holds/${e(holdId)}/void`, body),
 			get: (id) => http.get(`/holds/${e(id)}`),

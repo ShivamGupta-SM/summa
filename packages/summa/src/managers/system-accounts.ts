@@ -5,6 +5,7 @@
 // System accounts are platform-owned sinks/sources (prefixed with @).
 
 import type { SummaContext } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // INITIALIZE
@@ -16,6 +17,7 @@ import type { SummaContext } from "@summa/core";
  */
 export async function initializeSystemAccounts(ctx: SummaContext): Promise<void> {
 	const { adapter, options, logger, dialect } = ctx;
+	const t = createTableResolver(ctx.options.schema);
 
 	const systemAccounts = options.systemAccounts;
 	const entries = Object.entries(systemAccounts);
@@ -23,7 +25,7 @@ export async function initializeSystemAccounts(ctx: SummaContext): Promise<void>
 	for (const [key, identifier] of entries) {
 		// Use ON CONFLICT to handle concurrent replicas racing to create the same account
 		const rows = await adapter.raw<{ id: string }>(
-			`INSERT INTO system_account (identifier, name, allow_overdraft, currency)
+			`INSERT INTO ${t("system_account")} (identifier, name, allow_overdraft, currency)
        VALUES ($1, $2, $3, $4)
        ${dialect.onConflictDoNothing(["identifier"])}
        ${dialect.returning(["id"])}`,
@@ -55,6 +57,7 @@ export async function getSystemAccount(
 	allowOverdraft: boolean;
 	currency: string;
 } | null> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
 		id: string;
 		identifier: string;
@@ -63,7 +66,7 @@ export async function getSystemAccount(
 		currency: string;
 	}>(
 		`SELECT id, identifier, name, allow_overdraft, currency
-     FROM system_account
+     FROM ${t("system_account")}
      WHERE identifier = $1
      LIMIT 1`,
 		[identifier],

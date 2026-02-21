@@ -1,20 +1,100 @@
 // =============================================================================
-// HOLD MANAGER -- Inflight transaction lifecycle
+// HOLD MANAGER -- Inflight transaction lifecycle (APPEND-ONLY)
 // =============================================================================
 // Holds reserve funds (pending_debit) until committed, voided, or expired.
-// Uses FOR UPDATE to prevent race conditions with expiry cron.
+//
+// After the immutability refactor:
+// - account_balance is IMMUTABLE, state lives in account_balance_version (append-only)
+// - transaction_record is IMMUTABLE, status lives in transaction_status (append-only)
+// - All balance changes INSERT new version rows
+// - All status changes INSERT new transaction_status rows
 
 import { randomUUID } from "node:crypto";
 import type { Hold, HoldDestination, HoldStatus, SummaContext } from "@summa/core";
-import { AGGREGATE_TYPES, HOLD_EVENTS, minorToDecimal, SummaError } from "@summa/core";
-import { runAfterHoldCommitHooks, runBeforeHoldCreateHooks } from "../context/hooks.js";
+import {
+	AGGREGATE_TYPES,
+	computeBalanceChecksum,
+	HOLD_EVENTS,
+	minorToDecimal,
+	SummaError,
+} from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
+import {
+	runAfterHoldCommitHooks,
+	runAfterOperationHooks,
+	runBeforeHoldCreateHooks,
+} from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { getAccountByHolder, resolveAccountForUpdate } from "./account-manager.js";
-import { checkIdempotencyKeyInTx, saveIdempotencyKeyInTx } from "./idempotency.js";
+import { insertEntryAndUpdateBalance } from "./entry-balance.js";
+import {
+	checkIdempotencyKeyInTx,
+	isValidCachedResult,
+	saveIdempotencyKeyInTx,
+} from "./idempotency.js";
 import { enforceLimitsWithAccountId } from "./limit-manager.js";
 import { creditMultiDestinations } from "./multi-dest-credit.js";
-import type { RawBalanceUpdateRow, RawHoldSummaryRow, RawTransactionRow } from "./raw-types.js";
+import type { LatestVersion, RawHoldSummaryRow, RawTransactionRow } from "./raw-types.js";
+import { readLatestVersion, txnWithStatusSql } from "./sql-helpers.js";
 import { getSystemAccount } from "./system-accounts.js";
+
+/**
+ * Insert a new account_balance_version row with updated pending_debit.
+ * Used by hold create/commit/void/expire operations.
+ */
+async function insertPendingDebitVersion(
+	tx: { raw: <T>(sql: string, params: unknown[]) => Promise<T[]> },
+	t: (name: string) => string,
+	accountId: string,
+	current: LatestVersion,
+	pendingDebitDelta: number,
+	changeType: string,
+	hmacSecret: string | null | undefined,
+	causedByTransactionId?: string,
+): Promise<void> {
+	const newPendingDebit = Number(current.pending_debit) + pendingDebitDelta;
+	const newVersion = Number(current.version) + 1;
+	const checksum = computeBalanceChecksum(
+		{
+			balance: Number(current.balance),
+			creditBalance: Number(current.credit_balance),
+			debitBalance: Number(current.debit_balance),
+			pendingDebit: newPendingDebit,
+			pendingCredit: Number(current.pending_credit),
+			lockVersion: newVersion,
+		},
+		hmacSecret,
+	);
+
+	await tx.raw(
+		`INSERT INTO ${t("account_balance_version")} (
+       account_id, version, balance, credit_balance, debit_balance,
+       pending_credit, pending_debit, status, checksum,
+       freeze_reason, frozen_at, frozen_by,
+       closed_at, closed_by, closure_reason,
+       change_type, caused_by_transaction_id
+     ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
+		[
+			accountId,
+			newVersion,
+			Number(current.balance),
+			Number(current.credit_balance),
+			Number(current.debit_balance),
+			Number(current.pending_credit),
+			newPendingDebit,
+			current.status,
+			checksum,
+			current.freeze_reason,
+			current.frozen_at,
+			current.frozen_by,
+			current.closed_at,
+			current.closed_by,
+			current.closure_reason,
+			changeType,
+			causedByTransactionId ?? null,
+		],
+	);
+}
 
 // =============================================================================
 // CREATE HOLD
@@ -57,24 +137,32 @@ export async function createHold(
 
 	await runBeforeHoldCreateHooks(ctx, { holderId, amount, reference, ctx });
 
-	return await withTransactionTimeout(ctx, async (tx) => {
+	const result = await withTransactionTimeout(ctx, async (tx) => {
+		const t = createTableResolver(ctx.options.schema);
+
 		// Idempotency check INSIDE transaction
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
-		if (idem.alreadyProcessed) {
+		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as Hold;
 		}
 
 		// Get source account (FOR UPDATE to prevent stale balance reads)
-		const src = await resolveAccountForUpdate(tx, holderId);
+		const src = await resolveAccountForUpdate(
+			tx,
+			holderId,
+			ctx.options.schema,
+			ctx.options.advanced.lockMode,
+			ctx.options.advanced.useDenormalizedBalance,
+		);
 		if (src.status !== "active") {
 			throw SummaError.conflict(`Account is ${src.status}`);
 		}
 
 		// Limit enforcement inside tx
-		await enforceLimitsWithAccountId(ctx, {
+		await enforceLimitsWithAccountId(tx, {
 			accountId: src.id,
 			holderId,
 			amount,
@@ -116,14 +204,14 @@ export async function createHold(
 			expiresInMinutes !== undefined ? new Date(Date.now() + expiresInMinutes * 60 * 1000) : null;
 		const correlationId = randomUUID();
 
-		// Create hold transaction
+		// Create hold transaction record (IMMUTABLE — no status field)
 		const holdRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO transaction_record (reference, status, amount, currency, description, source_account_id, destination_account_id, destination_system_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, destination_system_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING *`,
 			[
+				"debit",
 				reference,
-				"inflight",
 				amount,
 				src.currency,
 				description,
@@ -136,36 +224,52 @@ export async function createHold(
 				JSON.stringify({ ...metadata, category, holderId, holderType: src.holder_type }),
 			],
 		);
-		const holdRecord = holdRecordRows[0]!;
+		const holdRecord = holdRecordRows[0];
+		if (!holdRecord) throw SummaError.internal("Failed to insert hold record");
 
-		// Reserve funds (increase pending_debit)
+		// INSERT initial transaction_status (APPEND-ONLY)
 		await tx.raw(
-			`UPDATE account_balance
-       SET pending_debit = pending_debit + $1,
-           lock_version = lock_version + 1,
-           updated_at = NOW()
-       WHERE id = $2`,
-			[amount, src.id],
+			`INSERT INTO ${t("transaction_status")} (transaction_id, status)
+       VALUES ($1, $2)`,
+			[holdRecord.id, "inflight"],
+		);
+
+		// Reserve funds: INSERT new account_balance_version with increased pending_debit
+		const currentVersion = await readLatestVersion(tx, t, src.id);
+		await insertPendingDebitVersion(
+			tx,
+			t,
+			src.id,
+			currentVersion,
+			amount,
+			"hold_create",
+			ctx.options.advanced.hmacSecret,
+			holdRecord.id,
 		);
 
 		// Event store
-		await appendEvent(tx, {
-			aggregateType: AGGREGATE_TYPES.HOLD,
-			aggregateId: holdRecord.id,
-			eventType: HOLD_EVENTS.CREATED,
-			eventData: {
-				sourceAccountId: src.id,
-				destinationAccountId: destAccountId,
-				destinationSystemAccountId: destSystemAccountId,
-				amount,
-				expiresAt: holdExpiresAt?.toISOString() ?? null,
-				reference,
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.HOLD,
+				aggregateId: holdRecord.id,
+				eventType: HOLD_EVENTS.CREATED,
+				eventData: {
+					sourceAccountId: src.id,
+					destinationAccountId: destAccountId,
+					destinationSystemAccountId: destSystemAccountId,
+					amount,
+					expiresAt: holdExpiresAt?.toISOString() ?? null,
+					reference,
+				},
+				correlationId,
 			},
-			correlationId,
-		});
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+		);
 
 		// Outbox
-		await tx.raw(`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`, [
+		await tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
 			"ledger-hold-created",
 			JSON.stringify({
 				holdId: holdRecord.id,
@@ -179,7 +283,8 @@ export async function createHold(
 			}),
 		]);
 
-		const response = rawToHoldResponse(holdRecord, src.currency);
+		// Build response — inject status from what we just inserted
+		const response = rawToHoldResponse({ ...holdRecord, status: "inflight" }, src.currency);
 
 		// Save idempotency key inside transaction for atomicity
 		if (params.idempotencyKey) {
@@ -187,11 +292,18 @@ export async function createHold(
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,
+				ttlMs: ctx.options.advanced.idempotencyTTL,
 			});
 		}
 
 		return response;
 	});
+
+	await runAfterOperationHooks(ctx, {
+		type: "hold.create",
+		params: { holderId, amount, reference },
+	});
+	return result;
 }
 
 // =============================================================================
@@ -246,22 +358,30 @@ export async function createMultiDestinationHold(
 	}
 
 	return await withTransactionTimeout(ctx, async (tx) => {
+		const t = createTableResolver(ctx.options.schema);
+
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
-		if (idem.alreadyProcessed) {
+		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as Hold;
 		}
 
 		// Get source account (FOR UPDATE)
-		const src = await resolveAccountForUpdate(tx, holderId);
+		const src = await resolveAccountForUpdate(
+			tx,
+			holderId,
+			ctx.options.schema,
+			ctx.options.advanced.lockMode,
+			ctx.options.advanced.useDenormalizedBalance,
+		);
 		if (src.status !== "active") {
 			throw SummaError.conflict(`Account is ${src.status}`);
 		}
 
 		// Limit enforcement inside tx
-		await enforceLimitsWithAccountId(ctx, {
+		await enforceLimitsWithAccountId(tx, {
 			accountId: src.id,
 			holderId,
 			amount,
@@ -281,14 +401,14 @@ export async function createMultiDestinationHold(
 			expiresInMinutes !== undefined ? new Date(Date.now() + expiresInMinutes * 60 * 1000) : null;
 		const correlationId = randomUUID();
 
-		// Create hold transaction -- store destinations in metadata for commit resolution
+		// Create hold transaction record (IMMUTABLE — no status field)
 		const holdRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO transaction_record (reference, status, amount, currency, description, source_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
 			[
+				"debit",
 				reference,
-				"inflight",
 				amount,
 				src.currency,
 				description,
@@ -305,35 +425,51 @@ export async function createMultiDestinationHold(
 				}),
 			],
 		);
-		const holdRecord = holdRecordRows[0]!;
+		const holdRecord = holdRecordRows[0];
+		if (!holdRecord) throw SummaError.internal("Failed to insert multi-dest hold record");
 
-		// Reserve funds (increase pending_debit)
+		// INSERT initial transaction_status (APPEND-ONLY)
 		await tx.raw(
-			`UPDATE account_balance
-       SET pending_debit = pending_debit + $1,
-           lock_version = lock_version + 1,
-           updated_at = NOW()
-       WHERE id = $2`,
-			[amount, src.id],
+			`INSERT INTO ${t("transaction_status")} (transaction_id, status)
+       VALUES ($1, $2)`,
+			[holdRecord.id, "inflight"],
+		);
+
+		// Reserve funds: INSERT new account_balance_version with increased pending_debit
+		const currentVersion = await readLatestVersion(tx, t, src.id);
+		await insertPendingDebitVersion(
+			tx,
+			t,
+			src.id,
+			currentVersion,
+			amount,
+			"hold_create",
+			ctx.options.advanced.hmacSecret,
+			holdRecord.id,
 		);
 
 		// Event store
-		await appendEvent(tx, {
-			aggregateType: AGGREGATE_TYPES.HOLD,
-			aggregateId: holdRecord.id,
-			eventType: HOLD_EVENTS.CREATED,
-			eventData: {
-				sourceAccountId: src.id,
-				amount,
-				destinations: destinations.length,
-				expiresAt: holdExpiresAt?.toISOString() ?? null,
-				reference,
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.HOLD,
+				aggregateId: holdRecord.id,
+				eventType: HOLD_EVENTS.CREATED,
+				eventData: {
+					sourceAccountId: src.id,
+					amount,
+					destinations: destinations.length,
+					expiresAt: holdExpiresAt?.toISOString() ?? null,
+					reference,
+				},
+				correlationId,
 			},
-			correlationId,
-		});
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+		);
 
 		// Outbox
-		await tx.raw(`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`, [
+		await tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
 			"ledger-hold-created",
 			JSON.stringify({
 				holdId: holdRecord.id,
@@ -347,13 +483,14 @@ export async function createMultiDestinationHold(
 			}),
 		]);
 
-		const response = rawToHoldResponse(holdRecord, src.currency);
+		const response = rawToHoldResponse({ ...holdRecord, status: "inflight" }, src.currency);
 
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,
+				ttlMs: ctx.options.advanced.idempotencyTTL,
 			});
 		}
 
@@ -375,28 +512,37 @@ export async function commitHold(
 	const { holdId } = params;
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		// Lock the hold record with FOR UPDATE to prevent cron race
+		const t = createTableResolver(ctx.options.schema);
+
+		// Lock the hold record with FOR UPDATE to prevent cron race.
+		// Read latest status via LATERAL JOIN.
 		const holdRows = await tx.raw<RawTransactionRow>(
-			`SELECT * FROM transaction_record
-       WHERE id = $1
-         AND is_hold = true
-         AND status = 'inflight'
-       FOR UPDATE`,
+			`SELECT tr.*, ts.status, ts.committed_amount, ts.refunded_amount, ts.posted_at
+       FROM ${t("transaction_record")} tr
+       JOIN LATERAL (
+         SELECT status, committed_amount, refunded_amount, posted_at
+         FROM ${t("transaction_status")}
+         WHERE transaction_id = tr.id
+         ORDER BY created_at DESC LIMIT 1
+       ) ts ON true
+       WHERE tr.id = $1
+         AND tr.is_hold = true
+       FOR UPDATE OF tr`,
 			[holdId],
 		);
 
 		const hold = holdRows[0];
 
-		if (!hold) {
+		if (!hold || hold.status !== "inflight") {
 			// Check if it exists in a different status
 			const existingRows = await tx.raw<RawTransactionRow>(
-				`SELECT * FROM transaction_record WHERE id = $1 LIMIT 1`,
+				`${txnWithStatusSql(t)} WHERE tr.id = $1 LIMIT 1`,
 				[holdId],
 			);
 			const existing = existingRows[0];
 
 			if (!existing) throw SummaError.notFound("Hold not found");
-			if (existing.status === "expired") throw SummaError.conflict("Hold has expired");
+			if (existing.status === "expired") throw SummaError.holdExpired("Hold has expired");
 			if (existing.status === "posted") throw SummaError.conflict("Hold already committed");
 			if (existing.status === "voided") throw SummaError.conflict("Hold was voided");
 			throw SummaError.conflict(`Invalid hold status: ${existing.status}`);
@@ -407,8 +553,13 @@ export async function commitHold(
 			const nowRows = await tx.raw<{ now: Date }>("SELECT NOW() as now", []);
 			const dbNow = nowRows[0]?.now;
 			if (dbNow && new Date(hold.hold_expires_at) < new Date(dbNow)) {
-				await tx.raw(`UPDATE transaction_record SET status = 'expired' WHERE id = $1`, [holdId]);
-				throw SummaError.conflict("Hold has expired");
+				// INSERT expired status (APPEND-ONLY)
+				await tx.raw(
+					`INSERT INTO ${t("transaction_status")} (transaction_id, status, reason)
+           VALUES ($1, $2, $3)`,
+					[holdId, "expired", "Expired at commit time"],
+				);
+				throw SummaError.holdExpired("Hold has expired");
 			}
 		}
 
@@ -425,36 +576,34 @@ export async function commitHold(
 			);
 		}
 
-		// Release FULL hold from pending, debit ACTUAL commit amount
-		const debitUpdateRows = await tx.raw<RawBalanceUpdateRow>(
-			`UPDATE account_balance
-       SET pending_debit = pending_debit - $1,
-           balance = balance - $2,
-           debit_balance = debit_balance + $2,
-           lock_version = lock_version + 1,
-           updated_at = NOW()
-       WHERE id = $3
-       RETURNING balance + $2 as balance_before, balance as balance_after, lock_version`,
-			[holdAmount, commitAmount, hold.source_account_id],
+		// Release FULL hold from pending: INSERT new version with reduced pending_debit
+		// Lock the account parent, read latest version
+		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [
+			hold.source_account_id,
+		]);
+		const releaseCurrent = await readLatestVersion(tx, t, hold.source_account_id as string);
+		await insertPendingDebitVersion(
+			tx,
+			t,
+			hold.source_account_id as string,
+			releaseCurrent,
+			-holdAmount,
+			"hold_release",
+			ctx.options.advanced.hmacSecret,
+			holdId,
 		);
-		const debitUpdate = debitUpdateRows[0]!;
 
-		// Create DEBIT entry record for source account
-		await tx.raw(
-			`INSERT INTO entry_record (transaction_id, account_id, entry_type, amount, currency, balance_before, balance_after, account_lock_version, is_hot_account)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-			[
-				hold.id,
-				hold.source_account_id,
-				"DEBIT",
-				commitAmount,
-				hold.currency,
-				debitUpdate.balance_before,
-				debitUpdate.balance_after,
-				debitUpdate.lock_version,
-				false,
-			],
-		);
+		// DEBIT source account + update balance
+		await insertEntryAndUpdateBalance({
+			tx,
+			transactionId: hold.id,
+			accountId: hold.source_account_id,
+			entryType: "DEBIT",
+			amount: commitAmount,
+			currency: hold.currency,
+			isHotAccount: false,
+			updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
+		});
 
 		// Credit destination(s)
 		const metaData = hold.meta_data as Record<string, unknown> | null;
@@ -469,54 +618,38 @@ export async function commitHold(
 				destinations,
 			});
 		} else if (hold.destination_account_id) {
-			const creditUpdateRows = await tx.raw<RawBalanceUpdateRow>(
-				`UPDATE account_balance
-         SET balance = balance + $1,
-             credit_balance = credit_balance + $1,
-             lock_version = lock_version + 1,
-             updated_at = NOW()
-         WHERE id = $2
-         RETURNING balance - $1 as balance_before, balance as balance_after, lock_version`,
-				[commitAmount, hold.destination_account_id],
-			);
-			const creditUpdate = creditUpdateRows[0];
-
-			if (!creditUpdate) {
-				throw SummaError.internal("Destination account not found during hold commit");
-			}
-
-			await tx.raw(
-				`INSERT INTO entry_record (transaction_id, account_id, entry_type, amount, currency, balance_before, balance_after, account_lock_version, is_hot_account)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-				[
-					hold.id,
-					hold.destination_account_id,
-					"CREDIT",
-					commitAmount,
-					hold.currency,
-					creditUpdate.balance_before,
-					creditUpdate.balance_after,
-					creditUpdate.lock_version,
-					false,
-				],
-			);
+			// Credit destination + update balance
+			await insertEntryAndUpdateBalance({
+				tx,
+				transactionId: hold.id,
+				accountId: hold.destination_account_id,
+				entryType: "CREDIT",
+				amount: commitAmount,
+				currency: hold.currency,
+				isHotAccount: false,
+				updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
+			});
 		} else if (hold.destination_system_account_id) {
 			// Hot account pattern for system accounts
 			await tx.raw(
-				`INSERT INTO hot_account_entry (account_id, amount, entry_type, transaction_id, status)
+				`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
          VALUES ($1, $2, $3, $4, $5)`,
 				[hold.destination_system_account_id, commitAmount, "CREDIT", hold.id, "pending"],
 			);
-			await tx.raw(
-				`INSERT INTO entry_record (transaction_id, system_account_id, entry_type, amount, currency, is_hot_account)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-				[hold.id, hold.destination_system_account_id, "CREDIT", commitAmount, hold.currency, true],
-			);
+			await insertEntryAndUpdateBalance({
+				tx,
+				transactionId: hold.id,
+				systemAccountId: hold.destination_system_account_id,
+				entryType: "CREDIT",
+				amount: commitAmount,
+				currency: hold.currency,
+				isHotAccount: true,
+			});
 		} else {
 			// No explicit destination -- credit the @World system account to maintain double-entry invariant
 			const worldIdentifier = ctx.options.systemAccounts.world ?? "@World";
 			const worldRows = await tx.raw<{ id: string }>(
-				`SELECT id FROM system_account WHERE identifier = $1 LIMIT 1`,
+				`SELECT id FROM ${t("system_account")} WHERE identifier = $1 LIMIT 1`,
 				[worldIdentifier],
 			);
 			if (!worldRows[0]) {
@@ -525,40 +658,46 @@ export async function commitHold(
 			const worldId = worldRows[0].id;
 
 			await tx.raw(
-				`INSERT INTO hot_account_entry (account_id, amount, entry_type, transaction_id, status)
+				`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
          VALUES ($1, $2, $3, $4, $5)`,
 				[worldId, commitAmount, "CREDIT", hold.id, "pending"],
 			);
-			await tx.raw(
-				`INSERT INTO entry_record (transaction_id, system_account_id, entry_type, amount, currency, is_hot_account)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-				[hold.id, worldId, "CREDIT", commitAmount, hold.currency, true],
-			);
+			await insertEntryAndUpdateBalance({
+				tx,
+				transactionId: hold.id,
+				systemAccountId: worldId,
+				entryType: "CREDIT",
+				amount: commitAmount,
+				currency: hold.currency,
+				isHotAccount: true,
+			});
 		}
 
-		// Update hold status
+		// INSERT posted status (APPEND-ONLY — replaces UPDATE transaction_record SET status)
 		await tx.raw(
-			`UPDATE transaction_record
-       SET status = 'posted',
-           committed_amount = $1,
-           posted_at = NOW()
-       WHERE id = $2`,
-			[commitAmount, holdId],
+			`INSERT INTO ${t("transaction_status")} (transaction_id, status, committed_amount, posted_at)
+       VALUES ($1, $2, $3, NOW())`,
+			[holdId, "posted", commitAmount],
 		);
 
 		// Event store
-		await appendEvent(tx, {
-			aggregateType: AGGREGATE_TYPES.HOLD,
-			aggregateId: holdId,
-			eventType: HOLD_EVENTS.COMMITTED,
-			eventData: {
-				committedAmount: commitAmount,
-				originalAmount: holdAmount,
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.HOLD,
+				aggregateId: holdId,
+				eventType: HOLD_EVENTS.COMMITTED,
+				eventData: {
+					committedAmount: commitAmount,
+					originalAmount: holdAmount,
+				},
 			},
-		});
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+		);
 
 		// Outbox
-		await tx.raw(`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`, [
+		await tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
 			"ledger-hold-committed",
 			JSON.stringify({
 				holdId,
@@ -585,6 +724,10 @@ export async function commitHold(
 		originalAmount: result.originalAmount,
 		ctx,
 	});
+	await runAfterOperationHooks(ctx, {
+		type: "hold.commit",
+		params: { holdId, amount: result.committedAmount },
+	});
 	return result;
 }
 
@@ -601,22 +744,30 @@ export async function voidHold(
 ): Promise<{ holdId: string; amount: number }> {
 	const { holdId, reason = "voided" } = params;
 
-	return await withTransactionTimeout(ctx, async (tx) => {
-		// Lock with FOR UPDATE
+	const result = await withTransactionTimeout(ctx, async (tx) => {
+		const t = createTableResolver(ctx.options.schema);
+
+		// Lock with FOR UPDATE + read latest status
 		const holdRows = await tx.raw<RawTransactionRow>(
-			`SELECT * FROM transaction_record
-       WHERE id = $1
-         AND is_hold = true
-         AND status = 'inflight'
-       FOR UPDATE`,
+			`SELECT tr.*, ts.status, ts.committed_amount, ts.refunded_amount, ts.posted_at
+       FROM ${t("transaction_record")} tr
+       JOIN LATERAL (
+         SELECT status, committed_amount, refunded_amount, posted_at
+         FROM ${t("transaction_status")}
+         WHERE transaction_id = tr.id
+         ORDER BY created_at DESC LIMIT 1
+       ) ts ON true
+       WHERE tr.id = $1
+         AND tr.is_hold = true
+       FOR UPDATE OF tr`,
 			[holdId],
 		);
 
 		const hold = holdRows[0];
 
-		if (!hold) {
+		if (!hold || hold.status !== "inflight") {
 			const existingRows = await tx.raw<RawTransactionRow>(
-				`SELECT * FROM transaction_record WHERE id = $1 LIMIT 1`,
+				`${txnWithStatusSql(t)} WHERE tr.id = $1 LIMIT 1`,
 				[holdId],
 			);
 			const existing = existingRows[0];
@@ -629,30 +780,45 @@ export async function voidHold(
 
 		const holdAmount = Number(hold.amount);
 
-		// Release pending_debit
-		await tx.raw(
-			`UPDATE account_balance
-       SET pending_debit = pending_debit - $1,
-           lock_version = lock_version + 1,
-           updated_at = NOW()
-       WHERE id = $2`,
-			[holdAmount, hold.source_account_id],
+		// Release pending_debit: lock account, read latest version, insert new version
+		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [
+			hold.source_account_id,
+		]);
+		const voidCurrent = await readLatestVersion(tx, t, hold.source_account_id as string);
+		await insertPendingDebitVersion(
+			tx,
+			t,
+			hold.source_account_id as string,
+			voidCurrent,
+			-holdAmount,
+			"hold_release",
+			ctx.options.advanced.hmacSecret,
+			holdId,
 		);
 
-		// Update hold status
-		await tx.raw(`UPDATE transaction_record SET status = 'voided' WHERE id = $1`, [holdId]);
+		// INSERT voided status (APPEND-ONLY)
+		await tx.raw(
+			`INSERT INTO ${t("transaction_status")} (transaction_id, status, reason)
+       VALUES ($1, $2, $3)`,
+			[holdId, "voided", reason],
+		);
 
 		// Event store
-		await appendEvent(tx, {
-			aggregateType: AGGREGATE_TYPES.HOLD,
-			aggregateId: holdId,
-			eventType: HOLD_EVENTS.VOIDED,
-			eventData: { reason },
-		});
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.HOLD,
+				aggregateId: holdId,
+				eventType: HOLD_EVENTS.VOIDED,
+				eventData: { reason },
+			},
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+		);
 
 		// Outbox
 		const voidMeta = hold.meta_data as Record<string, unknown> | null;
-		await tx.raw(`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`, [
+		await tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
 			"ledger-hold-voided",
 			JSON.stringify({
 				holdId,
@@ -668,22 +834,27 @@ export async function voidHold(
 
 		return { holdId, amount: holdAmount };
 	});
+
+	await runAfterOperationHooks(ctx, { type: "hold.void", params: { holdId } });
+	return result;
 }
 
-// =============================================================================
-// EXPIRE HOLDS (called by cron job)
-// =============================================================================
-
 export async function expireHolds(ctx: SummaContext): Promise<{ expired: number }> {
+	const t = createTableResolver(ctx.options.schema);
 	let expired = 0;
 
-	// Find candidate expired holds (no lock -- just a lightweight scan)
+	// Find candidate expired holds using LATERAL JOIN to get latest status
 	const candidates = await ctx.adapter.raw<RawHoldSummaryRow>(
-		`SELECT id, source_account_id, amount, reference, meta_data
-     FROM transaction_record
-     WHERE is_hold = true
-       AND status = 'inflight'
-       AND hold_expires_at < NOW()
+		`SELECT tr.id, tr.source_account_id, tr.amount, tr.reference, tr.meta_data
+     FROM ${t("transaction_record")} tr
+     JOIN LATERAL (
+       SELECT status FROM ${t("transaction_status")}
+       WHERE transaction_id = tr.id
+       ORDER BY created_at DESC LIMIT 1
+     ) ts ON true
+     WHERE tr.is_hold = true
+       AND ts.status = 'inflight'
+       AND tr.hold_expires_at < NOW()
      LIMIT 100`,
 		[],
 	);
@@ -692,12 +863,17 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 		try {
 			await withTransactionTimeout(ctx, async (tx) => {
 				// Lock the hold row and re-check status + expiry atomically
-				const holdRows = await tx.raw<RawHoldSummaryRow>(
-					`SELECT id, source_account_id, amount, reference, meta_data
-           FROM transaction_record
-           WHERE id = $1
-             AND status = 'inflight'
-             AND hold_expires_at < ${ctx.dialect.now()}
+				const holdRows = await tx.raw<RawHoldSummaryRow & { status: string }>(
+					`SELECT tr.id, tr.source_account_id, tr.amount, tr.reference, tr.meta_data, ts.status
+           FROM ${t("transaction_record")} tr
+           JOIN LATERAL (
+             SELECT status FROM ${t("transaction_status")}
+             WHERE transaction_id = tr.id
+             ORDER BY created_at DESC LIMIT 1
+           ) ts ON true
+           WHERE tr.id = $1
+             AND ts.status = 'inflight'
+             AND tr.hold_expires_at < ${ctx.dialect.now()}
            ${ctx.dialect.forUpdateSkipLocked()}`,
 					[candidate.id],
 				);
@@ -708,29 +884,44 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 				const holdAmount = Number(hold.amount);
 				const expireMeta = hold.meta_data;
 
-				// Release pending_debit
-				await tx.raw(
-					`UPDATE account_balance
-           SET pending_debit = pending_debit - $1,
-               lock_version = lock_version + 1,
-               updated_at = NOW()
-           WHERE id = $2`,
-					[holdAmount, hold.source_account_id],
+				// Release pending_debit: lock account, read latest version, insert new version
+				await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [
+					hold.source_account_id,
+				]);
+				const expCurrent = await readLatestVersion(tx, t, hold.source_account_id);
+				await insertPendingDebitVersion(
+					tx,
+					t,
+					hold.source_account_id,
+					expCurrent,
+					-holdAmount,
+					"hold_release",
+					ctx.options.advanced.hmacSecret,
+					candidate.id,
 				);
 
-				// Mark as expired
-				await tx.raw(`UPDATE transaction_record SET status = 'expired' WHERE id = $1`, [hold.id]);
+				// INSERT expired status (APPEND-ONLY)
+				await tx.raw(
+					`INSERT INTO ${t("transaction_status")} (transaction_id, status, reason)
+           VALUES ($1, $2, $3)`,
+					[hold.id, "expired", "Hold expired"],
+				);
 
 				// Event store
-				await appendEvent(tx, {
-					aggregateType: AGGREGATE_TYPES.HOLD,
-					aggregateId: hold.id,
-					eventType: HOLD_EVENTS.EXPIRED,
-					eventData: { expiredAt: new Date().toISOString() },
-				});
+				await appendEvent(
+					tx,
+					{
+						aggregateType: AGGREGATE_TYPES.HOLD,
+						aggregateId: hold.id,
+						eventType: HOLD_EVENTS.EXPIRED,
+						eventData: { expiredAt: new Date().toISOString() },
+					},
+					ctx.options.schema,
+					ctx.options.advanced.hmacSecret,
+				);
 
 				// Outbox
-				await tx.raw(`INSERT INTO outbox (topic, payload) VALUES ($1, $2)`, [
+				await tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
 					"ledger-hold-expired",
 					JSON.stringify({
 						holdId: hold.id,
@@ -766,9 +957,10 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 // =============================================================================
 
 export async function getHold(ctx: SummaContext, holdId: string): Promise<Hold> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<RawTransactionRow>(
-		`SELECT * FROM transaction_record
-     WHERE id = $1 AND is_hold = true
+		`${txnWithStatusSql(t)}
+     WHERE tr.id = $1 AND tr.is_hold = true
      LIMIT 1`,
 		[holdId],
 	);
@@ -785,19 +977,24 @@ export async function listActiveHolds(
 		perPage?: number;
 		category?: string;
 	},
-): Promise<{ holds: Hold[]; hasMore: boolean; total?: number }> {
+): Promise<{ holds: Hold[]; hasMore: boolean; total: number }> {
 	const page = Math.max(1, params.page ?? 1);
 	const perPage = Math.min(params.perPage ?? 20, 100);
 	const offset = (page - 1) * perPage;
 
 	const account = await getAccountByHolder(ctx, params.holderId);
+	const t = createTableResolver(ctx.options.schema);
 
-	const conditions: string[] = ["source_account_id = $1", "is_hold = true", "status = 'inflight'"];
+	const conditions: string[] = [
+		"tr.source_account_id = $1",
+		"tr.is_hold = true",
+		"ts.status = 'inflight'",
+	];
 	const queryParams: unknown[] = [account.id];
 	let paramIdx = 2;
 
 	if (params.category) {
-		conditions.push(`meta_data->>'category' = $${paramIdx++}`);
+		conditions.push(`tr.meta_data->>'category' = $${paramIdx++}`);
 		queryParams.push(params.category);
 	}
 
@@ -807,19 +1004,37 @@ export async function listActiveHolds(
 	queryParams.push(perPage + 1);
 	queryParams.push(offset);
 
+	const countParams: unknown[] = [account.id];
+	if (params.category) countParams.push(params.category);
+
+	const countConditions: string[] = [
+		"tr.source_account_id = $1",
+		"tr.is_hold = true",
+		"ts.status = 'inflight'",
+	];
+	let countParamIdx = 2;
+	if (params.category) {
+		countConditions.push(`tr.meta_data->>'category' = $${countParamIdx++}`);
+	}
+	const countWhere = countConditions.join(" AND ");
+
 	const [rows, countRows] = await Promise.all([
 		ctx.adapter.raw<RawTransactionRow>(
-			`SELECT * FROM transaction_record
+			`${txnWithStatusSql(t)}
        WHERE ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY tr.created_at DESC
        LIMIT $${paramIdx++}
        OFFSET $${paramIdx}`,
 			queryParams,
 		),
 		ctx.adapter.raw<{ total: number }>(
-			`SELECT COUNT(*)::int as total FROM transaction_record
-       WHERE ${whereClause}`,
-			queryParams.slice(0, params.category ? 2 : 1),
+			`SELECT COUNT(*)::int as total FROM ${t("transaction_record")} tr
+       JOIN LATERAL (
+         SELECT status FROM ${t("transaction_status")}
+         WHERE transaction_id = tr.id ORDER BY created_at DESC LIMIT 1
+       ) ts ON true
+       WHERE ${countWhere}`,
+			countParams,
 		),
 	]);
 
@@ -840,30 +1055,40 @@ export async function listAllHolds(
 		category?: string;
 		status?: "inflight" | "posted" | "voided" | "expired";
 	},
-): Promise<{ holds: Hold[]; hasMore: boolean; total?: number }> {
+): Promise<{ holds: Hold[]; hasMore: boolean; total: number }> {
+	const VALID_HOLD_STATUSES: ReadonlySet<string> = new Set([
+		"inflight",
+		"posted",
+		"voided",
+		"expired",
+	]);
+	if (params.status && !VALID_HOLD_STATUSES.has(params.status)) {
+		throw SummaError.invalidArgument(
+			`Invalid hold status: "${params.status}". Must be one of: inflight, posted, voided, expired`,
+		);
+	}
+
 	const page = Math.max(1, params.page ?? 1);
 	const perPage = Math.min(params.perPage ?? 20, 100);
 	const offset = (page - 1) * perPage;
 
 	const account = await getAccountByHolder(ctx, params.holderId);
+	const t = createTableResolver(ctx.options.schema);
 
-	const conditions: string[] = ["source_account_id = $1", "is_hold = true"];
+	const conditions: string[] = ["tr.source_account_id = $1", "tr.is_hold = true"];
 	const queryParams: unknown[] = [account.id];
 	const countParams: unknown[] = [account.id];
 	let paramIdx = 2;
-	let _countParamIdx = 2;
 
 	if (params.status) {
-		conditions.push(`status = $${paramIdx++}`);
+		conditions.push(`ts.status = $${paramIdx++}`);
 		queryParams.push(params.status);
 		countParams.push(params.status);
-		_countParamIdx++;
 	}
 	if (params.category) {
-		conditions.push(`meta_data->>'category' = $${paramIdx++}`);
+		conditions.push(`tr.meta_data->>'category' = $${paramIdx++}`);
 		queryParams.push(params.category);
 		countParams.push(params.category);
-		_countParamIdx++;
 	}
 
 	const whereClause = conditions.join(" AND ");
@@ -873,15 +1098,19 @@ export async function listAllHolds(
 
 	const [rows, countRows] = await Promise.all([
 		ctx.adapter.raw<RawTransactionRow>(
-			`SELECT * FROM transaction_record
+			`${txnWithStatusSql(t)}
        WHERE ${whereClause}
-       ORDER BY created_at DESC
+       ORDER BY tr.created_at DESC
        LIMIT $${paramIdx++}
        OFFSET $${paramIdx}`,
 			queryParams,
 		),
 		ctx.adapter.raw<{ total: number }>(
-			`SELECT COUNT(*)::int as total FROM transaction_record
+			`SELECT COUNT(*)::int as total FROM ${t("transaction_record")} tr
+       JOIN LATERAL (
+         SELECT status FROM ${t("transaction_status")}
+         WHERE transaction_id = tr.id ORDER BY created_at DESC LIMIT 1
+       ) ts ON true
        WHERE ${whereClause}`,
 			countParams,
 		),
@@ -899,7 +1128,19 @@ export async function listAllHolds(
 // HELPERS
 // =============================================================================
 
+/** Internal metadata keys that should not leak into the public Hold.metadata */
+const INTERNAL_META_KEYS = new Set(["holderId", "holderType", "category", "destinations"]);
+
 function rawToHoldResponse(row: RawTransactionRow, currency: string): Hold {
+	// Strip internal fields from metadata before returning to caller
+	const rawMeta = (row.meta_data ?? {}) as Record<string, unknown>;
+	const metadata: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(rawMeta)) {
+		if (!INTERNAL_META_KEYS.has(key)) {
+			metadata[key] = value;
+		}
+	}
+
 	return {
 		id: row.id,
 		sourceAccountId: row.source_account_id ?? "",
@@ -911,7 +1152,7 @@ function rawToHoldResponse(row: RawTransactionRow, currency: string): Hold {
 		status: row.status as HoldStatus,
 		reference: row.reference,
 		description: row.description ?? "",
-		metadata: (row.meta_data ?? {}) as Record<string, unknown>,
+		metadata,
 		expiresAt: row.hold_expires_at
 			? row.hold_expires_at instanceof Date
 				? row.hold_expires_at.toISOString()

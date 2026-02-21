@@ -1,0 +1,123 @@
+---
+title: Accrual Accounting
+description: Recognize revenue and expenses over time with scheduled journal entries.
+icon: Clock
+---
+
+## Overview
+
+The accrual accounting plugin recognizes revenue and expenses over time through scheduled postings. For example, a 12-month insurance premium paid upfront in January can be automatically spread as monthly expense entries.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { accrualAccounting } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    accrualAccounting({
+      autoProcess: true,  // Auto-process via background worker (default)
+    }),
+  ],
+});
+```
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `autoProcess` | `boolean` | `true` | Run daily worker to process due accruals |
+
+## Creating a Schedule
+
+```ts
+import { createAccrualSchedule } from "summa/plugins";
+
+const schedule = await createAccrualSchedule(summa.$context, {
+  type: "expense",                    // "revenue" | "expense" | "prepaid" | "unearned"
+  sourceAccountId: prepaidInsurance.id,
+  targetAccountId: insuranceExpense.id,
+  totalAmount: 12_000_00,            // $12,000 total
+  periods: 12,                        // Spread over 12 periods
+  startDate: "2026-01-01",
+  frequency: "monthly",              // "monthly" | "quarterly" | "yearly"
+  currency: "USD",
+  metadata: { policy: "INS-2026-001" },
+});
+```
+
+Per-period amounts are calculated as `Math.floor(total / periods)`, with any remainder added to the last period.
+
+## Accrual Types
+
+| Type | Use Case |
+|------|----------|
+| `revenue` | Recognize earned revenue over service period |
+| `expense` | Spread prepaid expenses over benefit period |
+| `prepaid` | Amortize prepaid assets |
+| `unearned` | Release deferred revenue as earned |
+
+## Processing Accruals
+
+Accruals are processed automatically by the background worker (if `autoProcess: true`), or manually:
+
+```ts
+import { processAccruals } from "summa/plugins";
+
+const result = await processAccruals(summa.$context, {
+  periodDate: new Date("2026-02-01"),
+});
+console.log(result.processed); // Number of postings made
+console.log(result.skipped);   // Number of postings that failed
+```
+
+Each posting:
+1. Resolves source and target account holder IDs from the schedule's account UUIDs
+2. Creates a balanced **journal entry** (DEBIT source, CREDIT target) via the journal manager
+3. Marks the `accrual_posting` record as posted and stores the `transaction_id`
+4. Updates the schedule's `recognizedAmount` and `remainingAmount`
+5. Marks the schedule as `completed` when fully recognized
+
+This means each accrual posting produces a real, auditable transaction in the ledger — not just a schedule update. The journal entry reference follows the format `accrual:{scheduleId}:{postingId}` for traceability.
+
+## Schedule Lifecycle
+
+```
+active → completed (fully recognized)
+       → cancelled (manually cancelled)
+```
+
+### Cancel a Schedule
+
+Stop future postings (already-posted amounts remain):
+
+```ts
+import { cancelSchedule } from "summa/plugins";
+
+await cancelSchedule(summa.$context, schedule.id);
+```
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `accrual-processor` | 1d | Yes | Processes all due accrual postings |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/accruals` | List schedules (optional `?status=active`) |
+| `POST` | `/accruals` | Create a new accrual schedule |
+| `GET` | `/accruals/:id` | Get schedule with all posting records |
+| `DELETE` | `/accruals/:id` | Cancel an active schedule |
+
+## Schema
+
+| Table | Description |
+|-------|-------------|
+| `accrual_schedule` | Schedule definitions with amounts and progress |
+| `accrual_posting` | Individual period postings with dates, status, and `transaction_id` linking to the journal entry |

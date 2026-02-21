@@ -1,0 +1,214 @@
+---
+title: Elysia
+description: Mount Summa's HTTP API on Elysia.
+icon: Elysia
+---
+
+## Installation
+
+```bash
+pnpm add summa elysia
+```
+
+## Quick Start
+
+```ts
+import { Elysia } from "elysia";
+import { createSumma } from "summa";
+import { createSummaElysia } from "summa/api/elysia";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+
+const app = new Elysia()
+  .use(createSummaElysia(summa, { basePath: "/api/ledger" }))
+  .listen(3000);
+
+console.log(`Listening on :${app.server?.port}`);
+```
+
+That's it — all 36+ Summa endpoints are now available under `/api/ledger`.
+
+## How It Works
+
+`createSummaElysia()` returns an Elysia plugin function that:
+
+1. Registers a catch-all `all()` route at the given `basePath`
+2. Strips the base path prefix from the URL
+3. Reads the parsed body from Elysia's context (Elysia parses JSON automatically)
+4. Collects query parameters and headers from the `Request` object
+5. Passes everything to Summa's universal `handleRequest()` router
+6. Returns a standard `Response` object
+
+The adapter is ~40 lines of code — all business logic, validation, security headers, and rate limiting happen inside Summa's core handler.
+
+## Handler Options
+
+All framework integrations share the same options:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `basePath` | `string` | URL prefix to strip before routing (e.g., `"/api/ledger"`) |
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit (e.g., 401). |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+## Authentication
+
+Use the `onRequest` hook to add authentication:
+
+```ts
+const app = new Elysia().use(
+  createSummaElysia(summa, {
+    basePath: "/api/ledger",
+    onRequest: (req) => {
+      const apiKey = req.headers?.["x-api-key"];
+      if (!apiKey || !isValidApiKey(apiKey)) {
+        return {
+          status: 401,
+          body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+        };
+      }
+      return req;
+    },
+  }),
+);
+```
+
+You can also use Elysia's built-in `derive` and `guard` for authentication:
+
+```ts
+const app = new Elysia()
+  .derive(({ request }) => {
+    const apiKey = request.headers.get("x-api-key");
+    return { apiKey };
+  })
+  .guard({ beforeHandle: ({ apiKey }) => {
+    if (!apiKey) return new Response("Unauthorized", { status: 401 });
+  }})
+  .use(createSummaElysia(summa, { basePath: "/api/ledger" }));
+```
+
+**Execution order:** Elysia middleware → `onRequest` → CSRF check → rate limiting → plugin hooks → route handler → plugin hooks (reverse) → `onResponse`
+
+## Rate Limiting
+
+```ts
+import { createSummaElysia } from "summa/api/elysia";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+const app = new Elysia().use(
+  createSummaElysia(summa, {
+    basePath: "/api/ledger",
+    rateLimiter: createRateLimiter(standardRateLimit),
+    rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+  }),
+);
+```
+
+| Preset | Limit | Window |
+|--------|:-----:|:------:|
+| `standardRateLimit` | 100 | 60s |
+| `strictRateLimit` | 20 | 60s |
+| `lenientRateLimit` | 500 | 60s |
+| `burstRateLimit` | 10 | 1s |
+
+## CSRF Protection
+
+```ts
+const app = new Elysia().use(
+  createSummaElysia(summa, {
+    basePath: "/api/ledger",
+    trustedOrigins: ["https://app.example.com"],
+  }),
+);
+```
+
+## Full Production Example
+
+```ts
+import { Elysia } from "elysia";
+import { createSumma } from "summa";
+import { createSummaElysia } from "summa/api/elysia";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+// Database
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const db = drizzle(pool);
+const { adapter, close } = createPooledAdapter({ pool, drizzle: db });
+
+// Summa
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Elysia app
+const app = new Elysia()
+  .use(
+    createSummaElysia(summa, {
+      basePath: "/api/ledger",
+      rateLimiter: createRateLimiter(standardRateLimit),
+      rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+      trustedOrigins: [process.env.APP_ORIGIN!],
+      onRequest: (req) => {
+        const key = req.headers?.["x-api-key"];
+        if (!key) {
+          return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Missing API key" } } };
+        }
+        return req;
+      },
+    }),
+  )
+  .listen(3000);
+
+// Start workers
+await summa.workers.start();
+
+// Graceful shutdown
+async function shutdown() {
+  app.stop();
+  await summa.workers.stop();
+  await close();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+<Callout type="info" title="Bun native">
+  Elysia is built for Bun — it uses Bun's native HTTP server for maximum performance. Summa's adapter works identically on Bun and Node.js since it uses standard Web APIs.
+</Callout>
+
+## Combining with Existing Elysia Apps
+
+Summa mounts as an Elysia plugin, so you can compose it with your own routes:
+
+```ts
+const app = new Elysia()
+  // Your own routes
+  .get("/api/users", () => listUsers())
+  .post("/api/users", ({ body }) => createUser(body))
+
+  // Summa ledger routes
+  .use(createSummaElysia(summa, { basePath: "/api/ledger" }))
+
+  .listen(3000);
+```

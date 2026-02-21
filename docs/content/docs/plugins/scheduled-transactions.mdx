@@ -52,9 +52,9 @@ await summa.scheduled.create({
 ## How It Works
 
 1. Scheduled transactions are stored with a `scheduledAt` timestamp
-2. A background worker (`"scheduled-processor"`, interval: `"1m"`) checks for transactions whose `scheduledAt` time has passed
-3. Due transactions are executed as regular transfers
-4. Failed transactions are retried with exponential backoff up to `maxRetries` times
+2. A background worker (`"scheduled-processor"`, interval: `"1m"`, lease-protected) checks for transactions whose `scheduledAt` time has passed
+3. Due transactions are executed as regular credits, debits, or transfers based on source/destination identifiers
+4. Failed transactions are retried up to `maxRetries` times, then permanently marked as failed
 
 ## Events
 

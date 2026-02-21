@@ -51,19 +51,75 @@ The reconciliation plugin independently recalculates every account balance from 
 
 ## Security
 
-Financial systems are high-value targets. Summa bakes security into every layer — from how queries are built to how events are verified.
+Financial systems are high-value targets. Summa doesn't bolt security on as an afterthought — it's built into the architecture at every layer.
 
-| Layer | Threat | Defense |
-|-------|--------|---------|
-| **SQL** | Injection attacks | All queries use parameterized placeholders (`$1, $2`). Column names are quoted. No string interpolation ever touches the database. |
-| **Concurrency** | Double-spending, race conditions | PostgreSQL `pg_advisory_xact_lock` + `SELECT ... FOR UPDATE` within atomic transactions. Two concurrent operations on the same account are serialized. |
-| **Replay** | Duplicate transactions from retries | Idempotency keys with configurable TTL (default 24h). Even after key expiry, unique reference constraints prevent re-execution. |
-| **Tampering** | Modified or deleted events | SHA-256 hash chain per aggregate + block-level checkpoints. A single altered event breaks the chain. `summa verify --chain` detects it. |
-| **Webhooks** | Forged payloads, replay attacks | HMAC-SHA256 signatures with timing-safe comparison (`timingSafeEqual`). Configurable tolerance window (default 5 minutes) rejects stale payloads. |
-| **Rate limiting** | Brute force, abuse | Token bucket rate limiter with 3 backends (memory, database, Redis). 4 built-in presets: standard (100/min), strict (20/min), lenient (500/min), burst (10/s). |
-| **Overdraft** | Unauthorized negative balances | `allowOverdraft` defaults to `false`. Balance is checked inside the transaction lock — no TOCTOU gap. |
-| **Account freeze** | Compromised accounts | `freeze()` immediately blocks all credits, debits, and transfers. Records actor and reason. Only `unfreeze()` restores access. |
-| **Audit trail** | Untracked access, compliance gaps | Audit log plugin records every operation with actor, params, result, and timestamp. Configurable retention (default 365 days). |
+### Protect the Money
+
+<Cards>
+  <Card title="No Double-Spending">
+    Every balance check and debit runs inside a database row lock. Two concurrent transfers from the same account queue safely — it's structurally impossible to spend more than what's available.
+  </Card>
+  <Card title="Safe Retries">
+    Submitting the same payment twice returns the original result. Built-in idempotency keys ensure network retries and client crashes never cause duplicate charges.
+  </Card>
+  <Card title="Instant Account Freeze">
+    Any account can be frozen in one call — all transactions are blocked immediately. The reason, actor, and timestamp are recorded immutably.
+  </Card>
+  <Card title="Spending Limits">
+    Cap how much any account can spend per transaction, per day, or per month. Limits are enforced inside the same atomic lock as the transaction itself.
+  </Card>
+</Cards>
+
+### Prove What Happened
+
+<Cards>
+  <Card title="Tamper-Evident Ledger">
+    Every event is sealed into a cryptographic hash chain. If anyone alters a single record in the database, verification instantly detects the break.
+  </Card>
+  <Card title="Full Audit Trail">
+    Every operation is permanently logged with who did it, what they did, and when. Actor identity flows automatically from HTTP headers into audit entries.
+  </Card>
+  <Card title="HMAC-Secured Hashes">
+    One config key upgrades every hash from SHA-256 to HMAC-SHA256 — so even full database access cannot forge a valid audit trail.
+  </Card>
+  <Card title="Automated Reconciliation">
+    A background worker independently recalculates every balance from raw entries and flags any discrepancy. Your financial safety net runs on autopilot.
+  </Card>
+</Cards>
+
+### Lock Down the API
+
+<Cards>
+  <Card title="Rate Limiting">
+    Built-in throttling with memory, database, or Redis backends. Four presets from lenient (500/min) to burst protection (10/sec). Responses include standard rate-limit headers.
+  </Card>
+  <Card title="Security Headers">
+    Every response includes CSP, X-Frame-Options, X-Content-Type-Options, and Referrer-Policy headers. No configuration needed — secure by default.
+  </Card>
+  <Card title="CSRF Protection">
+    Mutating requests from browsers are validated against a trusted origin list. Server-to-server calls pass through without friction.
+  </Card>
+  <Card title="Webhook Signatures">
+    Outgoing webhooks are signed with HMAC-SHA256. A 5-minute replay window rejects stale payloads, even if the signature is valid.
+  </Card>
+</Cards>
+
+### Protect Sensitive Data
+
+<Cards>
+  <Card title="PII Redaction">
+    Emails, phone numbers, passwords, and tokens are automatically scrubbed from all log output before reaching your log aggregation system.
+  </Card>
+  <Card title="Parameterized Queries">
+    No user input ever touches raw SQL. Every database query uses parameterized placeholders, making injection attacks structurally impossible.
+  </Card>
+  <Card title="Data Retention Policies">
+    Sensitive operational data is automatically purged on a schedule. You control exactly how long each data type is retained — from 24 hours to 7 years.
+  </Card>
+  <Card title="Configurable Redact Keys">
+    The default redaction set covers common PII fields. Add your own keys (credit card numbers, tax IDs, bank accounts) with a single config option.
+  </Card>
+</Cards>
 
 ## Core Architecture
 
@@ -71,7 +127,7 @@ Financial systems are high-value targets. Summa bakes security into every layer 
 |-------|-----------|
 | **Your Application** | Your API routes, workers, cron jobs |
 | **Summa API** | `accounts` · `transactions` · `holds` · `events` · `limits` · `workers` |
-| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` · `observability` |
+| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `freezeExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` · `observability` · `fx` · `accrual` · `reporting` · `retention` · `i18n` · `mcp` · `statements` · `periodClose` · `glSubLedger` · `approvalWorkflow` · `batchImport` |
 | **Database Adapters** | Drizzle · Prisma · Kysely · Memory |
 
 ## Key Features
@@ -86,8 +142,8 @@ Financial systems are high-value targets. Summa bakes security into every layer 
   <Card title="Two-Phase Holds" href="/docs/holds">
     Reserve funds before settlement. Supports partial capture, void, expiry, and multi-destination splits.
   </Card>
-  <Card title="14 Built-in Plugins" href="/docs/plugins">
-    Reconciliation, snapshots, velocity limits, audit log, outbox, DLQ, hot accounts, scheduled transactions, admin, OpenAPI, observability, statements, and more.
+  <Card title="25 Built-in Plugins" href="/docs/plugins">
+    Audit log, reconciliation, snapshots, velocity limits, FX engine, accrual accounting, financial reporting, data retention, observability, i18n, MCP, and more.
   </Card>
   <Card title="Idempotency" href="/docs/transactions#idempotency">
     Built-in idempotency key support. Safe retries with no double-posting, even under network failures.
@@ -164,6 +220,7 @@ const balance = await summa.accounts.getBalance("user_123");
   <File name="@summa/kysely-adapter" />
   <File name="@summa/memory-adapter" />
   <File name="@summa/client" />
+  <File name="@summa/redis-storage" />
   <File name="@summa/telemetry" />
   <File name="@summa/test-utils" />
 </Files>
@@ -171,15 +228,16 @@ const balance = await summa.accounts.getBalance("user_123");
 | Package | Description |
 |---------|-------------|
 | `summa` | Main ledger library with all managers and plugins |
-| `@summa/core` | Core types, adapter interface, plugin interface |
-| `@summa/cli` | CLI for migrations, integrity checks, diagnostics |
+| `@summa/core` | Core types, adapter interface, plugin interface, SQL dialects (PostgreSQL, MySQL, SQLite) |
+| `@summa/cli` | CLI for migrations, integrity checks, diagnostics, auto-install, and client codegen |
 | `@summa/drizzle-adapter` | Drizzle ORM adapter |
 | `@summa/prisma-adapter` | Prisma adapter |
 | `@summa/kysely-adapter` | Kysely adapter |
 | `@summa/memory-adapter` | In-memory adapter for testing |
 | `@summa/client` | Type-safe HTTP client SDK with React, Vue, and Svelte bindings |
-| `@summa/telemetry` | Anonymous telemetry for CLI usage analytics |
-| `@summa/test-utils` | Test assertions for balance, double-entry, and hash chain verification |
+| `@summa/redis-storage` | Redis-backed secondary storage for rate limiting and caching |
+| `@summa/telemetry` | CLI usage analytics + optional OpenTelemetry tracing integration |
+| `@summa/test-utils` | Test assertions, structured test suite runner, balance and hash chain verification |
 
 ## Next Steps
 
@@ -203,7 +261,7 @@ const balance = await summa.accounts.getBalance("user_123");
     Event sourcing and hash chain integrity.
   </Card>
   <Card title="Plugins" href="/docs/plugins">
-    Extend with 14 built-in plugins.
+    Extend with 25 built-in plugins.
   </Card>
   <Card title="Client SDK" href="/docs/client-sdk">
     Type-safe HTTP client for service-to-service calls.

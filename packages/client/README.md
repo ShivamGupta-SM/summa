@@ -20,7 +20,7 @@ const client = createSummaClient({
 
 const account = await client.accounts.create({
   holderId: "user_123",
-  holderType: "user",
+  holderType: "individual",
 });
 
 const balance = await client.accounts.getBalance("user_123");

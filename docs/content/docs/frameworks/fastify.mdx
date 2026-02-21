@@ -1,0 +1,231 @@
+---
+title: Fastify
+description: Mount Summa's HTTP API on Fastify.
+icon: Fastify
+---
+
+## Installation
+
+```bash
+pnpm add summa fastify
+```
+
+## Quick Start
+
+```ts
+import Fastify from "fastify";
+import { createSumma } from "summa";
+import { createSummaFastify } from "summa/api/fastify";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzle } from "drizzle-orm/node-postgres";
+
+const db = drizzle(process.env.DATABASE_URL!);
+
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+});
+
+const app = Fastify();
+app.register(createSummaFastify(summa), { prefix: "/api/ledger" });
+
+await app.listen({ port: 3000 });
+```
+
+## How It Works
+
+`createSummaFastify()` returns an async Fastify plugin that:
+
+1. Registers a catch-all `/*` route inside the plugin scope
+2. Extracts the path from `request.url` (strips query string)
+3. Flattens `request.query` and `request.headers` arrays to single values
+4. Passes everything to Summa's universal `handleRequest()` router
+5. Returns the response via Fastify's fluent `reply.status().headers().send()` API
+
+Fastify's `prefix` option handles path stripping automatically — Summa receives `/accounts`, not `/api/ledger/accounts`.
+
+## Mounting
+
+Summa integrates as a standard Fastify plugin using `app.register()`:
+
+```ts
+app.register(createSummaFastify(summa), { prefix: "/api/ledger" });
+```
+
+The `prefix` option tells Fastify to strip `/api/ledger` from the path before passing it to the plugin's route handlers.
+
+## Handler Options
+
+All framework integrations share the same options:
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `rateLimiter` | `RateLimiter` | Rate limiter instance (see [Rate Limiting](#rate-limiting)) |
+| `rateLimitKeyExtractor` | `function` | Extract rate limit key from request (e.g., API key, IP). Default: `"global"` |
+| `trustedOrigins` | `string[]` | CSRF protection — only allow mutating requests from these origins |
+| `onRequest` | `function` | Request interceptor. Return an `ApiResponse` to short-circuit (e.g., 401). |
+| `onResponse` | `function` | Response interceptor. Modify responses before sending. |
+
+<Callout type="info" title="No basePath option">
+  Fastify handles prefix routing via `app.register(plugin, { prefix })` — no `basePath` option is needed.
+</Callout>
+
+## Authentication
+
+Use the `onRequest` hook to add authentication:
+
+```ts
+app.register(
+  createSummaFastify(summa, {
+    onRequest: (req) => {
+      const apiKey = req.headers?.["x-api-key"];
+      if (!apiKey || !isValidApiKey(apiKey)) {
+        return {
+          status: 401,
+          body: { error: { code: "UNAUTHORIZED", message: "Invalid API key" } },
+        };
+      }
+      return req;
+    },
+  }),
+  { prefix: "/api/ledger" },
+);
+```
+
+You can also use Fastify's own hooks before the Summa plugin:
+
+```ts
+app.addHook("onRequest", async (request, reply) => {
+  if (request.url.startsWith("/api/ledger") && !request.headers["x-api-key"]) {
+    reply.code(401).send({ error: "Unauthorized" });
+  }
+});
+```
+
+**Execution order:** Fastify hooks → `onRequest` → CSRF check → rate limiting → plugin hooks → route handler → plugin hooks (reverse) → `onResponse`
+
+## Rate Limiting
+
+```ts
+import { createSummaFastify } from "summa/api/fastify";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+
+app.register(
+  createSummaFastify(summa, {
+    rateLimiter: createRateLimiter(standardRateLimit),
+    rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+  }),
+  { prefix: "/api/ledger" },
+);
+```
+
+| Preset | Limit | Window |
+|--------|:-----:|:------:|
+| `standardRateLimit` | 100 | 60s |
+| `strictRateLimit` | 20 | 60s |
+| `lenientRateLimit` | 500 | 60s |
+| `burstRateLimit` | 10 | 1s |
+
+## CSRF Protection
+
+```ts
+app.register(
+  createSummaFastify(summa, {
+    trustedOrigins: ["https://app.example.com"],
+  }),
+  { prefix: "/api/ledger" },
+);
+```
+
+## Body Size Limits
+
+Fastify has built-in body size limiting:
+
+```ts
+const app = Fastify({
+  bodyLimit: 1048576, // 1 MB
+});
+```
+
+## Full Production Example
+
+```ts
+import Fastify from "fastify";
+import { createSumma } from "summa";
+import { createSummaFastify } from "summa/api/fastify";
+import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { Pool } from "pg";
+
+// Database
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const db = drizzle(pool);
+const { adapter, close } = createPooledAdapter({ pool, drizzle: db });
+
+// Summa
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [auditLog(), reconciliation(), velocityLimits()],
+});
+
+// Fastify app
+const app = Fastify({
+  bodyLimit: 1048576,
+  logger: true,
+});
+
+app.register(
+  createSummaFastify(summa, {
+    rateLimiter: createRateLimiter(standardRateLimit),
+    rateLimitKeyExtractor: (req) => req.headers?.["x-api-key"] ?? "anonymous",
+    trustedOrigins: [process.env.APP_ORIGIN!],
+    onRequest: (req) => {
+      const key = req.headers?.["x-api-key"];
+      if (!key) {
+        return { status: 401, body: { error: { code: "UNAUTHORIZED", message: "Missing API key" } } };
+      }
+      return req;
+    },
+  }),
+  { prefix: "/api/ledger" },
+);
+
+// Start workers
+await summa.workers.start();
+
+// Start server
+await app.listen({ port: 3000, host: "0.0.0.0" });
+
+// Graceful shutdown
+async function shutdown() {
+  await app.close();
+  await summa.workers.stop();
+  await close();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+## Combining with Existing Fastify Apps
+
+Summa registers as a standard Fastify plugin, so it lives alongside your other routes:
+
+```ts
+const app = Fastify();
+
+// Your own routes
+app.get("/api/users", userHandler);
+
+// Summa ledger routes
+app.register(createSummaFastify(summa), { prefix: "/api/ledger" });
+
+await app.listen({ port: 3000 });
+```

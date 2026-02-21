@@ -14,6 +14,7 @@
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
 
 import type { SummaContext, SummaPlugin } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // TYPES
@@ -60,6 +61,7 @@ export function snapshots(): SummaPlugin {
 async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> {
 	const today = new Date();
 	const snapshotDate = toDateString(today);
+	const t = createTableResolver(ctx.options.schema);
 
 	ctx.logger.info("Daily snapshot starting", { date: snapshotDate });
 
@@ -68,7 +70,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 		block_hash: string;
 	}>(
 		`SELECT block_hash
-		 FROM block_checkpoint
+		 FROM ${t("block_checkpoint")}
 		 ORDER BY block_sequence DESC
 		 LIMIT 1`,
 		[],
@@ -81,7 +83,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 		max_date: string | null;
 	}>(
 		`SELECT MAX(snapshot_date)::text AS max_date
-		 FROM account_snapshot`,
+		 FROM ${t("account_snapshot")}`,
 		[],
 	);
 
@@ -98,7 +100,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 			account_id: string;
 		}>(
 			`SELECT DISTINCT e.account_id
-			 FROM entry_record e
+			 FROM ${t("entry_record")} e
 			 WHERE e.account_id IS NOT NULL
 			   AND e.created_at > ($1::date + interval '1 day')::timestamptz
 			 LIMIT 100000`,
@@ -132,7 +134,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 		}>(
 			`SELECT id, holder_id, balance, credit_balance, debit_balance,
 			        pending_credit, pending_debit, currency, status
-			 FROM account_balance
+			 FROM ${t("account_balance")}
 			 WHERE id > $1
 			 ORDER BY id ASC
 			 LIMIT $2`,
@@ -158,7 +160,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 			// Insert snapshot with ON CONFLICT DO NOTHING (immutable)
 			// Each (account_id, snapshot_date) pair is unique.
 			await ctx.adapter.rawMutate(
-				`INSERT INTO account_snapshot (
+				`INSERT INTO ${t("account_snapshot")} (
 					account_id,
 					snapshot_date,
 					balance,
@@ -238,6 +240,7 @@ export async function getHistoricalBalance(
 	// Return null early for invalid UUID to avoid PostgreSQL cast errors
 	if (!UUID_REGEX.test(accountId)) return null;
 
+	const t = createTableResolver(ctx.options.schema);
 	const dateStr = typeof date === "string" ? date : toDateString(date);
 
 	const rows = await ctx.adapter.raw<{
@@ -265,7 +268,7 @@ export async function getHistoricalBalance(
 			currency,
 			account_status,
 			checkpoint_hash
-		 FROM account_snapshot
+		 FROM ${t("account_snapshot")}
 		 WHERE account_id = $1
 		   AND snapshot_date = $2
 		 LIMIT 1`,
@@ -320,6 +323,8 @@ export async function getEndOfMonthBalance(
 	// Return null early for invalid UUID to avoid PostgreSQL cast errors
 	if (!UUID_REGEX.test(accountId)) return null;
 
+	const t = createTableResolver(ctx.options.schema);
+
 	// Build the first and last day of the month
 	// month is 1-indexed (1=January, 12=December)
 	const monthStr = String(month).padStart(2, "0");
@@ -356,7 +361,7 @@ export async function getEndOfMonthBalance(
 			currency,
 			account_status,
 			checkpoint_hash
-		 FROM account_snapshot
+		 FROM ${t("account_snapshot")}
 		 WHERE account_id = $1
 		   AND snapshot_date >= $2::date
 		   AND snapshot_date < $3::date

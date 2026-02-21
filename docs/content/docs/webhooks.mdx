@@ -81,6 +81,8 @@ const signature = webhooks.sign(payload);
 When receiving webhooks from Summa:
 
 ```ts
+import { WebhookError } from "summa/webhooks";
+
 // Express example
 app.post("/webhooks/summa", (req, res) => {
   const signature = req.headers["x-summa-signature"] as string;
@@ -92,12 +94,22 @@ app.post("/webhooks/summa", (req, res) => {
     console.log(payload.event, payload.data);
     res.sendStatus(200);
   } catch (error) {
-    // "Invalid webhook signature" — HMAC mismatch
-    // "Webhook payload is too old" — timestamp exceeds tolerance
+    if (error instanceof WebhookError) {
+      // error.code: "INVALID_SIGNATURE" — HMAC mismatch
+      //             "PAYLOAD_EXPIRED"   — timestamp exceeds tolerance
+      console.error(`Webhook rejected: ${error.code}`);
+    }
     res.sendStatus(401);
   }
 });
 ```
+
+The `WebhookError` class provides a typed `code` property for programmatic error handling:
+
+| Code | Meaning |
+|------|---------|
+| `INVALID_SIGNATURE` | HMAC-SHA256 signature does not match the payload |
+| `PAYLOAD_EXPIRED` | Payload timestamp exceeds the configured tolerance |
 
 ### Manual Verification
 

@@ -33,14 +33,130 @@ interface RouteInfo {
 	responses: Record<string, { description: string; schema?: Record<string, unknown> }>;
 }
 
+// =============================================================================
+// REUSABLE JSON SCHEMA FRAGMENTS
+// =============================================================================
+
+const accountSchema = {
+	type: "object",
+	properties: {
+		id: { type: "string", format: "uuid" },
+		holderId: { type: "string" },
+		holderType: { type: "string", enum: ["individual", "business"] },
+		currency: { type: "string" },
+		balance: { type: "number" },
+		availableBalance: { type: "number" },
+		pendingDebit: { type: "number" },
+		pendingCredit: { type: "number" },
+		status: { type: "string", enum: ["active", "frozen", "closed"] },
+		createdAt: { type: "string", format: "date-time" },
+	},
+};
+
+const transactionSchema = {
+	type: "object",
+	properties: {
+		id: { type: "string", format: "uuid" },
+		reference: { type: "string" },
+		type: {
+			type: "string",
+			enum: ["credit", "debit", "transfer", "journal", "correction", "adjustment"],
+		},
+		status: { type: "string", enum: ["inflight", "posted", "reversed"] },
+		amount: { type: "number" },
+		amountDecimal: { type: "string" },
+		currency: { type: "string" },
+		description: { type: "string" },
+		sourceAccountId: { type: ["string", "null"], format: "uuid" },
+		destinationAccountId: { type: ["string", "null"], format: "uuid" },
+		correlationId: { type: "string" },
+		metadata: { type: "object" },
+		createdAt: { type: "string", format: "date-time" },
+		postedAt: { type: ["string", "null"], format: "date-time" },
+	},
+};
+
+const holdSchema = {
+	type: "object",
+	properties: {
+		id: { type: "string", format: "uuid" },
+		accountId: { type: "string", format: "uuid" },
+		amount: { type: "number" },
+		reference: { type: "string" },
+		status: { type: "string", enum: ["inflight", "posted", "voided", "expired"] },
+		expiresAt: { type: ["string", "null"], format: "date-time" },
+		createdAt: { type: "string", format: "date-time" },
+	},
+};
+
+const balanceSchema = {
+	type: "object",
+	properties: {
+		balance: { type: "number" },
+		availableBalance: { type: "number" },
+		pendingDebit: { type: "number" },
+		pendingCredit: { type: "number" },
+		currency: { type: "string" },
+	},
+};
+
+const errorSchema = {
+	type: "object",
+	properties: {
+		error: {
+			type: "object",
+			properties: {
+				code: { type: "string" },
+				message: { type: "string" },
+			},
+		},
+	},
+};
+
+function paginatedSchema(itemSchema: Record<string, unknown>) {
+	return {
+		type: "object",
+		properties: {
+			data: { type: "array", items: itemSchema },
+			hasMore: { type: "boolean" },
+			total: { type: "number" },
+		},
+	};
+}
+
 const CORE_ROUTES: RouteInfo[] = [
 	// Health
 	{
 		method: "get",
 		path: "/ok",
-		summary: "Health check",
+		summary: "Liveness check",
 		tag: "System",
-		responses: { "200": { description: "OK" } },
+		responses: {
+			"200": {
+				description: "OK",
+				schema: { type: "object", properties: { ok: { type: "boolean" } } },
+			},
+		},
+	},
+	{
+		method: "get",
+		path: "/health",
+		summary: "Readiness check (DB connectivity + schema)",
+		tag: "System",
+		responses: {
+			"200": {
+				description: "Healthy",
+				schema: {
+					type: "object",
+					properties: {
+						status: { type: "string" },
+						checks: { type: "object" },
+						timestamp: { type: "string", format: "date-time" },
+					},
+				},
+			},
+			"503": { description: "Degraded", schema: errorSchema },
+		},
 	},
 
 	// Accounts
@@ -49,7 +165,9 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/accounts",
 		summary: "List accounts",
 		tag: "Accounts",
-		responses: { "200": { description: "Paginated list of accounts" } },
+		responses: {
+			"200": { description: "Paginated list of accounts", schema: paginatedSchema(accountSchema) },
+		},
 	},
 	{
 		method: "post",
@@ -70,42 +188,42 @@ const CORE_ROUTES: RouteInfo[] = [
 				name: { type: "string", description: "Display name for the account" },
 			},
 		},
-		responses: { "201": { description: "Account created" } },
+		responses: { "201": { description: "Account created", schema: accountSchema } },
 	},
 	{
 		method: "get",
 		path: "/accounts/{holderId}",
 		summary: "Get account by holder ID",
 		tag: "Accounts",
-		responses: { "200": { description: "Account details" } },
+		responses: { "200": { description: "Account details", schema: accountSchema } },
 	},
 	{
 		method: "get",
 		path: "/accounts/{holderId}/balance",
 		summary: "Get account balance",
 		tag: "Accounts",
-		responses: { "200": { description: "Account balance" } },
+		responses: { "200": { description: "Account balance", schema: balanceSchema } },
 	},
 	{
 		method: "post",
 		path: "/accounts/{holderId}/freeze",
 		summary: "Freeze account",
 		tag: "Accounts",
-		responses: { "200": { description: "Account frozen" } },
+		responses: { "200": { description: "Account frozen", schema: accountSchema } },
 	},
 	{
 		method: "post",
 		path: "/accounts/{holderId}/unfreeze",
 		summary: "Unfreeze account",
 		tag: "Accounts",
-		responses: { "200": { description: "Account unfrozen" } },
+		responses: { "200": { description: "Account unfrozen", schema: accountSchema } },
 	},
 	{
 		method: "post",
 		path: "/accounts/{holderId}/close",
 		summary: "Close account",
 		tag: "Accounts",
-		responses: { "200": { description: "Account closed" } },
+		responses: { "200": { description: "Account closed", schema: accountSchema } },
 	},
 
 	// Transactions
@@ -114,7 +232,12 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/transactions",
 		summary: "List transactions",
 		tag: "Transactions",
-		responses: { "200": { description: "Paginated list of transactions" } },
+		responses: {
+			"200": {
+				description: "Paginated list of transactions",
+				schema: paginatedSchema(transactionSchema),
+			},
+		},
 	},
 	{
 		method: "post",
@@ -134,7 +257,7 @@ const CORE_ROUTES: RouteInfo[] = [
 				idempotencyKey: { type: "string" },
 			},
 		},
-		responses: { "201": { description: "Credit transaction created" } },
+		responses: { "201": { description: "Credit transaction created", schema: transactionSchema } },
 	},
 	{
 		method: "post",
@@ -154,7 +277,7 @@ const CORE_ROUTES: RouteInfo[] = [
 				idempotencyKey: { type: "string" },
 			},
 		},
-		responses: { "201": { description: "Debit transaction created" } },
+		responses: { "201": { description: "Debit transaction created", schema: transactionSchema } },
 	},
 	{
 		method: "post",
@@ -175,7 +298,9 @@ const CORE_ROUTES: RouteInfo[] = [
 				idempotencyKey: { type: "string" },
 			},
 		},
-		responses: { "201": { description: "Transfer transaction created" } },
+		responses: {
+			"201": { description: "Transfer transaction created", schema: transactionSchema },
+		},
 	},
 	{
 		method: "post",
@@ -203,7 +328,9 @@ const CORE_ROUTES: RouteInfo[] = [
 				idempotencyKey: { type: "string" },
 			},
 		},
-		responses: { "201": { description: "Multi-transfer transaction created" } },
+		responses: {
+			"201": { description: "Multi-transfer transaction created", schema: transactionSchema },
+		},
 	},
 	{
 		method: "post",
@@ -220,14 +347,14 @@ const CORE_ROUTES: RouteInfo[] = [
 				idempotencyKey: { type: "string" },
 			},
 		},
-		responses: { "201": { description: "Refund transaction created" } },
+		responses: { "201": { description: "Refund transaction created", schema: transactionSchema } },
 	},
 	{
 		method: "get",
 		path: "/transactions/{id}",
 		summary: "Get transaction by ID",
 		tag: "Transactions",
-		responses: { "200": { description: "Transaction details" } },
+		responses: { "200": { description: "Transaction details", schema: transactionSchema } },
 	},
 
 	// Holds
@@ -236,42 +363,66 @@ const CORE_ROUTES: RouteInfo[] = [
 		path: "/holds",
 		summary: "List all holds",
 		tag: "Holds",
-		responses: { "200": { description: "Paginated list of holds" } },
+		responses: {
+			"200": { description: "Paginated list of holds", schema: paginatedSchema(holdSchema) },
+		},
 	},
 	{
 		method: "get",
 		path: "/holds/active",
 		summary: "List active holds",
 		tag: "Holds",
-		responses: { "200": { description: "Paginated list of active holds" } },
+		responses: {
+			"200": { description: "Paginated list of active holds", schema: paginatedSchema(holdSchema) },
+		},
 	},
 	{
 		method: "post",
 		path: "/holds",
 		summary: "Create hold",
 		tag: "Holds",
-		responses: { "201": { description: "Hold created" } },
+		responses: { "201": { description: "Hold created", schema: holdSchema } },
 	},
 	{
 		method: "post",
 		path: "/holds/{holdId}/commit",
 		summary: "Commit hold",
 		tag: "Holds",
-		responses: { "200": { description: "Hold committed" } },
+		responses: {
+			"200": {
+				description: "Hold committed",
+				schema: {
+					type: "object",
+					properties: {
+						holdId: { type: "string" },
+						committedAmount: { type: "number" },
+						originalAmount: { type: "number" },
+					},
+				},
+			},
+		},
 	},
 	{
 		method: "post",
 		path: "/holds/{holdId}/void",
 		summary: "Void hold",
 		tag: "Holds",
-		responses: { "200": { description: "Hold voided" } },
+		responses: {
+			"200": {
+				description: "Hold voided",
+				schema: {
+					type: "object",
+					properties: { holdId: { type: "string" }, amount: { type: "number" } },
+				},
+			},
+		},
 	},
 	{
 		method: "get",
 		path: "/holds/{id}",
 		summary: "Get hold by ID",
 		tag: "Holds",
-		responses: { "200": { description: "Hold details" } },
+		responses: { "200": { description: "Hold details", schema: holdSchema } },
 	},
 
 	// Limits

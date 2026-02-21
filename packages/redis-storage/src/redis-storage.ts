@@ -100,6 +100,16 @@ export function createRedisStorage(options: RedisStorageOptions): RedisStorageRe
 		async increment(key: string, amount?: number): Promise<number> {
 			return client.incrby(prefixed(key), amount ?? 1);
 		},
+
+		async incrementWithTTL(key: string, ttl: number, amount?: number): Promise<number> {
+			const fullKey = prefixed(key);
+			const newCount = await client.incrby(fullKey, amount ?? 1);
+			if (newCount === (amount ?? 1)) {
+				// First increment — set the TTL
+				await client.expire(fullKey, ttl);
+			}
+			return newCount;
+		},
 	};
 
 	return {

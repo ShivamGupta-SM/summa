@@ -7,11 +7,19 @@
 //
 // Supports async background generation for CSV/PDF via the statement_job table
 // and a background worker, preventing request timeouts on large statements.
+//
+// Status tracking uses entity_status_log (append-only) instead of a mutable
+// status column on statement_job.
 
 import { randomUUID } from "node:crypto";
 import type { PluginApiResponse, PluginEndpoint, SummaContext, SummaPlugin } from "@summa/core";
 import { minorToDecimal } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 import PDFDocument from "pdfkit";
+import {
+	initializeEntityStatus,
+	transitionEntityStatus,
+} from "../../infrastructure/entity-status.js";
 
 // =============================================================================
 // TYPES
@@ -135,8 +143,9 @@ async function resolveAccount(
 	ctx: SummaContext,
 	holderId: string,
 ): Promise<{ id: string; currency: string } | null> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{ id: string; currency: string }>(
-		"SELECT id, currency FROM account_balance WHERE holder_id = $1 LIMIT 1",
+		`SELECT id, currency FROM ${t("account_balance")} WHERE holder_id = $1 LIMIT 1`,
 		[holderId],
 	);
 	return rows[0] ?? null;
@@ -154,6 +163,7 @@ async function queryEntries(
 	limit: number,
 	offset: number,
 ): Promise<RawEntryRow[]> {
+	const t = createTableResolver(ctx.options.schema);
 	return ctx.adapter.raw<RawEntryRow>(
 		`SELECT
 			e.id            AS entry_id,
@@ -166,8 +176,8 @@ async function queryEntries(
 			e.balance_before,
 			e.balance_after,
 			e.created_at
-		FROM entry_record e
-		JOIN transaction_record t ON t.id = e.transaction_id
+		FROM ${t("entry_record")} e
+		JOIN ${t("transaction_record")} t ON t.id = e.transaction_id
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz
@@ -183,9 +193,10 @@ async function queryEntryCount(
 	dateFrom: string,
 	dateTo: string,
 ): Promise<number> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<RawCountRow>(
 		`SELECT COUNT(*)::int AS cnt
-		FROM entry_record e
+		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz`,
@@ -200,13 +211,14 @@ async function queryAggregates(
 	dateFrom: string,
 	dateTo: string,
 ): Promise<RawSummaryRow> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<RawSummaryRow>(
 		`SELECT
 			COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0)::bigint AS total_credits,
 			COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT'  THEN e.amount ELSE 0 END), 0)::bigint AS total_debits,
 			COUNT(DISTINCT e.transaction_id)::int AS transaction_count,
 			COUNT(*)::int AS entry_count
-		FROM entry_record e
+		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz`,
@@ -225,9 +237,10 @@ async function queryOpeningBalance(
 	accountId: string,
 	dateFrom: string,
 ): Promise<number> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
-		FROM entry_record e
+		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
 			AND e.created_at < $2::timestamptz
 		ORDER BY e.created_at DESC, e.id DESC
@@ -244,9 +257,10 @@ async function queryClosingBalance(
 	dateTo: string,
 	openingBalance: number,
 ): Promise<number> {
+	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
-		FROM entry_record e
+		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz
@@ -628,43 +642,46 @@ export interface StatementJob {
 	completedAt: string | null;
 }
 
+/** Raw row from statement_job — no longer contains status/error/completed_at columns */
 interface RawStatementJobRow {
 	id: string;
 	holder_id: string;
 	format: string;
-	status: string;
 	date_from: string;
 	date_to: string;
 	result: string | null;
 	filename: string | null;
-	error: string | null;
 	created_at: string | Date;
-	completed_at: string | Date | null;
 }
 
-function mapJobRow(row: RawStatementJobRow): StatementJob {
+/** Raw row when joining statement_job with entity_status_log for current status */
+interface RawStatementJobWithStatusRow extends RawStatementJobRow {
+	current_status: string;
+	status_metadata: Record<string, unknown> | null;
+}
+
+function mapJobRow(row: RawStatementJobWithStatusRow): StatementJob {
+	const meta = row.status_metadata ?? {};
 	return {
 		id: row.id,
 		holderId: row.holder_id,
 		format: row.format as "csv" | "pdf",
-		status: row.status as StatementJobStatus,
+		status: row.current_status as StatementJobStatus,
 		dateFrom: row.date_from,
 		dateTo: row.date_to,
 		result: row.result,
 		filename: row.filename,
-		error: row.error,
+		error: (meta.error as string) ?? null,
 		createdAt: typeof row.created_at === "string" ? row.created_at : row.created_at.toISOString(),
-		completedAt: row.completed_at
-			? typeof row.completed_at === "string"
-				? row.completed_at
-				: row.completed_at.toISOString()
-			: null,
+		completedAt: (meta.completed_at as string) ?? null,
 	};
 }
 
 // =============================================================================
 // ASYNC JOB QUERY FUNCTIONS
 // =============================================================================
+
+const ENTITY_TYPE = "statement_job";
 
 async function createStatementJob(
 	ctx: SummaContext,
@@ -681,23 +698,59 @@ async function createStatementJob(
 	const to = params.dateTo.slice(0, 10);
 	const filename = `statement-${params.holderId}-${from}-${to}.${params.format}`;
 
-	const rows = await ctx.adapter.raw<RawStatementJobRow>(
-		`INSERT INTO statement_job (id, holder_id, format, status, date_from, date_to, filename, created_at)
-		 VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7)
-		 RETURNING *`,
-		[id, params.holderId, params.format, params.dateFrom, params.dateTo, filename, now],
-	);
+	const t = createTableResolver(ctx.options.schema);
 
-	const row = rows[0];
-	if (!row) throw new Error("INSERT INTO statement_job returned no rows");
-	return mapJobRow(row);
+	const job = await ctx.adapter.transaction(async (tx) => {
+		const rows = await tx.raw<RawStatementJobRow>(
+			`INSERT INTO ${t("statement_job")} (id, holder_id, format, date_from, date_to, filename, created_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7)
+			 RETURNING *`,
+			[id, params.holderId, params.format, params.dateFrom, params.dateTo, filename, now],
+		);
+
+		const row = rows[0];
+		if (!row) throw new Error("INSERT INTO statement_job returned no rows");
+
+		await initializeEntityStatus(tx, ENTITY_TYPE, id, "pending");
+
+		return {
+			...row,
+			current_status: "pending" as const,
+			status_metadata: null,
+		} satisfies RawStatementJobWithStatusRow;
+	});
+
+	return mapJobRow(job);
 }
 
 async function getStatementJob(ctx: SummaContext, jobId: string): Promise<StatementJob | null> {
-	const rows = await ctx.adapter.raw<RawStatementJobRow>(
-		"SELECT * FROM statement_job WHERE id = $1",
+	const t = createTableResolver(ctx.options.schema);
+
+	// Use LATERAL JOIN to entity_status_log to get current status
+	const rows = await ctx.adapter.raw<RawStatementJobWithStatusRow>(
+		`SELECT
+			j.id,
+			j.holder_id,
+			j.format,
+			j.date_from,
+			j.date_to,
+			j.result,
+			j.filename,
+			j.created_at,
+			s.status AS current_status,
+			s.metadata AS status_metadata
+		FROM ${t("statement_job")} j
+		LEFT JOIN LATERAL (
+			SELECT status, metadata
+			FROM ${t("entity_status_log")}
+			WHERE entity_type = '${ENTITY_TYPE}' AND entity_id = j.id
+			ORDER BY created_at DESC
+			LIMIT 1
+		) s ON true
+		WHERE j.id = $1`,
 		[jobId],
 	);
+
 	const row = rows[0];
 	if (!row) return null;
 	return mapJobRow(row);
@@ -705,21 +758,52 @@ async function getStatementJob(ctx: SummaContext, jobId: string): Promise<Statem
 
 async function processStatementJobs(ctx: SummaContext): Promise<number> {
 	const d = ctx.dialect;
+	const t = createTableResolver(ctx.options.schema);
 
-	// Claim up to 5 pending jobs atomically
-	const pendingJobs = await ctx.adapter.raw<RawStatementJobRow>(
-		`UPDATE statement_job
-		 SET status = 'processing'
-		 WHERE id IN (
-		   SELECT id FROM statement_job
-		   WHERE status = 'pending'
-		   ORDER BY created_at ASC
-		   LIMIT 5
-		   ${d.forUpdateSkipLocked()}
-		 )
-		 ${d.returning(["*"])}`,
-		[],
-	);
+	// Find up to 5 pending jobs using LATERAL JOIN to entity_status_log.
+	// Lock the statement_job rows with FOR UPDATE SKIP LOCKED to prevent
+	// concurrent workers from claiming the same jobs.
+	const pendingJobs = await ctx.adapter.transaction(async (tx) => {
+		const candidates = await tx.raw<RawStatementJobWithStatusRow>(
+			`SELECT
+				j.id,
+				j.holder_id,
+				j.format,
+				j.date_from,
+				j.date_to,
+				j.result,
+				j.filename,
+				j.created_at,
+				s.status AS current_status,
+				s.metadata AS status_metadata
+			FROM ${t("statement_job")} j
+			INNER JOIN LATERAL (
+				SELECT status, metadata
+				FROM ${t("entity_status_log")}
+				WHERE entity_type = '${ENTITY_TYPE}' AND entity_id = j.id
+				ORDER BY created_at DESC
+				LIMIT 1
+			) s ON true
+			WHERE s.status = 'pending'
+			ORDER BY j.created_at ASC
+			LIMIT 5
+			${d.forUpdateSkipLocked()}`,
+			[],
+		);
+
+		// Transition each claimed job to 'processing'
+		for (const row of candidates) {
+			await transitionEntityStatus({
+				tx,
+				entityType: ENTITY_TYPE,
+				entityId: row.id,
+				status: "processing",
+				expectedCurrentStatus: "pending",
+			});
+		}
+
+		return candidates;
+	});
 
 	let processed = 0;
 
@@ -734,10 +818,19 @@ async function processStatementJobs(ctx: SummaContext): Promise<number> {
 					dateTo: job.dateTo,
 				});
 				if (!csv) {
-					await ctx.adapter.rawMutate(
-						`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
-						["Account not found", new Date().toISOString(), job.id],
-					);
+					await ctx.adapter.transaction(async (tx) => {
+						await transitionEntityStatus({
+							tx,
+							entityType: ENTITY_TYPE,
+							entityId: job.id,
+							status: "failed",
+							expectedCurrentStatus: "processing",
+							metadata: {
+								error: "Account not found",
+								completed_at: new Date().toISOString(),
+							},
+						});
+					});
 					continue;
 				}
 				content = csv;
@@ -747,26 +840,62 @@ async function processStatementJobs(ctx: SummaContext): Promise<number> {
 					dateTo: job.dateTo,
 				});
 				if (!pdf) {
-					await ctx.adapter.rawMutate(
-						`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
-						["Account not found", new Date().toISOString(), job.id],
-					);
+					await ctx.adapter.transaction(async (tx) => {
+						await transitionEntityStatus({
+							tx,
+							entityType: ENTITY_TYPE,
+							entityId: job.id,
+							status: "failed",
+							expectedCurrentStatus: "processing",
+							metadata: {
+								error: "Account not found",
+								completed_at: new Date().toISOString(),
+							},
+						});
+					});
 					continue;
 				}
 				content = pdf.toString("base64");
 			}
 
-			await ctx.adapter.rawMutate(
-				`UPDATE statement_job SET status = 'completed', result = $1, completed_at = $2 WHERE id = $3`,
-				[content, new Date().toISOString(), job.id],
-			);
+			await ctx.adapter.transaction(async (tx) => {
+				// Store the result content on the statement_job row
+				await tx.rawMutate(`UPDATE ${t("statement_job")} SET result = $1 WHERE id = $2`, [
+					content,
+					job.id,
+				]);
+
+				await transitionEntityStatus({
+					tx,
+					entityType: ENTITY_TYPE,
+					entityId: job.id,
+					status: "completed",
+					expectedCurrentStatus: "processing",
+					metadata: {
+						completed_at: new Date().toISOString(),
+					},
+				});
+			});
 			processed++;
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
-			await ctx.adapter.rawMutate(
-				`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
-				[errorMsg.slice(0, 1000), new Date().toISOString(), job.id],
-			);
+			try {
+				await ctx.adapter.transaction(async (tx) => {
+					await transitionEntityStatus({
+						tx,
+						entityType: ENTITY_TYPE,
+						entityId: job.id,
+						status: "failed",
+						expectedCurrentStatus: "processing",
+						metadata: {
+							error: errorMsg.slice(0, 1000),
+							completed_at: new Date().toISOString(),
+						},
+					});
+				});
+			} catch {
+				// If we can't even record the failure, log and move on
+			}
 		}
 	}
 
@@ -952,26 +1081,20 @@ export function statements(options?: StatementOptions): SummaPlugin {
 		},
 		endpoints,
 
-		// Schema for the statement_job table
+		// Schema for the statement_job table — status is tracked via entity_status_log
 		schema: {
 			statement_job: {
 				columns: {
 					id: { type: "uuid", primaryKey: true, notNull: true },
 					holder_id: { type: "text", notNull: true },
 					format: { type: "text", notNull: true },
-					status: { type: "text", notNull: true, default: "'pending'" },
 					date_from: { type: "text", notNull: true },
 					date_to: { type: "text", notNull: true },
 					result: { type: "text" },
 					filename: { type: "text" },
-					error: { type: "text" },
 					created_at: { type: "timestamp", notNull: true },
-					completed_at: { type: "timestamp" },
 				},
-				indexes: [
-					{ name: "idx_statement_job_status", columns: ["status"] },
-					{ name: "idx_statement_job_holder", columns: ["holder_id"] },
-				],
+				indexes: [{ name: "idx_statement_job_holder", columns: ["holder_id"] }],
 			},
 		},
 

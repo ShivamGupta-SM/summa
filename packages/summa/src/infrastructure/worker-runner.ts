@@ -7,6 +7,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { SummaContext, SummaWorkerDefinition } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
 // INTERVAL PARSING
@@ -234,16 +235,17 @@ export class SummaWorkerRunner {
 	 * interval so it expires naturally if the owning process dies.
 	 */
 	private async acquireLease(workerId: string, intervalMs: number): Promise<boolean> {
+		const t = createTableResolver(this.ctx.options.schema);
 		const leaseDurationMs = intervalMs * 2;
 		const leaseUntil = new Date(Date.now() + leaseDurationMs).toISOString();
 
 		try {
 			const d = this.ctx.dialect;
 			const rows = await this.ctx.adapter.raw<{ worker_id: string }>(
-				`INSERT INTO worker_lease (worker_id, lease_holder, lease_until)
+				`INSERT INTO ${t("worker_lease")} (worker_id, lease_holder, lease_until)
 				 VALUES ($1, $2, $3)
 				 ${d.onConflictDoUpdate(["worker_id"], { lease_holder: "$2", lease_until: "$3" })}
-				 WHERE worker_lease.lease_until < ${d.now()}
+				 WHERE ${t("worker_lease")}.lease_until < ${d.now()}
 				 ${d.returning(["*"])}`,
 				[workerId, this.leaseHolder, leaseUntil],
 			);
@@ -260,8 +262,9 @@ export class SummaWorkerRunner {
 
 	/** Release all leases held by this runner instance. */
 	private async releaseAllLeases(): Promise<void> {
+		const t = createTableResolver(this.ctx.options.schema);
 		try {
-			await this.ctx.adapter.rawMutate(`DELETE FROM worker_lease WHERE lease_holder = $1`, [
+			await this.ctx.adapter.rawMutate(`DELETE FROM ${t("worker_lease")} WHERE lease_holder = $1`, [
 				this.leaseHolder,
 			]);
 		} catch (error) {

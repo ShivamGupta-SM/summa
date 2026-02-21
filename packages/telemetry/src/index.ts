@@ -7,6 +7,7 @@ import type { EventName, TelemetryEvent } from "./events.js";
 import { isTelemetryEnabled } from "./storage.js";
 
 export type { EventName, TelemetryEvent } from "./events.js";
+export { createOtelLogger, createRequestTracer, type SummaOtelOptions } from "./otel.js";
 export { isTelemetryEnabled, readTelemetryState, writeTelemetryState } from "./storage.js";
 
 export interface TelemetryOptions {

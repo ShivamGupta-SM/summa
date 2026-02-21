@@ -1,0 +1,190 @@
+---
+title: FX Engine
+description: Foreign exchange rate caching, quotes, and gain/loss tracking.
+icon: CurrencyDollar
+---
+
+## Overview
+
+The FX engine plugin provides exchange rate caching, rate quotes with expiry, and realized/unrealized gain/loss tracking. When registered, **cross-currency transfers automatically resolve exchange rates** from your configured rate provider — no manual `exchangeRate` parameter required.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { fxEngine, type FxRateProvider } from "summa/plugins";
+
+// Implement your rate provider (e.g., from an external API)
+const rateProvider: FxRateProvider = {
+  async getRate(from, to, date) {
+    const response = await fetch(`https://api.exchangerate.host/convert?from=${from}&to=${to}`);
+    const data = await response.json();
+    return {
+      rate: data.result,       // Decimal (e.g., 0.92)
+      inverse: 1 / data.result,
+      timestamp: new Date(),
+    };
+  },
+};
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    fxEngine({
+      rateProvider,
+      cacheTtlMs: 300_000,   // 5 minutes (default)
+      quoteExpiryMs: 300_000, // 5 minutes (default)
+    }),
+  ],
+});
+```
+
+<Callout type="info" title="Rate provider returns decimals">
+  Your `FxRateProvider` returns decimal rates (e.g., `0.92`). The FX Engine automatically converts them to scaled integers (`920_000`) for storage and use across the ledger.
+</Callout>
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `rateProvider` | `FxRateProvider` | **Required** | Your exchange rate source |
+| `cacheTtlMs` | `number` | `300000` | How long to cache rates (ms) |
+| `quoteExpiryMs` | `number` | `300000` | How long quotes remain valid (ms) |
+
+## FxRateProvider Interface
+
+```ts
+interface FxRateProvider {
+  getRate(from: string, to: string, date?: Date): Promise<{
+    rate: number;    // Decimal rate (e.g., 0.92)
+    inverse: number; // Inverse decimal rate (e.g., 1.087)
+    timestamp: Date;
+  }>;
+}
+```
+
+## Cross-Currency Transfers
+
+With the FX Engine plugin registered, cross-currency transfers work automatically:
+
+```ts
+// No exchangeRate needed — resolved automatically from your rate provider
+await summa.transactions.transfer({
+  sourceHolderId: "user_usd",
+  destinationHolderId: "user_eur",
+  amount: 100_00,
+  reference: "fx-transfer-001",
+});
+// Source debited: $100.00 (USD)
+// Destination credited: €92.00 (EUR) — rate auto-resolved
+```
+
+You can override auto-resolution by providing an explicit `exchangeRate`:
+
+```ts
+await summa.transactions.transfer({
+  sourceHolderId: "user_usd",
+  destinationHolderId: "user_eur",
+  amount: 100_00,
+  exchangeRate: 920_000,   // 0.92 × 1,000,000 (6 decimal precision)
+  reference: "fx-transfer-002",
+});
+```
+
+<Callout type="info" title="Exchange rate format">
+  Exchange rates are integers with 6 decimal precision. A rate of `1.000000` is stored as `1_000_000`. For example, `0.92 EUR/USD` is `920_000`.
+</Callout>
+
+Without the FX Engine plugin, `exchangeRate` is required for cross-currency transfers.
+
+## Rate Queries
+
+### Get Current Rate
+
+```ts
+import { getRate } from "summa/plugins";
+
+const rate = await getRate(summa.$context, rateProvider, "USD", "EUR", 300_000);
+// { from: "USD", to: "EUR", rate: 920_000, inverse: 1_087_000, timestamp: "..." }
+```
+
+Rates are cached in the `fx_rate_cache` table. If a valid cached rate exists, the provider is not called.
+
+### Create a Rate Quote
+
+Lock in a rate for a specific amount with an expiry window:
+
+```ts
+import { createRateQuote } from "summa/plugins";
+
+const quote = await createRateQuote(
+  summa.$context,
+  rateProvider,
+  { from: "USD", to: "EUR", amount: 100_00 },
+  300_000, // cacheTtlMs
+  300_000, // quoteExpiryMs
+);
+// { id: "...", rate: 920_000, fromAmount: 10000, toAmount: 9200, expiresAt: "...", status: "active" }
+```
+
+## FX Gain/Loss Tracking
+
+The FX engine automatically tracks realized gain/loss on cross-currency transfers. When a transfer is identified as cross-currency, the plugin's `afterTransaction` hook:
+
+1. Detects the cross-currency transfer via transaction metadata (`crossCurrency: true`)
+2. Reads the original `exchangeRate` from the transaction metadata
+3. Fetches the current rate from the rate provider
+4. Computes gain/loss: `amount × (currentRate - originalRate) / originalRate`
+5. Inserts a record into the `fx_gain_loss` table
+
+### Using a Quote
+
+Lock in a rate with `POST /fx/quote`, then mark it as used after executing the transfer:
+
+```bash
+# 1. Create a quote
+curl -X POST http://localhost:3000/api/ledger/fx/quote \
+  -H "Content-Type: application/json" \
+  -d '{ "from": "USD", "to": "EUR", "amount": 100000 }'
+# Returns: { "id": "quote_abc", "rate": 920000, ... }
+
+# 2. Execute transfer (rate auto-resolved, or pass exchangeRate from quote)
+curl -X POST http://localhost:3000/api/ledger/transactions/transfer \
+  -H "Content-Type: application/json" \
+  -d '{ "sourceHolderId": "user_usd", "destinationHolderId": "user_eur", "amount": 100000, "reference": "fx-001" }'
+
+# 3. Mark quote as used — records gain/loss vs current rate
+curl -X POST http://localhost:3000/api/ledger/fx/quote/quote_abc/use
+```
+
+### Querying Gain/Loss
+
+```bash
+curl "http://localhost:3000/api/ledger/fx/gain-loss?limit=20&offset=0"
+```
+
+Returns paginated gain/loss entries with `transactionId`, `type`, `amount`, `currency`, `originalRate`, `currentRate`, and `createdAt`.
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `fx-quote-cleanup` | 5m | No | Expires quotes past their `expires_at` |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/fx/rate?from=USD&to=EUR` | Get current exchange rate |
+| `POST` | `/fx/quote` | Create a rate quote |
+| `POST` | `/fx/quote/:id/use` | Mark a quote as used and record gain/loss |
+| `GET` | `/fx/gain-loss` | Query realized FX gain/loss entries (paginated) |
+
+## Schema
+
+| Table | Description |
+|-------|-------------|
+| `fx_rate_cache` | Cached exchange rates with TTL |
+| `fx_rate_quote` | Rate quotes with expiry and status |
+| `fx_gain_loss` | Realized/unrealized FX gain/loss records |

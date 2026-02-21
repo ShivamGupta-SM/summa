@@ -1,3 +1,4 @@
+import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import * as p from "@clack/prompts";
@@ -355,6 +356,36 @@ function generateRouteFile(framework: FrameworkChoice): string {
 }
 
 // =============================================================================
+// CLIENT SDK TEMPLATE GENERATOR
+// =============================================================================
+
+function generateClientTemplate(opts: { configPath: string; framework?: string }): string {
+	const lines: string[] = [];
+
+	lines.push('import { createSummaClient } from "@summa/client";');
+	lines.push(`import type { InferSummaClient } from "@summa/client";`);
+	lines.push(`import type { summa } from "./${opts.configPath.replace(/\.ts$/, "")}";`);
+	lines.push("");
+	lines.push("// Infer the full client type from your server-side Summa instance.");
+	lines.push("// This gives you autocompletion for all accounts, transactions, holds, etc.");
+	lines.push("type SummaClient = InferSummaClient<typeof summa>;");
+	lines.push("");
+	lines.push("export const client = createSummaClient<SummaClient>({");
+	lines.push('  baseURL: process.env.NEXT_PUBLIC_SUMMA_URL ?? "http://localhost:3000/api/ledger",');
+	lines.push("});");
+	lines.push("");
+
+	if (opts.framework === "next") {
+		lines.push("// React hooks (Next.js / React)");
+		lines.push('// import { createSummaReact } from "@summa/client/react";');
+		lines.push("// export const { useSumma, SummaProvider } = createSummaReact(client);");
+	}
+
+	lines.push("");
+	return lines.join("\n");
+}
+
+// =============================================================================
 // INIT COMMAND
 // =============================================================================
 
@@ -581,50 +612,132 @@ export const initCommand = new Command("init")
 			}
 		}
 
-		// Next steps
+		// Auto-install dependencies
 		const deps = ["summa", adapter.pkg, ...adapter.peerDeps];
 		const installCmd = getInstallCommand(pm, deps);
+		let installed = false;
 
-		const nextSteps: string[] = [
-			`${pc.bold("1.")} Install dependencies:`,
-			`   ${pc.cyan(installCmd)}`,
-			"",
-			`${pc.bold("2.")} Set your ${pc.cyan("DATABASE_URL")} environment variable:`,
-			`   ${pc.dim('echo "DATABASE_URL=postgres://user:pass@localhost:5432/mydb" >> .env')}`,
-		];
+		if (!options.yes) {
+			const shouldInstall = await p.confirm({
+				message: `Install dependencies? ${pc.dim(installCmd)}`,
+				initialValue: true,
+			});
+
+			if (!p.isCancel(shouldInstall) && shouldInstall) {
+				const installSpinner = p.spinner();
+				installSpinner.start("Installing dependencies");
+				try {
+					execSync(installCmd, { cwd, stdio: "pipe" });
+					installSpinner.stop(`Installed ${pc.bold(deps.join(", "))}`);
+					installed = true;
+				} catch {
+					installSpinner.stop(pc.red("Install failed"));
+					p.log.warning(
+						`Could not install automatically. Run manually:\n   ${pc.cyan(installCmd)}`,
+					);
+				}
+			}
+		}
+
+		// Generate client SDK file
+		if (!options.yes) {
+			const shouldGenClient = await p.confirm({
+				message: `Generate client SDK file? ${pc.dim("src/summa.client.ts")}`,
+				initialValue: true,
+			});
+
+			if (!p.isCancel(shouldGenClient) && shouldGenClient) {
+				const clientPath = resolve(cwd, "src/summa.client.ts");
+				if (!existsSync(clientPath)) {
+					const clientContent = generateClientTemplate({
+						configPath: CONFIG_FILENAME,
+						framework: frameworkKey !== "none" ? frameworkKey : undefined,
+					});
+					mkdirSync(dirname(clientPath), { recursive: true });
+					writeFileSync(clientPath, clientContent, "utf-8");
+					p.log.success(`Created ${pc.bold("src/summa.client.ts")}`);
+
+					// Add @summa/client to install if not already installed
+					if (!installed) {
+						p.log.info(
+							`Don't forget to install the client: ${pc.cyan(getInstallCommand(pm, ["@summa/client"]))}`,
+						);
+					} else {
+						// Install client package too
+						try {
+							execSync(getInstallCommand(pm, ["@summa/client"]), { cwd, stdio: "pipe" });
+							p.log.success(`Installed ${pc.bold("@summa/client")}`);
+						} catch {
+							p.log.info(
+								`Install client manually: ${pc.cyan(getInstallCommand(pm, ["@summa/client"]))}`,
+							);
+						}
+					}
+				} else {
+					p.log.info(`Client file already exists: ${pc.dim("src/summa.client.ts")}`);
+				}
+			}
+		}
+
+		// Next steps
+		const nextSteps: string[] = [];
+		let stepNum = 1;
+
+		if (!installed) {
+			nextSteps.push(
+				`${pc.bold(`${stepNum}.`)} Install dependencies:`,
+				`   ${pc.cyan(installCmd)}`,
+				"",
+			);
+			stepNum++;
+		}
+
+		if (adapterKey !== "memory") {
+			nextSteps.push(
+				`${pc.bold(`${stepNum}.`)} Set your ${pc.cyan("DATABASE_URL")} environment variable:`,
+				`   ${pc.dim('echo "DATABASE_URL=postgres://user:pass@localhost:5432/mydb" >> .env')}`,
+			);
+			stepNum++;
+		}
 
 		if (adapterKey === "drizzle") {
 			nextSteps.push(
 				"",
-				`${pc.bold("3.")} Generate & apply schema:`,
+				`${pc.bold(`${stepNum}.`)} Generate & apply schema:`,
 				`   ${pc.cyan("npx summa generate")}`,
 				`   ${pc.cyan("npx drizzle-kit push")}`,
 			);
+			stepNum++;
 		} else if (adapterKey === "prisma") {
 			nextSteps.push(
 				"",
-				`${pc.bold("3.")} Generate & push schema:`,
+				`${pc.bold(`${stepNum}.`)} Generate & push schema:`,
 				`   ${pc.cyan("npx summa generate")}`,
 				`   ${pc.cyan("npx prisma db push")}`,
 			);
+			stepNum++;
 		} else if (adapterKey === "kysely") {
 			nextSteps.push(
 				"",
-				`${pc.bold("3.")} Apply schema:`,
+				`${pc.bold(`${stepNum}.`)} Apply schema:`,
 				`   ${pc.cyan("npx summa migrate push")}`,
 			);
+			stepNum++;
 		} else {
-			nextSteps.push("", `${pc.bold("3.")} In-memory adapter requires no migrations`);
+			nextSteps.push("", `${pc.bold(`${stepNum}.`)} In-memory adapter requires no migrations`);
+			stepNum++;
 		}
 
 		if (selectedPlugins.length > 0) {
 			nextSteps.push(
 				"",
-				`${pc.bold("4.")} Plugins enabled: ${selectedPlugins.map((id) => pc.cyan(id)).join(", ")}`,
+				`${pc.bold(`${stepNum}.`)} Plugins enabled: ${selectedPlugins.map((id) => pc.cyan(id)).join(", ")}`,
 			);
 		}
 
-		p.note(nextSteps.join("\n"), "Next steps");
+		if (nextSteps.length > 0) {
+			p.note(nextSteps.join("\n"), "Next steps");
+		}
 
 		p.outro(
 			`${pc.green("You're all set!")} ${pc.dim("Read more at https://github.com/summa-ledger/summa")}`,

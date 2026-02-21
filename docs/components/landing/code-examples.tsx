@@ -2,10 +2,9 @@
 
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
 import { Check, Clipboard, File } from "lucide-react";
-import { useTheme } from "next-themes";
-import { Highlight, themes } from "prism-react-renderer";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import useMeasure from "react-use-measure";
+import { tokenizeCode } from "@/lib/code-theme";
 
 const examples = [
 	{
@@ -45,6 +44,24 @@ for (const event of history) {
 }`,
 	},
 	{
+		name: "fx-transfer.ts",
+		label: "Multi-Currency",
+		code: `import { summa } from "./summa.config";
+
+// Transfer across currencies — FX resolved automatically
+const tx = await summa.transactions.transfer({
+  source: "acc_usd_treasury",
+  destination: "acc_eur_vendor",
+  amount: 10_000, // $100.00 USD
+  destinationCurrency: "EUR",
+  reference: "Invoice #1092",
+});
+
+// tx.fxRate     → 0.9231
+// tx.fxAmount   → 9231  (€92.31 EUR)
+// tx.gainLoss   → tracked automatically`,
+	},
+	{
 		name: "plugins.ts",
 		label: "Plugin Config",
 		code: `import { createSumma } from "summa";
@@ -66,16 +83,10 @@ export const summa = createSumma({
 	},
 ];
 
-export function CodeExamples() {
-	const [activeTab, setActiveTab] = useState(0);
+export function CodeExamples({ defaultTab = 0 }: { defaultTab?: number }) {
+	const [activeTab, setActiveTab] = useState(defaultTab);
 	const [copied, setCopied] = useState(false);
-	const [mounted, setMounted] = useState(false);
-	const { resolvedTheme } = useTheme();
 	const [ref, bounds] = useMeasure();
-
-	useEffect(() => {
-		setMounted(true);
-	}, []);
 
 	useEffect(() => {
 		if (copied) {
@@ -89,24 +100,24 @@ export function CodeExamples() {
 		setCopied(true);
 	};
 
-	const isDark = !mounted || resolvedTheme === "dark";
+	const code = examples[activeTab]?.code ?? "";
+	const lines = useMemo(() => tokenizeCode(code), [code]);
 
 	return (
 		<MotionConfig transition={{ duration: 0.5, type: "spring", bounce: 0 }}>
-			<div className="relative w-full overflow-hidden bg-zinc-950 border border-zinc-800 shadow-2xl shadow-black/20">
+			<div className="sh relative w-full overflow-hidden bg-[#0a0a0a] border border-[#1a1a1a] shadow-2xl shadow-black/20 rounded-lg">
 				{/* Title bar */}
-				<div className="flex items-center border-b border-zinc-800 bg-zinc-900">
-					{/* Tab strip */}
+				<div className="flex items-center border-b border-[#1a1a1a] bg-[#111111]">
 					<div className="flex items-stretch overflow-x-auto no-scrollbar">
 						{examples.map((tab, index) => (
 							<button
 								type="button"
 								key={tab.name}
 								onClick={() => setActiveTab(index)}
-								className={`relative flex items-center gap-2 px-4 h-9 text-xs font-mono border-r border-zinc-800 transition-colors whitespace-nowrap ${
+								className={`relative flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-4 h-9 text-xs sm:text-[13px] font-code font-normal border-r border-[#1a1a1a] transition-colors whitespace-nowrap shrink-0 ${
 									activeTab === index
-										? "bg-zinc-950 text-zinc-300"
-										: "bg-zinc-900 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-900/80"
+										? "bg-[#0a0a0a] text-[#a0a0a0]"
+										: "bg-[#111111] text-[#555555] hover:text-[#777777]"
 								}`}
 							>
 								{activeTab === index && (
@@ -121,12 +132,11 @@ export function CodeExamples() {
 						))}
 					</div>
 
-					{/* Spacer + copy */}
 					<div className="flex-1" />
 					<button
 						type="button"
 						onClick={handleCopy}
-						className="flex items-center justify-center size-9 text-zinc-500 hover:text-zinc-300 transition-colors"
+						className="flex items-center justify-center size-9 text-[#555555] hover:text-[#a0a0a0] transition-colors"
 						aria-label="Copy code"
 					>
 						{copied ? (
@@ -148,37 +158,27 @@ export function CodeExamples() {
 								exit={{ opacity: 0 }}
 								transition={{ duration: 0.15 }}
 							>
-								<Highlight
-									theme={isDark ? themes.nightOwl : themes.nightOwl}
-									code={examples[activeTab]?.code ?? ""}
-									language="typescript"
-								>
-									{({ tokens, getLineProps, getTokenProps }) => (
-										<pre className="py-4 text-[13px] leading-6 overflow-x-auto no-scrollbar">
-											<code>
-												{tokens.map((line, i) => (
-													<div
-														key={`l${i.toString()}`}
-														{...getLineProps({ line })}
-														className="flex px-4 hover:bg-white/3 transition-colors duration-75"
-													>
-														<span className="select-none w-8 shrink-0 text-right pr-4 text-zinc-700 font-mono text-xs tabular-nums leading-6">
-															{i + 1}
+								<pre className="py-4 overflow-x-auto no-scrollbar font-code text-[13px] sm:text-[14px] leading-[1.7] font-normal antialiased" style={{ fontFeatureSettings: '"liga", "calt"' }}>
+									<code>
+										{lines.map((line, i) => (
+											<div
+												key={`l${i.toString()}`}
+												className="flex px-4 hover:bg-white/2 transition-colors duration-75"
+											>
+												<span className="select-none w-8 shrink-0 text-right pr-4 text-[#333333] text-[13px] sm:text-[14px] tabular-nums">
+													{i + 1}
+												</span>
+												<span className="flex-1 min-w-0">
+													{line.tokens.map((token, j) => (
+														<span key={`t${j.toString()}`} className={token.type}>
+															{token.value}
 														</span>
-														<span className="flex-1 min-w-0">
-															{line.map((token, key) => (
-																<span
-																	key={`t${key.toString()}`}
-																	{...getTokenProps({ token })}
-																/>
-															))}
-														</span>
-													</div>
-												))}
-											</code>
-										</pre>
-									)}
-								</Highlight>
+													))}
+												</span>
+											</div>
+										))}
+									</code>
+								</pre>
 							</motion.div>
 						</AnimatePresence>
 					</div>

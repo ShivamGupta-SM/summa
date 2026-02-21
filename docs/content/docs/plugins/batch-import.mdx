@@ -1,0 +1,167 @@
+---
+title: Batch Import
+description: Bulk transaction import via CSV or JSON with staged validation.
+icon: ArrowUpTray
+---
+
+## Overview
+
+The batch import plugin enables bulk transaction upload via CSV or JSON with a three-phase workflow: **stage → validate → post**. Each phase is explicit, giving you full control over reviewing data before committing.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { batchImport } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    batchImport({
+      maxBatchSize: 10_000,  // Max items per batch (default)
+    }),
+  ],
+});
+```
+
+## Configuration
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `maxBatchSize` | `number` | `10000` | Maximum items per batch |
+| `csvColumnMapping` | `Record<string, string>` | Standard columns | Custom CSV header-to-field mapping |
+
+## Workflow
+
+### 1. Stage
+
+Upload raw data as CSV or JSON:
+
+```ts
+import { createBatch } from "summa/plugins";
+
+const batch = await createBatch(summa.$context, {
+  name: "January payroll",
+  format: "json",
+  data: [
+    { holderId: "emp_001", amount: 500000, reference: "payroll-jan-001", type: "credit" },
+    { holderId: "emp_002", amount: 450000, reference: "payroll-jan-002", type: "credit" },
+  ],
+  createdBy: "payroll@company.com",
+});
+// batch.status === "staged"
+```
+
+For CSV:
+
+```ts
+const batch = await createBatch(summa.$context, {
+  name: "Partner settlements",
+  format: "csv",
+  data: "holderId,amount,reference,type\npartner_1,100000,settle-001,credit\npartner_2,200000,settle-002,credit",
+});
+```
+
+### 2. Validate
+
+Check all items for correctness before posting:
+
+```ts
+import { validateBatch } from "summa/plugins";
+
+const validated = await validateBatch(summa.$context, batch.id);
+console.log(validated.validItems);    // Items that passed validation
+console.log(validated.invalidItems);  // Items with errors
+// validated.status === "validated"
+```
+
+Validation checks per transaction type:
+
+- **credit/debit**: `holderId` is required and must exist, amount is positive, reference is present
+- **transfer**: `sourceHolderId` and `destinationHolderId` are both required and must exist, amount is positive, reference is present
+
+Validation can only be run on batches in `"staged"` status.
+
+### 3. Post
+
+Execute all valid items as transactions:
+
+```ts
+import { postBatch } from "summa/plugins";
+
+const result = await postBatch(summa.$context, {
+  batchId: batch.id,
+  mode: "continue_on_error",  // or "all_or_nothing"
+});
+console.log(result.postedItems);  // Successfully posted
+console.log(result.failedItems);  // Failed during posting
+```
+
+| Mode | Behavior |
+|------|----------|
+| `continue_on_error` | Process each item independently, track per-item success/failure |
+| `all_or_nothing` | Abort entire batch if any item fails |
+
+Each item is posted with a deterministic idempotency key (`batch-{batchId}-item-{lineNumber}`), so retrying a partially-failed batch won't double-post items that succeeded on the first attempt.
+
+### Check Status
+
+```ts
+import { getBatchStatus } from "summa/plugins";
+
+const status = await getBatchStatus(summa.$context, batch.id);
+// status: "staged" | "validating" | "validated" | "posting" | "posted" | "partial" | "failed"
+```
+
+## CSV Column Mapping
+
+Default expected columns: `holderId`, `amount`, `reference`, `type`, `description`, `currency`, `destinationHolderId`.
+
+Custom mapping:
+
+```ts
+batchImport({
+  csvColumnMapping: {
+    "Employee ID": "holderId",
+    "Salary": "amount",
+    "Pay Ref": "reference",
+    "Operation": "type",
+  },
+})
+```
+
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `batch-processor` | 30s | Yes | Processes batches with status `posting` |
+
+### List Batches
+
+```ts
+import { listBatches } from "summa/plugins";
+
+const { batches, hasMore, total } = await listBatches(summa.$context, {
+  status: "posted",  // Filter by status (optional)
+  page: 1,
+  perPage: 20,
+});
+```
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/batches` | List batches (with optional `?status=` filter) |
+| `POST` | `/batches` | Create a new batch (stage) |
+| `GET` | `/batches/:id` | Get batch status |
+| `POST` | `/batches/:id/validate` | Validate batch items |
+| `POST` | `/batches/:id/post` | Post validated batch |
+
+## Schema
+
+| Table | Description |
+|-------|-------------|
+| `import_batch` | Batch metadata and aggregate counts |
+| `batch_item` | Individual items with status and error tracking |

@@ -1,0 +1,95 @@
+---
+title: Redis Storage
+description: Redis-backed secondary storage for rate limiting and caching.
+icon: ServerStack
+---
+
+## Installation
+
+```bash
+pnpm add @summa/redis-storage ioredis
+```
+
+## Setup
+
+```ts
+import Redis from "ioredis";
+import { createRedisStorage } from "@summa/redis-storage";
+import { createSumma } from "summa";
+
+const redis = new Redis(process.env.REDIS_URL);
+const { storage, disconnect, ping } = createRedisStorage({ client: redis });
+
+export const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  secondaryStorage: storage,
+});
+
+// On app shutdown:
+await disconnect();
+```
+
+## Configuration
+
+```ts
+createRedisStorage({
+  client: redis,        // ioredis Redis or Cluster instance
+  keyPrefix: "summa:",  // Key prefix for all Summa keys (default: "summa:")
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `client` | `RedisClient` | — | **Required.** An ioredis Redis or Cluster instance |
+| `keyPrefix` | `string` | `"summa:"` | Prefix for all Redis keys |
+
+## What It's Used For
+
+When you provide a `secondaryStorage`, Summa uses it for:
+
+- **Rate limiting** — Token bucket state stored in Redis instead of in-memory, enabling distributed rate limiting across multiple instances
+- **Idempotency caching** — Idempotency keys cached in Redis for faster dedup checks
+- **Distributed state** — Any plugin that needs shared state across instances
+
+Without Redis, these features fall back to in-memory storage (single-process only) or database queries.
+
+## Redis Cluster
+
+The storage works with both standalone Redis and Redis Cluster:
+
+```ts
+import Redis from "ioredis";
+
+// Standalone
+const redis = new Redis("redis://localhost:6379");
+
+// Cluster
+const cluster = new Redis.Cluster([
+  { host: "redis-1", port: 6379 },
+  { host: "redis-2", port: 6379 },
+]);
+
+// Both work identically
+const { storage } = createRedisStorage({ client: cluster });
+```
+
+## Health Check
+
+```ts
+const { storage, ping } = createRedisStorage({ client: redis });
+
+const isHealthy = await ping(); // true if Redis is reachable
+```
+
+## Operations
+
+The Redis storage implements the `SecondaryStorage` interface:
+
+| Method | Description |
+|--------|-------------|
+| `get(key)` | Retrieve a value |
+| `set(key, value, ttl?)` | Store a value with optional TTL (seconds) |
+| `delete(key)` | Remove a key |
+| `increment(key, amount?)` | Atomic increment |
+| `incrementWithTTL(key, ttl, amount?)` | Atomic increment with TTL set on first increment |

@@ -1,0 +1,90 @@
+---
+title: Freeze Expiry
+description: TTL-based auto-unfreeze for frozen accounts.
+icon: Bolt
+---
+
+## Overview
+
+The freeze expiry plugin automatically unfreezes accounts after their `frozen_until` timestamp has passed. This enables temporary freezes with automatic resolution — useful for compliance holds, suspicious activity review windows, or time-limited account restrictions.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { freezeExpiry } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [freezeExpiry()],
+});
+```
+
+## Configuration
+
+```ts
+freezeExpiry({
+  interval: "1m",  // Check for expired freezes every minute (default)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `interval` | `string` | `"1m"` | Background worker polling interval |
+
+## How It Works
+
+1. **Freeze with TTL** — When freezing an account, set a `frozen_until` timestamp:
+
+```ts
+await summa.accounts.freeze({
+  holderId: "user_123",
+  reason: "Compliance review",
+  frozenBy: "admin",
+  frozenUntil: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+});
+```
+
+2. **Background worker polls** — Every minute (configurable), the worker scans for frozen accounts with expired `frozen_until` timestamps.
+
+3. **Auto-unfreeze** — Expired accounts are unfrozen by inserting a new append-only version row with `status: "active"` and `change_type: "auto_unfreeze"`. A balance checksum is recomputed to maintain integrity.
+
+4. **Outbox event** — An `ledger-account-auto-unfrozen` event is published to the outbox for downstream consumers.
+
+## Schema Extension
+
+The plugin extends `account_balance_version` with:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `frozen_until` | `timestamp` | When the freeze should auto-expire. `NULL` = permanent freeze |
+
+## Append-Only Design
+
+The plugin follows Summa's immutability architecture — it never UPDATEs existing rows. Instead, it INSERTs a new version row with the updated status. This preserves the full freeze/unfreeze history in the version table.
+
+## Events
+
+| Event Topic | Payload |
+|-------------|---------|
+| `ledger-account-auto-unfrozen` | `{ accountId, holderId, reason: "Freeze period expired" }` |
+
+<Callout type="info">
+  The plugin requires the `outbox` table to exist. If you're not using the `outbox()` plugin, auto-unfreeze still works but outbox events will fail silently.
+</Callout>
+
+## Example: 48-Hour Compliance Hold
+
+```ts
+// Freeze for 48 hours during compliance review
+await summa.accounts.freeze({
+  holderId: "user_suspicious",
+  reason: "AML review - auto-expires in 48h",
+  frozenBy: "compliance-bot",
+  frozenUntil: new Date(Date.now() + 48 * 60 * 60 * 1000),
+});
+
+// Account is automatically unfrozen after 48 hours
+// No manual intervention needed
+```

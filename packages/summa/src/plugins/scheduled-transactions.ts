@@ -4,11 +4,25 @@
 // Polls for scheduled transactions whose next_execution_at has passed,
 // executes them via the transaction manager (credit/debit/transfer), and
 // handles recurrence rescheduling or failure after max retries.
+//
+// Status is tracked via entity_status_log (append-only) instead of a mutable
+// status column on the scheduled_transaction table.  Mutable execution
+// counters (execution_count, retry_count, last_executed_at, next_execution_at,
+// last_retry_at) are stored as metadata on the entity_status_log rows until a
+// dedicated scheduled_transaction_execution table is introduced.
 
 import type { SummaContext, SummaPlugin } from "@summa/core";
-import { AGGREGATE_TYPES, SCHEDULED_EVENTS } from "@summa/core";
+import { AGGREGATE_TYPES, SCHEDULED_EVENTS, SummaError } from "@summa/core";
+import { createTableResolver } from "@summa/core/db";
+import { transitionEntityStatus } from "../../infrastructure/entity-status.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { creditAccount, debitAccount, transfer } from "../managers/transaction-manager.js";
+
+// =============================================================================
+// CONSTANTS
+// =============================================================================
+
+const ENTITY_TYPE = "scheduled_transaction" as const;
 
 // =============================================================================
 // OPTIONS
@@ -31,6 +45,7 @@ interface RawScheduledRow {
 	id: string;
 }
 
+/** Row shape returned by the LATERAL JOIN candidate query. */
 interface RawScheduledDetailRow {
 	id: string;
 	reference: string | null;
@@ -40,12 +55,9 @@ interface RawScheduledDetailRow {
 	destination_identifier: string | null;
 	scheduled_for: string | Date;
 	recurrence: Recurrence | string | null;
-	status: string;
-	last_executed_at: string | Date | null;
-	next_execution_at: string | Date | null;
-	execution_count: number;
-	retry_count: number;
-	last_retry_at: string | Date | null;
+	// Mutable fields come from entity_status_log metadata
+	current_status: string;
+	status_metadata: Record<string, unknown> | null;
 }
 
 interface Recurrence {
@@ -70,7 +82,7 @@ export function scheduledTransactions(options?: ScheduledTransactionsOptions): S
 				id: "scheduled-processor",
 				description: "Processes scheduled transactions that are due for execution",
 				interval: "1m",
-				leaseRequired: false,
+				leaseRequired: true,
 				handler: async (ctx: SummaContext) => {
 					await processScheduledTransactions(ctx, {
 						maxRetries,
@@ -91,16 +103,31 @@ async function processScheduledTransactions(
 	ctx: SummaContext,
 	options: Required<ScheduledTransactionsOptions>,
 ): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	const { maxRetries, batchSize, maxBatchesPerRun } = options;
 
 	for (let batch = 0; batch < maxBatchesPerRun; batch++) {
 		const now = new Date().toISOString();
 
-		// Fetch candidate IDs outside a long-running transaction
+		// Fetch candidate IDs using a LATERAL JOIN to entity_status_log.
+		// The sub-select finds the latest status row for each scheduled_transaction
+		// and filters to those that are 'scheduled' with next_execution_at in the
+		// metadata that has passed.
 		const candidates = await ctx.adapter.raw<RawScheduledRow>(
-			`SELECT id FROM scheduled_transaction
-       WHERE status = 'scheduled' AND next_execution_at <= $1
-       ORDER BY next_execution_at ASC LIMIT $2`,
+			`SELECT st.id
+       FROM ${t("scheduled_transaction")} st
+       INNER JOIN LATERAL (
+         SELECT esl.status, esl.metadata
+         FROM ${t("entity_status_log")} esl
+         WHERE esl.entity_type = '${ENTITY_TYPE}'
+           AND esl.entity_id = st.id
+         ORDER BY esl.created_at DESC
+         LIMIT 1
+       ) latest_status ON true
+       WHERE latest_status.status = 'scheduled'
+         AND (latest_status.metadata->>'next_execution_at')::timestamptz <= $1::timestamptz
+       ORDER BY (latest_status.metadata->>'next_execution_at')::timestamptz ASC
+       LIMIT $2`,
 			[now, batchSize],
 		);
 
@@ -123,6 +150,7 @@ async function processSingleScheduledTransaction(
 	scheduledId: string,
 	maxRetries: number,
 ): Promise<void> {
+	const t = createTableResolver(ctx.options.schema);
 	// -------------------------------------------------------------------------
 	// Phase 1: Lock row, mark as processing, append PROCESSING event
 	// -------------------------------------------------------------------------
@@ -130,9 +158,23 @@ async function processSingleScheduledTransaction(
 
 	try {
 		detail = await withTransactionTimeout(ctx, async (tx) => {
+			// Lock the scheduled_transaction row and join to latest status
 			const rows = await tx.raw<RawScheduledDetailRow>(
-				`SELECT * FROM scheduled_transaction
-         WHERE id = $1 AND status = 'scheduled'
+				`SELECT st.id, st.reference, st.amount, st.currency,
+                st.source_identifier, st.destination_identifier,
+                st.scheduled_for, st.recurrence,
+                latest_status.status AS current_status,
+                latest_status.metadata AS status_metadata
+         FROM ${t("scheduled_transaction")} st
+         INNER JOIN LATERAL (
+           SELECT esl.status, esl.metadata
+           FROM ${t("entity_status_log")} esl
+           WHERE esl.entity_type = '${ENTITY_TYPE}'
+             AND esl.entity_id = st.id
+           ORDER BY esl.created_at DESC
+           LIMIT 1
+         ) latest_status ON true
+         WHERE st.id = $1 AND latest_status.status = 'scheduled'
          ${ctx.dialect.forUpdateSkipLocked()}`,
 				[scheduledId],
 			);
@@ -143,31 +185,38 @@ async function processSingleScheduledTransaction(
 				return null;
 			}
 
-			// Mark as processing
-			await tx.rawMutate(
-				`UPDATE scheduled_transaction
-         SET status = 'processing'
-         WHERE id = $1`,
-				[scheduledId],
-			);
+			// Transition to processing
+			await transitionEntityStatus({
+				tx,
+				entityType: ENTITY_TYPE,
+				entityId: scheduledId,
+				status: "processing",
+				expectedCurrentStatus: "scheduled",
+				metadata: row.status_metadata ?? undefined,
+			});
 
 			// Append PROCESSING event
-			await appendEvent(tx, {
-				aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-				aggregateId: scheduledId,
-				eventType: SCHEDULED_EVENTS.PROCESSING,
-				eventData: {
-					scheduledId,
-					sourceIdentifier: row.source_identifier,
-					destinationIdentifier: row.destination_identifier,
-					amount: Number(row.amount),
+			await appendEvent(
+				tx,
+				{
+					aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+					aggregateId: scheduledId,
+					eventType: SCHEDULED_EVENTS.PROCESSING,
+					eventData: {
+						scheduledId,
+						sourceIdentifier: row.source_identifier,
+						destinationIdentifier: row.destination_identifier,
+						amount: Number(row.amount),
+					},
 				},
-			});
+				ctx.options.schema,
+				ctx.options.advanced.hmacSecret,
+			);
 
 			return row;
 		});
 	} catch (error) {
-		ctx.logger.info("Phase 1 failed for scheduled transaction", {
+		ctx.logger.error("Phase 1 failed for scheduled transaction", {
 			scheduledId,
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -177,6 +226,11 @@ async function processSingleScheduledTransaction(
 	if (!detail) {
 		return;
 	}
+
+	// Extract mutable fields from status metadata
+	const statusMeta = detail.status_metadata ?? {};
+	const executionCount = Number(statusMeta.execution_count ?? 0);
+	const retryCount = Number(statusMeta.retry_count ?? 0);
 
 	// -------------------------------------------------------------------------
 	// Phase 2: Execute the financial operation
@@ -192,7 +246,10 @@ async function processSingleScheduledTransaction(
 		});
 	} catch (error) {
 		// Execution failed -- handle retry or permanent failure
-		await handleExecutionFailure(ctx, scheduledId, detail, maxRetries, error);
+		await handleExecutionFailure(ctx, scheduledId, detail, maxRetries, error, {
+			executionCount,
+			retryCount,
+		});
 		return;
 	}
 
@@ -202,73 +259,94 @@ async function processSingleScheduledTransaction(
 	try {
 		await withTransactionTimeout(ctx, async (tx) => {
 			const recurrence = parseRecurrence(detail.recurrence);
-			const executionCount = Number(detail.execution_count) + 1;
+			const newExecutionCount = executionCount + 1;
 			const now = new Date();
 
-			if (recurrence && shouldReschedule(recurrence, executionCount)) {
+			if (recurrence && shouldReschedule(recurrence, newExecutionCount)) {
 				// Compute next execution time
 				const nextExecution = computeNextExecution(now, recurrence);
 
-				await tx.rawMutate(
-					`UPDATE scheduled_transaction
-           SET status = 'scheduled',
-               last_executed_at = $1,
-               next_execution_at = $2,
-               execution_count = $3,
-               retry_count = 0
-           WHERE id = $4`,
-					[now.toISOString(), nextExecution.toISOString(), executionCount, scheduledId],
-				);
-
-				await appendEvent(tx, {
-					aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-					aggregateId: scheduledId,
-					eventType: SCHEDULED_EVENTS.RESCHEDULED,
-					eventData: {
-						scheduledId,
-						executionCount,
-						nextExecutionAt: nextExecution.toISOString(),
-						intervalMs: recurrence.intervalMs,
+				// Transition back to scheduled with updated metadata
+				await transitionEntityStatus({
+					tx,
+					entityType: ENTITY_TYPE,
+					entityId: scheduledId,
+					status: "scheduled",
+					expectedCurrentStatus: "processing",
+					reason: "rescheduled",
+					metadata: {
+						execution_count: newExecutionCount,
+						retry_count: 0,
+						last_executed_at: now.toISOString(),
+						next_execution_at: nextExecution.toISOString(),
+						last_retry_at: null,
 					},
 				});
 
+				await appendEvent(
+					tx,
+					{
+						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+						aggregateId: scheduledId,
+						eventType: SCHEDULED_EVENTS.RESCHEDULED,
+						eventData: {
+							scheduledId,
+							executionCount: newExecutionCount,
+							nextExecutionAt: nextExecution.toISOString(),
+							intervalMs: recurrence.intervalMs,
+						},
+					},
+					ctx.options.schema,
+					ctx.options.advanced.hmacSecret,
+				);
+
 				ctx.logger.info("Scheduled transaction rescheduled", {
 					scheduledId,
-					executionCount,
+					executionCount: newExecutionCount,
 					nextExecutionAt: nextExecution.toISOString(),
 				});
 			} else {
 				// One-shot or max executions reached -- mark completed
-				await tx.rawMutate(
-					`UPDATE scheduled_transaction
-           SET status = 'completed',
-               last_executed_at = $1,
-               execution_count = $2,
-               retry_count = 0
-           WHERE id = $3`,
-					[now.toISOString(), executionCount, scheduledId],
-				);
-
-				await appendEvent(tx, {
-					aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-					aggregateId: scheduledId,
-					eventType: SCHEDULED_EVENTS.COMPLETED,
-					eventData: {
-						scheduledId,
-						executionCount,
+				await transitionEntityStatus({
+					tx,
+					entityType: ENTITY_TYPE,
+					entityId: scheduledId,
+					status: "completed",
+					expectedCurrentStatus: "processing",
+					metadata: {
+						execution_count: newExecutionCount,
+						retry_count: 0,
+						last_executed_at: now.toISOString(),
+						next_execution_at: null,
+						last_retry_at: null,
 					},
 				});
 
+				await appendEvent(
+					tx,
+					{
+						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+						aggregateId: scheduledId,
+						eventType: SCHEDULED_EVENTS.COMPLETED,
+						eventData: {
+							scheduledId,
+							executionCount: newExecutionCount,
+						},
+					},
+					ctx.options.schema,
+					ctx.options.advanced.hmacSecret,
+				);
+
 				ctx.logger.info("Scheduled transaction completed", {
 					scheduledId,
-					executionCount,
+					executionCount: newExecutionCount,
 				});
 			}
 		});
 	} catch (error) {
 		// Phase 3 failure: the financial operation succeeded but we could not
 		// update the status. Log prominently so operators can reconcile.
-		ctx.logger.info(
+		ctx.logger.error(
 			"Phase 3 failed for scheduled transaction -- manual reconciliation may be required",
 			{
 				scheduledId,
@@ -288,49 +366,73 @@ async function handleExecutionFailure(
 	detail: RawScheduledDetailRow,
 	maxRetries: number,
 	error: unknown,
+	counters: { executionCount: number; retryCount: number },
 ): Promise<void> {
 	const errorMessage = error instanceof Error ? error.message : String(error);
-	const currentRetryCount = Number(detail.retry_count) + 1;
+	const currentRetryCount = counters.retryCount + 1;
+	const nowIso = new Date().toISOString();
 
 	try {
 		await withTransactionTimeout(ctx, async (tx) => {
 			if (currentRetryCount >= maxRetries) {
 				// Max retries exceeded -- mark as failed permanently
-				await tx.rawMutate(
-					`UPDATE scheduled_transaction
-           SET status = 'failed',
-               retry_count = $1,
-               last_retry_at = ${ctx.dialect.now()}
-           WHERE id = $2`,
-					[currentRetryCount, scheduledId],
-				);
-
-				await appendEvent(tx, {
-					aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-					aggregateId: scheduledId,
-					eventType: SCHEDULED_EVENTS.FAILED,
-					eventData: {
-						scheduledId,
-						retryCount: currentRetryCount,
-						error: errorMessage,
+				await transitionEntityStatus({
+					tx,
+					entityType: ENTITY_TYPE,
+					entityId: scheduledId,
+					status: "failed",
+					expectedCurrentStatus: "processing",
+					reason: errorMessage,
+					metadata: {
+						execution_count: counters.executionCount,
+						retry_count: currentRetryCount,
+						last_executed_at:
+							(detail.status_metadata as Record<string, unknown>)?.last_executed_at ?? null,
+						next_execution_at: null,
+						last_retry_at: nowIso,
 					},
 				});
 
-				ctx.logger.info("Scheduled transaction permanently failed", {
+				await appendEvent(
+					tx,
+					{
+						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+						aggregateId: scheduledId,
+						eventType: SCHEDULED_EVENTS.FAILED,
+						eventData: {
+							scheduledId,
+							retryCount: currentRetryCount,
+							error: errorMessage,
+						},
+					},
+					ctx.options.schema,
+					ctx.options.advanced.hmacSecret,
+				);
+
+				ctx.logger.error("Scheduled transaction permanently failed", {
 					scheduledId,
 					retryCount: currentRetryCount,
 					error: errorMessage,
 				});
 			} else {
 				// Revert to scheduled for retry on next run
-				await tx.rawMutate(
-					`UPDATE scheduled_transaction
-           SET status = 'scheduled',
-               retry_count = $1,
-               last_retry_at = ${ctx.dialect.now()}
-           WHERE id = $2`,
-					[currentRetryCount, scheduledId],
-				);
+				await transitionEntityStatus({
+					tx,
+					entityType: ENTITY_TYPE,
+					entityId: scheduledId,
+					status: "scheduled",
+					expectedCurrentStatus: "processing",
+					reason: `retry ${currentRetryCount}/${maxRetries}: ${errorMessage}`,
+					metadata: {
+						execution_count: counters.executionCount,
+						retry_count: currentRetryCount,
+						last_executed_at:
+							(detail.status_metadata as Record<string, unknown>)?.last_executed_at ?? null,
+						next_execution_at:
+							(detail.status_metadata as Record<string, unknown>)?.next_execution_at ?? null,
+						last_retry_at: nowIso,
+					},
+				});
 
 				ctx.logger.info("Scheduled transaction execution failed, will retry", {
 					scheduledId,
@@ -341,7 +443,7 @@ async function handleExecutionFailure(
 			}
 		});
 	} catch (updateError) {
-		ctx.logger.info("Failed to update scheduled transaction after execution failure", {
+		ctx.logger.error("Failed to update scheduled transaction after execution failure", {
 			scheduledId,
 			originalError: errorMessage,
 			updateError: updateError instanceof Error ? updateError.message : String(updateError),
@@ -411,7 +513,7 @@ async function executeScheduledTransaction(
 		});
 	} else {
 		// System-to-system: not a valid user-facing operation
-		throw new Error(
+		throw SummaError.invalidArgument(
 			`Unsupported scheduled transaction route: source=${sourceIdentifier}, destination=${destinationIdentifier}`,
 		);
 	}

@@ -38,7 +38,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("per-transaction limit blocks oversized debit", async () => {
-		await summa.accounts.create({ holderId: "lim-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "lim-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "lim-user",
 			amount: 100000,
@@ -75,7 +75,7 @@ describe("Velocity Limits Integration Tests", () => {
 	});
 
 	it("per-transaction limit blocks oversized credit", async () => {
-		await summa.accounts.create({ holderId: "lim-credit", holderType: "user" });
+		await summa.accounts.create({ holderId: "lim-credit", holderType: "individual" });
 
 		await summa.limits.set({
 			holderId: "lim-credit",
@@ -105,7 +105,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("daily limit blocks when cumulative usage exceeds threshold", async () => {
-		await summa.accounts.create({ holderId: "daily-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "daily-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "daily-user",
 			amount: 500000,
@@ -153,7 +153,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("monthly limit blocks when cumulative usage exceeds threshold", async () => {
-		await summa.accounts.create({ holderId: "monthly-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "monthly-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "monthly-user",
 			amount: 500000,
@@ -188,7 +188,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("set, get, and remove limits", async () => {
-		await summa.accounts.create({ holderId: "crud-lim", holderType: "user" });
+		await summa.accounts.create({ holderId: "crud-lim", holderType: "individual" });
 
 		// Set two limits
 		const ptLimit = await summa.limits.set({
@@ -221,7 +221,7 @@ describe("Velocity Limits Integration Tests", () => {
 	});
 
 	it("updating a limit changes the maxAmount via upsert", async () => {
-		await summa.accounts.create({ holderId: "upsert-lim", holderType: "user" });
+		await summa.accounts.create({ holderId: "upsert-lim", holderType: "individual" });
 
 		await summa.limits.set({
 			holderId: "upsert-lim",
@@ -248,7 +248,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("getUsage returns correct daily and monthly totals", async () => {
-		await summa.accounts.create({ holderId: "usage-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "usage-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "usage-user",
 			amount: 100000,
@@ -273,7 +273,7 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("category-scoped limit only applies to matching transactions", async () => {
-		await summa.accounts.create({ holderId: "cat-user", holderType: "user" });
+		await summa.accounts.create({ holderId: "cat-user", holderType: "individual" });
 		await summa.transactions.credit({
 			holderId: "cat-user",
 			amount: 500000,
@@ -321,8 +321,8 @@ describe("Velocity Limits Integration Tests", () => {
 	// =========================================================================
 
 	it("transfer respects source account limits", async () => {
-		await summa.accounts.create({ holderId: "lim-src", holderType: "user" });
-		await summa.accounts.create({ holderId: "lim-dst", holderType: "user" });
+		await summa.accounts.create({ holderId: "lim-src", holderType: "individual" });
+		await summa.accounts.create({ holderId: "lim-dst", holderType: "individual" });
 		await summa.transactions.credit({ holderId: "lim-src", amount: 100000, reference: "lt-fund" });
 
 		await summa.limits.set({

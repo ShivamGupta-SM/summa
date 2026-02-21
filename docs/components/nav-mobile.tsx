@@ -45,7 +45,7 @@ export const NavbarMobileBtn: React.FC = () => {
 		<button
 			type="button"
 			aria-label="Toggle navigation menu"
-			className="flex items-center justify-center size-10 mr-1 navbar:hidden"
+			className="flex items-center justify-center size-9 navbar:hidden text-muted-foreground"
 			onClick={() => {
 				toggleNavbar();
 			}}
@@ -67,7 +67,7 @@ export const NavbarMobile = () => {
 	return (
 		<div
 			className={cn(
-				"fixed top-14 inset-x-0 transform-gpu z-100 bg-background/95 backdrop-blur-lg grid grid-rows-[0fr] duration-300 transition-all navbar:hidden",
+				"fixed top-19 inset-x-0 transform-gpu z-100 bg-background/95 backdrop-blur-lg grid grid-rows-[0fr] duration-300 transition-all navbar:hidden",
 				isOpen &&
 					"shadow-lg border-b border-border grid-rows-[1fr]",
 			)}
@@ -82,7 +82,7 @@ export const NavbarMobile = () => {
 					<Link
 						key={menu.name}
 						href={menu.path}
-						className="group flex items-center gap-2.5 first:pt-0 last:pb-0 text-lg font-medium py-3.5 text-muted-foreground hover:text-foreground transition-colors"
+						className="group flex items-center gap-2.5 first:pt-0 last:pb-0 text-base tracking-wider py-3.5 text-muted-foreground hover:text-foreground transition-colors"
 						onClick={toggleNavbar}
 						{...(menu.external
 							? { target: "_blank", rel: "noopener noreferrer" }

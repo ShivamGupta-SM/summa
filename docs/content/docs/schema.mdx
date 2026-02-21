@@ -1,0 +1,445 @@
+---
+title: Database Schema
+description: Complete reference for all Summa database tables, columns, and indexes.
+icon: CircleStack
+---
+
+## Overview
+
+Summa creates and manages its own database tables. All tables live in a configurable PostgreSQL schema (default: `"summa"`), keeping them isolated from your application tables.
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  schema: "summa", // PostgreSQL schema name (default)
+});
+```
+
+Tables are created automatically via `summa migrate push` or through your ORM's migration tools (see [Adapters](/docs/adapters/drizzle#migrations)).
+
+## Core Tables
+
+These tables are always created, regardless of which plugins you enable.
+
+### ledger_event
+
+The **source of truth** — an immutable, append-only event log. Every state change in Summa produces an event. Events are linked via SHA-256 hash chains for tamper detection.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `sequence_number` | BIGSERIAL | Global ordering (unique) |
+| `aggregate_type` | VARCHAR(50) | Event aggregate type |
+| `aggregate_id` | UUID | Which account/entity this event belongs to |
+| `aggregate_version` | INTEGER | Version number within the aggregate |
+| `event_type` | VARCHAR(100) | Event category (e.g., `account.created`, `transaction.posted`) |
+| `event_data` | JSONB | Full event payload |
+| `correlation_id` | UUID | Request tracing ID |
+| `hash` | VARCHAR(64) | SHA-256 hash of this event |
+| `prev_hash` | VARCHAR(64) | Previous event's hash (chain link) |
+| `created_at` | TIMESTAMPTZ | Event timestamp |
+
+**Key indexes:** `(aggregate_type, aggregate_id, aggregate_version)` unique, `(correlation_id)`
+
+---
+
+### account_balance
+
+**Immutable after creation** — stores only static account properties that never change.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `holder_id` | VARCHAR(255) | User or entity identifier |
+| `holder_type` | VARCHAR(100) | `"individual"`, `"business"`, `"organization"`, etc. |
+| `currency` | CHAR(3) | ISO 4217 currency code |
+| `allow_overdraft` | BOOLEAN | Whether overdraft is allowed |
+| `overdraft_limit` | BIGINT | Max overdraft amount (if allowed) |
+| `account_type` | VARCHAR(20) | Chart of Accounts type (asset, liability, etc.) |
+| `account_code` | VARCHAR(50) | GL account code (unique) |
+| `parent_account_id` | UUID | Hierarchical parent account |
+| `normal_balance` | VARCHAR(10) | `"debit"` or `"credit"` |
+| `indicator` | TEXT | Account indicator |
+| `name` | TEXT | Display name |
+| `metadata` | JSONB | Custom fields |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+**Key indexes:** `(holder_id, currency)` unique, `(account_type)`, `(parent_account_id)`
+
+---
+
+### account_balance_version
+
+**Append-only** — each row is a complete balance state snapshot. Every balance change, hold, freeze, or close creates a new version row.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `account_id` | UUID | FK to `account_balance` |
+| `version` | INTEGER | Monotonically increasing (replaces `lock_version`) |
+| `balance` | BIGINT | Net balance in minor units |
+| `credit_balance` | BIGINT | Total lifetime credits |
+| `debit_balance` | BIGINT | Total lifetime debits |
+| `pending_credit` | BIGINT | Credits held (not yet committed) |
+| `pending_debit` | BIGINT | Debits held (not yet committed) |
+| `status` | VARCHAR(20) | `"active"`, `"frozen"`, or `"closed"` |
+| `checksum` | VARCHAR(64) | HMAC balance integrity checksum |
+| `freeze_reason` | TEXT | Reason for freeze |
+| `frozen_at` / `frozen_by` | TIMESTAMPTZ / VARCHAR | Freeze metadata |
+| `closed_at` / `closed_by` / `closure_reason` | — | Closure metadata |
+| `change_type` | TEXT | What caused this version (`credit`, `debit`, `hold_create`, `freeze`, etc.) |
+| `created_at` | TIMESTAMPTZ | Version timestamp |
+
+**Key indexes:** `(account_id, version)` unique, `(account_id, version DESC)` for latest lookup
+
+---
+
+### system_account
+
+**Immutable after creation** — stores only static system account properties.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `identifier` | VARCHAR(100) | Unique name (e.g., `"@fees"`, `"@revenue"`) |
+| `name` | VARCHAR(255) | Display name |
+| `allow_overdraft` | BOOLEAN | Always `true` |
+| `currency` | CHAR(3) | Currency |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+---
+
+### system_account_version
+
+**Append-only** — each row is a complete system account balance snapshot.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `system_account_id` | UUID | FK to `system_account` |
+| `version` | INTEGER | Monotonically increasing |
+| `balance` | BIGINT | Current balance |
+| `credit_balance` | BIGINT | Lifetime credits |
+| `debit_balance` | BIGINT | Lifetime debits |
+| `created_at` | TIMESTAMPTZ | Version timestamp |
+
+**Key indexes:** `(system_account_id, version)` unique
+
+---
+
+### transaction_record
+
+**Immutable after creation** — core transaction data that never changes.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `type` | VARCHAR(50) | Transaction type (`"credit"`, `"debit"`, `"transfer"`, `"journal"`, etc.) |
+| `reference` | VARCHAR(255) | Unique reference / idempotency key |
+| `amount` | BIGINT | Amount in minor units |
+| `currency` | CHAR(3) | Currency |
+| `description` | TEXT | Transaction memo |
+| `source_account_id` | UUID | Sending user account |
+| `destination_account_id` | UUID | Receiving user account |
+| `source_system_account_id` | UUID | Sending system account |
+| `destination_system_account_id` | UUID | Receiving system account |
+| `is_hold` | BOOLEAN | Whether this is a hold (not actual) |
+| `hold_expires_at` | TIMESTAMPTZ | Hold expiry time |
+| `parent_id` | UUID | Parent transaction (for refunds) |
+| `is_reversal` | BOOLEAN | Whether this is a reversal |
+| `correlation_id` | UUID | Request correlation ID |
+| `meta_data` | JSONB | Custom metadata |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+**Key indexes:** `(reference)` unique, `(type)`, `(source_account_id)`, `(destination_account_id)`, `(hold_expires_at)`, `(parent_id)`, `(created_at)`
+
+---
+
+### transaction_status
+
+**Append-only** — each status transition creates a new row. The current status is the latest row per `transaction_id`.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `transaction_id` | UUID | FK to `transaction_record` |
+| `status` | VARCHAR(20) | `"pending"`, `"inflight"`, `"posted"`, `"voided"`, `"expired"`, `"reversed"` |
+| `committed_amount` | BIGINT | Amount committed from hold |
+| `refunded_amount` | BIGINT | Amount refunded |
+| `posted_at` | TIMESTAMPTZ | When posted |
+| `reason` | TEXT | Transition reason |
+| `created_at` | TIMESTAMPTZ | Transition timestamp |
+
+**Key indexes:** `(transaction_id, created_at DESC)` for latest status lookup
+
+---
+
+### entry_record
+
+The double-entry journal. Every transaction produces exactly balanced `DEBIT` and `CREDIT` entries that sum to zero.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `transaction_id` | UUID | FK to `transaction_record` |
+| `account_id` | UUID | User account |
+| `system_account_id` | UUID | System account |
+| `entry_type` | VARCHAR(10) | `"DEBIT"` or `"CREDIT"` |
+| `amount` | BIGINT | Amount in minor units |
+| `currency` | CHAR(3) | Currency |
+| `balance_before` / `balance_after` | BIGINT | Balance snapshots |
+| `is_hot_account` | BOOLEAN | Whether processed via hot account path |
+| `account_lock_version` | INTEGER | Lock version at time of entry |
+| `original_amount` / `original_currency` | — | Pre-FX conversion values |
+| `exchange_rate` | BIGINT | FX rate (scaled to 6 decimals) |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+**Key indexes:** `(transaction_id)`, `(account_id)`, `(account_id, account_lock_version)`
+
+---
+
+### block_checkpoint
+
+Block-based hash chain checkpoints (Azure SQL Ledger pattern). Enables O(new events) verification instead of O(all events).
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `block_sequence` | BIGSERIAL | Block ordering |
+| `from_event_sequence` / `to_event_sequence` | BIGINT | Event range in this block |
+| `event_count` | INTEGER | Number of events |
+| `events_hash` | VARCHAR(64) | SHA-256 of sorted event hashes |
+| `block_hash` | VARCHAR(64) | SHA-256 of `prev_block_hash + events_hash` |
+| `prev_block_id` / `prev_block_hash` | — | Link to previous block |
+| `merkle_root` | VARCHAR(64) | Merkle tree root hash |
+| `tree_depth` | INTEGER | Depth of the Merkle tree for this block |
+
+---
+
+### merkle_node
+
+**Append-only** — stores the Merkle tree structure for each block checkpoint. Enables O(log n) inclusion proofs for any event.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `block_id` | UUID | FK to `block_checkpoint` |
+| `level` | INTEGER | 0 = leaf, max = root |
+| `position` | INTEGER | Position within the level |
+| `hash` | VARCHAR(64) | Node hash |
+| `left_child_id` | UUID | Left child node |
+| `right_child_id` | UUID | Right child node |
+| `event_id` | UUID | Event ID (leaf nodes only) |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+**Key indexes:** `(block_id, level, position)` unique
+
+---
+
+### entity_status_log
+
+**Append-only** — shared status tracking for all plugin workflow entities. Replaces mutable `status` columns on plugin tables.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `entity_type` | TEXT | Entity type (e.g., `approval_request`, `import_batch`) |
+| `entity_id` | UUID | Entity ID |
+| `status` | TEXT | The new status |
+| `previous_status` | TEXT | Previous status (for audit) |
+| `reason` | TEXT | Why this transition happened |
+| `metadata` | JSONB | Status-specific data |
+| `created_at` | TIMESTAMPTZ | Transition timestamp |
+
+**Key indexes:** `(entity_type, entity_id, created_at DESC)` for latest status lookup
+
+---
+
+### idempotency_key
+
+Prevents duplicate transactions. Keys expire after 24 hours by default.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `key` | VARCHAR(255) | Primary key — the idempotency key |
+| `reference` | VARCHAR(255) | Transaction reference |
+| `result_event_id` | UUID | Result event ID |
+| `result_data` | JSONB | Cached response |
+| `expires_at` | TIMESTAMPTZ | Expiry (default: NOW + 24h) |
+
+---
+
+### worker_lease
+
+Distributed worker coordination. Prevents duplicate background job execution across instances.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `worker_id` | VARCHAR(100) | Primary key — worker name |
+| `lease_holder` | VARCHAR(100) | Current holder instance |
+| `lease_until` | TIMESTAMPTZ | Lease expiry |
+| `acquired_at` | TIMESTAMPTZ | When acquired |
+
+---
+
+### Other Core Tables
+
+| Table | Purpose |
+|-------|---------|
+| `outbox` | Transactional outbox for reliable event publishing |
+| `dead_letter_queue` | Failed outbox events for manual recovery |
+| `hot_account_entry` | Batched updates for high-throughput system accounts |
+| `hot_account_failed_sequence` | Hot account batch failure tracking |
+| `processed_event` | Consumer-side event deduplication |
+| `reconciliation_result` | Daily reconciliation run results |
+| `reconciliation_watermark` | Incremental reconciliation tracking |
+| `account_snapshot` | End-of-day balance snapshots |
+| `scheduled_transaction` | Recurring / future-dated transactions |
+| `account_limit` | Per-account velocity limits |
+| `account_transaction_log` | Denormalized transaction log for velocity checks |
+| `failed_event` | Event publication DLQ |
+
+## Plugin Tables
+
+Plugins create their own tables when enabled. These are only created if you include the plugin in your configuration.
+
+### Audit Log
+
+| Table | Purpose |
+|-------|---------|
+| `audit_log` | Immutable audit trail — operation, params, actor, HMAC hash, timestamp |
+
+### Accrual Accounting
+
+| Table | Purpose |
+|-------|---------|
+| `accrual_schedule` | Revenue/expense recognition schedules with amounts and progress |
+| `accrual_posting` | Individual period postings with dates, status, and `transaction_id` |
+
+### FX Engine
+
+| Table | Purpose |
+|-------|---------|
+| `fx_rate_cache` | Cached exchange rates with TTL |
+| `fx_rate_quote` | Temporary FX quotes (active → used/expired) |
+| `fx_gain_loss` | Realized FX gains and losses per transaction |
+
+### Approval Workflow
+
+| Table | Purpose |
+|-------|---------|
+| `approval_rule` | Approval trigger rules (amount thresholds, account types) |
+| `approval_request` | Pending approval requests with status and approver tracking |
+
+### Batch Import
+
+| Table | Purpose |
+|-------|---------|
+| `import_batch` | Batch metadata (status, item counts, creator) |
+| `batch_item` | Individual items with validation status and posted transaction ID |
+
+### GL Sub-Ledger
+
+| Table | Purpose |
+|-------|---------|
+| `gl_sub_ledger_mapping` | GL account ↔ sub-ledger account relationships |
+
+## Schema Configuration
+
+### Custom Schema Name
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  schema: "ledger", // Tables will be created in "ledger" schema
+});
+```
+
+This creates all tables under `ledger.*` (e.g., `ledger.account_balance`, `ledger.ledger_event`). Useful for multi-tenant deployments or keeping Summa isolated from your application tables.
+
+### Public Schema
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  schema: "public", // Tables in default schema
+});
+```
+
+### Multiple Instances
+
+You can run multiple Summa instances in the same database with different schema names:
+
+```ts
+const usdLedger = createSumma({ database: adapter, schema: "ledger_usd", currency: "USD" });
+const eurLedger = createSumma({ database: adapter, schema: "ledger_eur", currency: "EUR" });
+```
+
+## Migrations
+
+### Direct Push
+
+```bash
+npx summa migrate push
+```
+
+Compares the current database state against Summa's schema definitions and applies changes. Recommended for getting started.
+
+### ORM Migrations
+
+Generate schema files for your ORM, then use its migration tooling:
+
+```bash
+# Drizzle
+npx summa generate --adapter drizzle --out src/db/summa-schema.ts
+
+# Prisma
+npx summa generate --adapter prisma --out prisma/summa-schema.prisma
+
+# Kysely
+npx summa generate --adapter kysely --out src/db/summa-schema.ts
+```
+
+See [Drizzle Adapter](/docs/adapters/drizzle#migrations) for full migration workflow.
+
+### Migration Commands
+
+| Command | Description |
+|---------|-------------|
+| `summa migrate push` | Apply schema directly to database |
+| `summa migrate generate` | Generate versioned SQL migration files |
+| `summa migrate status` | Show pending schema changes |
+| `summa migrate list` | Show applied migration history |
+| `summa migrate rollback` | Revert last N migrations (wrapped in a transaction for atomicity) |
+
+## Entity Relationship
+
+```
+ledger_event (source of truth)
+    ↓ projects to
+account_balance → account_balance_version (append-only state)
+    ↑                     ↑
+    │              entry_record → transaction_record → transaction_status
+    │                                    ↑
+    ├── account_limit                    ├── idempotency_key
+    ├── account_snapshot                 └── outbox → dead_letter_queue
+    └── account_transaction_log
+
+block_checkpoint → merkle_node (Merkle tree)
+block_checkpoint ← verifies → ledger_event
+entity_status_log ← tracks → all plugin entities
+worker_lease ← coordinates → background workers
+```
+
+## Table Count
+
+| Category | Tables |
+|----------|:------:|
+| Core | 25 |
+| Audit Log plugin | 1 |
+| Accrual Accounting plugin | 2 |
+| FX Engine plugin | 3 |
+| Approval Workflow plugin | 2 |
+| Batch Import plugin | 2 |
+| GL Sub-Ledger plugin | 1 |
+| **Total** | **36** |
