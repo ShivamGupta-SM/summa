@@ -6,7 +6,7 @@ icon: Camera
 
 ## Overview
 
-The snapshots plugin periodically captures the balance state of all accounts, enabling historical balance queries and end-of-month reporting.
+The snapshots plugin periodically captures the balance state of all accounts, enabling historical balance queries and end-of-month reporting. A background worker runs **daily** with distributed lease support, capturing the current balance of all accounts that had recent activity.
 
 ## Setup
 
@@ -21,26 +21,73 @@ const summa = createSumma({
 });
 ```
 
+The `snapshots()` factory takes no configuration options. It registers a `"daily-snapshots"` worker with `interval: "1d"` and `leaseRequired: true`.
+
 ## Querying Snapshots
 
-```ts
-// Get balance at a specific point in time
-const snapshot = await summa.snapshots.getAt({
-  accountId: account.id,
-  date: new Date("2025-01-15"),
-});
+Snapshot queries use **standalone functions** exported from `summa/plugins`, not instance methods.
 
-// Get end-of-month balance
-const eom = await summa.snapshots.getEndOfMonth({
-  accountId: account.id,
-  year: 2025,
-  month: 1,
-});
+### `getHistoricalBalance`
+
+Returns the snapshot for a specific date. Returns `null` if no snapshot exists for that date.
+
+```ts
+import { getHistoricalBalance } from "summa/plugins";
+
+const snapshot = await getHistoricalBalance(
+  summa.$context,   // SummaContext
+  account.id,       // accountId
+  new Date("2025-01-15"),  // date (Date | string)
+);
+
+if (snapshot) {
+  console.log(snapshot.balance);          // Total balance
+  console.log(snapshot.availableBalance); // Available (minus pending holds)
+  console.log(snapshot.creditBalance);    // Total credits
+  console.log(snapshot.debitBalance);     // Total debits
+}
 ```
+
+**Return type:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `accountId` | `string` | Account identifier |
+| `snapshotDate` | `string` | ISO date of the snapshot |
+| `balance` | `number` | Total balance (smallest currency unit) |
+| `creditBalance` | `number` | Total credit balance |
+| `debitBalance` | `number` | Total debit balance |
+| `pendingCredit` | `number` | Pending credit holds |
+| `pendingDebit` | `number` | Pending debit holds |
+| `availableBalance` | `number` | Balance minus pending holds |
+| `currency` | `string` | ISO 4217 currency code |
+| `accountStatus` | `string` | Account status at snapshot time |
+| `checkpointHash` | `string \| null` | Hash chain checkpoint |
+
+### `getEndOfMonthBalance`
+
+Returns the last snapshot in a given calendar month — useful for month-end reporting.
+
+```ts
+import { getEndOfMonthBalance } from "summa/plugins";
+
+const eom = await getEndOfMonthBalance(
+  summa.$context,  // SummaContext
+  account.id,      // accountId
+  2025,            // year
+  1,               // month (1-indexed: 1=Jan, 12=Dec)
+);
+
+if (eom) {
+  console.log(`Jan 2025 closing balance: ${eom.balance}`);
+}
+```
+
+Returns the same shape as `getHistoricalBalance`. Returns `null` if no snapshots exist for that month.
 
 ## How It Works
 
-A background worker runs daily (configurable) and captures the current balance of all accounts that had recent activity. Snapshots are stored in a dedicated table and can be queried for any historical date.
+The daily worker captures the current balance of all accounts that had recent activity. Snapshots are stored in a dedicated table and can be queried for any historical date. Accounts with no activity since the last snapshot are skipped to save storage.
 
 ## Use Cases
 

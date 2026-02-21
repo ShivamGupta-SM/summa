@@ -52,9 +52,22 @@ await summa.hotAccounts.mark({ accountId: account.id });
 
 Accounts receiving more than `advanced.hotAccountThreshold` transactions per minute are candidates for hot account treatment.
 
+## Querying Hot Account Stats
+
+```ts
+import { getHotAccountStats } from "summa/plugins";
+
+const stats = await getHotAccountStats(summa.$context);
+console.log(stats.pending);           // Entries awaiting aggregation
+console.log(stats.processed);         // Successfully aggregated entries
+console.log(stats.failedSequences);   // Failed aggregation attempts
+```
+
 ## Type Inference
 
 ```ts
+import type { HotAccountStats } from "summa/plugins";
+
 type Stats = typeof summa.$Infer.HotAccountStats;
 // { pending: number, processed: number, failedSequences: number }
 ```

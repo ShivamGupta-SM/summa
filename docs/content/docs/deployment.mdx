@@ -12,21 +12,35 @@ This guide covers production deployment patterns for Summa, including database s
 
 ### Connection Pooling
 
-Configure your database adapter with appropriate pool settings:
+Use `RECOMMENDED_POOL_CONFIG` and `createPooledAdapter()` for production-ready pool management with monitoring and graceful shutdown:
 
 ```ts
-import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/drizzle-adapter";
 
 const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
   connectionString: process.env.DATABASE_URL,
-  max: 20,            // Max connections in pool
-  idleTimeoutMillis: 30_000,
-  connectionTimeoutMillis: 5_000,
 });
 
 const db = drizzle(pool);
+const { adapter, close, stats } = createPooledAdapter({ pool, drizzle: db });
+
+// Monitor pool health
+setInterval(() => {
+  const s = stats();
+  logger.info("Pool stats", s);
+  if (s.waitingCount > 0) {
+    logger.warn("Clients waiting for connections", { waiting: s.waitingCount });
+  }
+}, 60_000);
 ```
+
+See [Drizzle Adapter — Connection Pooling](/docs/adapters/drizzle#connection-pooling) for full configuration reference.
 
 **Pool sizing guidelines:**
 
@@ -35,6 +49,49 @@ const db = drizzle(pool);
 | Light (< 100 txn/min) | 5–10 | Default for small services |
 | Medium (100–1000 txn/min) | 10–20 | Most production workloads |
 | Heavy (1000+ txn/min) | 20–50 | Enable hot accounts plugin |
+
+### Read Replicas
+
+For read-heavy workloads, use `createReadReplicaAdapter()` to offload reads to PostgreSQL replicas:
+
+```ts
+import { createReadReplicaAdapter } from "@summa/core/db";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+
+const primary = drizzleAdapter(drizzle(primaryPool));
+const replica = drizzleAdapter(drizzle(replicaPool));
+
+const adapter = createReadReplicaAdapter({
+  primary,
+  replicas: [replica],
+  strategy: "round-robin",
+});
+```
+
+Read operations (`findOne`, `findMany`, `count`, SELECT queries) go to replicas. Writes, transactions, and `FOR UPDATE` queries always go to the primary. See [Drizzle Adapter — Read Replicas](/docs/adapters/drizzle#read-replicas) for routing details.
+
+### Redis for Distributed State
+
+For multi-instance deployments, configure `@summa/redis-storage` as secondary storage. This enables distributed rate limiting, shared idempotency caching, and plugin state across instances:
+
+```bash
+pnpm add @summa/redis-storage ioredis
+```
+
+```ts
+import Redis from "ioredis";
+import { createRedisStorage } from "@summa/redis-storage";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const { storage, disconnect } = createRedisStorage({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  secondaryStorage: storage,
+});
+```
+
+See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) for setup options.
 
 ### Schema Migrations
 
@@ -70,12 +127,21 @@ const server = app.listen(3000, async () => {
 
 ### Graceful Shutdown
 
-Always stop workers before process exit. The worker runner awaits running workers with a 10-second timeout:
+Always stop workers, close Redis, and drain the connection pool before process exit:
 
 ```ts
 async function shutdown() {
   console.log("Shutting down...");
-  await summa.workers.stop();  // Waits for running workers (up to 10s)
+
+  // 1. Stop background workers (awaits running workers up to 10s)
+  await summa.workers.stop();
+
+  // 2. Disconnect Redis (if using @summa/redis-storage)
+  await disconnect();
+
+  // 3. Drain the connection pool
+  await close();
+
   server.close();
   process.exit(0);
 }
@@ -128,6 +194,18 @@ Every API response includes an `X-Request-Id` header. Forward the `x-request-id`
 
 ## Security Hardening
 
+### Security Headers
+
+Summa automatically includes security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Content-Security-Policy`, `Referrer-Policy`, `X-XSS-Protection`) on every API response. No configuration is needed.
+
+For HSTS, configure it at your reverse proxy (Nginx, Cloudflare, ALB) rather than in application code, since local development runs over HTTP:
+
+```nginx
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
+Or use the `onResponse` hook if you don't have a reverse proxy. See [Security Headers](/docs/api-reference#security-headers) for details.
+
 ### API Authentication
 
 Use handler-level `onRequest` hooks or framework middleware:
@@ -146,7 +224,7 @@ const handler = createSummaHono(summa, {
 
 ### Admin Endpoints
 
-Always configure `authorize` on the admin plugin in production:
+The admin plugin emits a **console warning** at startup if no `authorize` callback is provided. Always configure `authorize` in production:
 
 ```ts
 admin({
@@ -163,17 +241,18 @@ Choose a rate limiter backend based on your deployment:
 
 | Backend | Best for | Shared across instances? |
 |---------|----------|:-:|
-| `memory` | Single instance | No |
+| `memory` | Single instance, development | No |
 | `database` | Multi-instance, no Redis | Yes |
-| `secondary` (Redis) | Multi-instance, high throughput | Yes |
+| `secondary` (Redis) | Multi-instance, production (recommended) | Yes |
 
 ```ts
 import { createRateLimiter } from "summa/api";
 
+// For multi-instance: use Redis-backed rate limiting
 const rateLimiter = createRateLimiter({
   window: 60,
   max: 100,
-  storage: "database",  // Shared across instances
+  storage: "secondary",  // Requires secondaryStorage in createSumma()
 });
 ```
 
@@ -186,6 +265,34 @@ const handler = createSummaHono(summa, {
   trustedOrigins: ["https://app.example.com"],
 });
 ```
+
+### Request Body Size Limits
+
+Summa does not enforce request body size limits at the handler level — this is the responsibility of your framework or reverse proxy. Configure body size limits to prevent memory exhaustion from oversized payloads:
+
+<Tabs items={["Express", "Fastify", "Hono", "Nginx"]}>
+<Tab value="Express">
+```ts
+app.use(express.json({ limit: "1mb" }));
+```
+</Tab>
+<Tab value="Fastify">
+```ts
+const app = Fastify({ bodyLimit: 1_048_576 }); // 1 MB
+```
+</Tab>
+<Tab value="Hono">
+```ts
+import { bodyLimit } from "hono/body-limit";
+app.use(bodyLimit({ maxSize: 1_048_576 })); // 1 MB
+```
+</Tab>
+<Tab value="Nginx">
+```nginx
+client_max_body_size 1m;
+```
+</Tab>
+</Tabs>
 
 ## Health Checks
 

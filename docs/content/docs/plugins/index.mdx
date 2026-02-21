@@ -23,6 +23,7 @@ import {
   admin,
   openApi,
   observability,
+  statements,
 } from "summa/plugins";
 
 const summa = createSumma({
@@ -42,6 +43,7 @@ const summa = createSumma({
     admin({ authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY }),
     openApi(),
     observability(),
+    statements(),
   ],
 });
 ```
@@ -63,6 +65,7 @@ const summa = createSumma({
 | [`admin`](/docs/plugins/admin) | Management | No | Elevated admin endpoints with authorization and dashboard stats |
 | [`openApi`](/docs/plugins/open-api) | Documentation | No | Auto-generated OpenAPI 3.1 specification |
 | [`observability`](/docs/plugins/observability) | Monitoring | No | Distributed tracing and Prometheus metrics via `/metrics` endpoint |
+| [`statements`](/docs/plugins/statements) | Reporting | No | Account statement generation with JSON, CSV, and PDF download |
 
 ## Plugin Architecture
 
@@ -87,12 +90,21 @@ interface SummaPlugin {
     afterHoldCommit?: (params) => Promise<void>;
   };
 
+  // Matcher-based operation hooks (generic extension of lifecycle hooks)
+  operationHooks?: {
+    before?: Array<{ matcher: (op) => boolean; handler: (ctx) => Promise<void | { cancel: true; reason: string }> }>;
+    after?: Array<{ matcher: (op) => boolean; handler: (ctx) => Promise<void> }>;
+  };
+
   // HTTP-level request/response interceptors
   onRequest?: (req) => req | response;  // Return response to short-circuit
   onResponse?: (req, res) => res;       // Modify response before sending
 
   // Background workers
   workers?: SummaWorkerDefinition[];
+
+  // Scheduled tasks (user provides cron runner)
+  scheduledTasks?: Array<{ id: string; description: string; handler: (ctx) => Promise<void>; suggestedInterval: string }>;
 
   // Database tables (auto-created by migrate push)
   schema?: Record<string, TableDefinition>;
@@ -102,6 +114,9 @@ interface SummaPlugin {
 
   // Type inference for TypeScript
   $Infer?: Record<string, unknown>;
+
+  // Rate limiting rules for specific operations
+  rateLimit?: Array<{ operation: string | ((op) => boolean); window: number; max: number }>;
 }
 ```
 
@@ -130,6 +145,61 @@ hooks: {
   },
 }
 ```
+
+### Operation Hooks
+
+In addition to the named lifecycle hooks, plugins can use **matcher-based operation hooks** — a generic pattern that matches any operation type:
+
+```ts
+{
+  id: "my-compliance-plugin",
+  operationHooks: {
+    before: [
+      {
+        matcher: (op) => op.type.startsWith("transaction."),
+        handler: async ({ operation, context }) => {
+          const result = await complianceCheck(operation);
+          if (!result.ok) {
+            return { cancel: true, reason: result.message };
+          }
+        },
+      },
+    ],
+    after: [
+      {
+        matcher: (op) => op.type === "account.create",
+        handler: async ({ operation, context }) => {
+          await notifyOnboarding(operation.params);
+        },
+      },
+    ],
+  },
+}
+```
+
+**Available operation types:** `account.create`, `account.freeze`, `account.unfreeze`, `account.close`, `transaction.credit`, `transaction.debit`, `transaction.transfer`, `transaction.refund`, `hold.create`, `hold.commit`, `hold.void`
+
+A `before` hook returning `{ cancel: true, reason }` rejects the operation with `INVALID_ARGUMENT`.
+
+### Plugin Rate Limiting
+
+Plugins can declare rate limiting rules for specific operations:
+
+```ts
+{
+  id: "my-plugin",
+  rateLimit: [
+    { operation: "transaction.transfer", window: 60, max: 100 },
+    { operation: (op) => op.startsWith("hold."), window: 10, max: 50 },
+  ],
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `operation` | `string \| (op: string) => boolean` | Operation type or matcher function |
+| `window` | `number` | Window size in seconds |
+| `max` | `number` | Maximum operations allowed in window |
 
 ### Plugin Dependencies
 

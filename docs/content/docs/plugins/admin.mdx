@@ -38,6 +38,10 @@ admin({
 
 ### Authorization
 
+<Callout type="warn">
+If `authorize` is not provided, a console warning is emitted at startup and **all admin endpoints are publicly accessible**. Always provide an `authorize` callback in production.
+</Callout>
+
 The `authorize` callback runs before every admin endpoint handler. If it returns `false`, the request is rejected with HTTP 403:
 
 ```json
@@ -101,18 +105,30 @@ The `GET /admin/transactions` endpoint supports cross-account queries (no `holde
 
 | Query Param | Type | Description |
 |-------------|------|-------------|
-| `page` | `number` | Page number |
-| `perPage` | `number` | Items per page (max 200) |
-| `status` | `string` | Filter by status |
-| `type` | `string` | Filter by type |
-| `dateFrom` | `string` | Filter: created after |
-| `dateTo` | `string` | Filter: created before |
+| `page` | `number` | Page number (clamped to minimum 1, floats are floored) |
+| `perPage` | `number` | Items per page (clamped to 1–200, default 50) |
+| `status` | `string` | Filter by status. Must be one of: `"pending"`, `"inflight"`, `"posted"`, `"expired"`, `"voided"`, `"reversed"` |
+| `type` | `string` | Filter by type. Must be one of: `"credit"`, `"debit"`, `"transfer"` |
+| `dateFrom` | `string` | Filter: created after (ISO date) |
+| `dateTo` | `string` | Filter: created before (ISO date) |
+
+Invalid `status` or `type` values return a `400 VALIDATION_ERROR`.
 
 ### Hold Management
 
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/admin/holds` | List all holds across all accounts |
+
+**Query parameters:**
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `page` | `number` | Page number (clamped to minimum 1, floats are floored) |
+| `perPage` | `number` | Items per page (clamped to 1–200, default 50) |
+| `status` | `string` | Filter by status. Must be one of: `"inflight"`, `"posted"`, `"voided"`, `"expired"` |
+
+Invalid `status` values return a `400 VALIDATION_ERROR`.
 
 ### Reconciliation
 
@@ -176,6 +192,8 @@ Returns:
 
 ## Notes
 
-- If `authorize` is not set, admin endpoints are **unauthenticated** — protect them with framework-level middleware or network rules.
+- If `authorize` is not set, a **console warning** is emitted at startup and admin endpoints are unauthenticated. Always set `authorize` in production.
+- All query parameters (`status`, `type`) are validated against known enum values. Invalid values are rejected with `400 VALIDATION_ERROR`.
+- Pagination parameters (`page`, `perPage`) are clamped to safe ranges — negative, fractional, or non-numeric values are handled gracefully.
 - All admin endpoints route through the same plugin endpoint system, so they benefit from rate limiting and CSRF protection if configured.
 - The `basePath` can be customized to avoid conflicts (e.g., `"/internal/admin"`).

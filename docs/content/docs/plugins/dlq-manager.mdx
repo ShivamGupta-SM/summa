@@ -39,41 +39,81 @@ dlqManager({
 
 ## Inspecting Failed Events
 
+### `getDlqStats`
+
+Returns aggregate statistics about the dead letter queue:
+
 ```ts
-const failed = await summa.dlq.list({ limit: 50 });
-for (const event of failed) {
+import { getDlqStats } from "summa/plugins";
+
+const stats = await getDlqStats(summa.$context);
+console.log(stats.totalUnresolved);   // Events awaiting resolution
+console.log(stats.totalResolved);     // Events already resolved
+console.log(stats.byTopic);           // { "transaction.posted": 3, ... }
+console.log(stats.oldestUnresolved);  // ISO timestamp or null
+```
+
+### `listUnresolvedEvents`
+
+Returns a paginated list of unresolved failed events:
+
+```ts
+import { listUnresolvedEvents } from "summa/plugins";
+
+const result = await listUnresolvedEvents(summa.$context, {
+  page: 1,        // Page number (default: 1)
+  perPage: 20,    // Items per page (default: 20)
+  topic: "transaction.posted",  // Optional topic filter
+});
+
+for (const event of result.data) {
   console.log(event.id);            // DLQ entry ID
   console.log(event.topic);         // Event topic
   console.log(event.error_message); // Why it failed
   console.log(event.retry_count);   // How many times it's been retried
   console.log(event.created_at);    // When it first failed
 }
+
+console.log(result.total);    // Total matching events
+console.log(result.hasMore);  // More pages available
 ```
 
 ## Reprocessing
 
-```ts
-// Retry a specific event
-await summa.dlq.retry({ eventId: "..." });
+### `retryEvent`
 
-// Retry all failed events
-await summa.dlq.retryAll();
+Requeues a failed event into the outbox for another delivery attempt. Increments the `retry_count`.
+
+```ts
+import { retryEvent } from "summa/plugins";
+
+await retryEvent(summa.$context, "evt_failed_123");
 ```
+
+Throws `NOT_FOUND` if the event doesn't exist or is already resolved.
 
 ## Resolving Events
 
-Mark an event as resolved (won't be retried):
+### `resolveEvent`
+
+Marks a failed event as resolved — it won't be retried again:
 
 ```ts
-await summa.dlq.resolve({
-  eventId: "...",
+import { resolveEvent } from "summa/plugins";
+
+await resolveEvent(summa.$context, {
+  eventId: "evt_failed_123",
   resolvedBy: "admin@example.com",
 });
 ```
 
+Throws `NOT_FOUND` if the event doesn't exist or is already resolved.
+
 ## Type Inference
 
 ```ts
+import type { FailedEvent, DlqStats } from "summa/plugins";
+
 type Failed = typeof summa.$Infer.FailedEvent;
 type Stats = typeof summa.$Infer.DlqStats;
 // DlqStats: { totalUnresolved, totalResolved, byTopic, oldestUnresolved }

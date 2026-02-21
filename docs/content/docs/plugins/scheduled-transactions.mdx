@@ -52,9 +52,26 @@ await summa.scheduled.create({
 ## How It Works
 
 1. Scheduled transactions are stored with a `scheduledAt` timestamp
-2. A background worker periodically checks for transactions whose `scheduledAt` time has passed
+2. A background worker (`"scheduled-processor"`, interval: `"1m"`) checks for transactions whose `scheduledAt` time has passed
 3. Due transactions are executed as regular transfers
 4. Failed transactions are retried with exponential backoff up to `maxRetries` times
+
+## Events
+
+The plugin emits events to the [event log](/docs/events) when transactions are processed:
+
+| Event | When |
+|-------|------|
+| `ScheduledTransactionCreated` | A new scheduled transaction is registered |
+| `ScheduledTransactionExecuted` | A scheduled transaction is successfully executed |
+| `ScheduledTransactionFailed` | A scheduled transaction execution fails |
+| `ScheduledTransactionCancelled` | A scheduled transaction is cancelled |
+| `ScheduledTransactionRetrying` | A failed transaction is being retried |
+| `ScheduledTransactionExhausted` | All retry attempts have been exhausted |
+
+<Callout type="info" title="Management API">
+  The scheduled transactions plugin currently provides creation via `summa.scheduled.create()` and automated execution via the background worker. Listing, querying, and cancelling scheduled transactions can be done through the [admin plugin](/docs/plugins/admin) endpoints or by querying the `scheduled_transaction` table directly.
+</Callout>
 
 ## Use Cases
 

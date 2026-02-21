@@ -81,7 +81,69 @@ This gives you version-controlled migration files for production deployments.
 
 ## Connection Pooling
 
-For production, always use connection pooling. The adapter works with any Drizzle instance, so configure pooling at the `drizzle()` level:
+For production, always use connection pooling. Summa provides `RECOMMENDED_POOL_CONFIG` with production-ready defaults and `createPooledAdapter()` for pool monitoring and graceful shutdown.
+
+### Recommended Setup
+
+```ts
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/drizzle-adapter";
+
+const pool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+  // Override defaults as needed:
+  // max: 30,
+});
+
+const db = drizzle(pool);
+const { adapter, close, stats } = createPooledAdapter({ pool, drizzle: db });
+
+export const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+});
+
+// Monitor pool health
+setInterval(() => console.log(stats()), 60_000);
+
+// On shutdown
+await summa.workers.stop();
+await close();
+```
+
+### Recommended Pool Defaults
+
+`RECOMMENDED_POOL_CONFIG` includes these production-ready values:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `max` | `20` | Max connections. Divide by instance count for multi-instance. |
+| `min` | `5` | Keep 5 idle connections warm. |
+| `idleTimeoutMillis` | `30000` | Close idle connections after 30s. |
+| `connectionTimeoutMillis` | `10000` | Fail fast if no connection in 10s. |
+| `maxLifetimeMillis` | `1800000` | Recycle connections after 30min (avoids stale connections behind LBs). |
+| `statement_timeout` | `30000` | Prevent runaway queries (30s). |
+
+### Pool Sizing Guidelines
+
+| Workload | `max` connections | Notes |
+|----------|:-:|-------|
+| Light (< 100 txn/min) | 5–10 | Default for small services |
+| Medium (100–1000 txn/min) | 10–20 | Most production workloads |
+| Heavy (1000+ txn/min) | 20–50 | Enable hot accounts plugin |
+
+<Callout type="info" title="Multi-instance deployments">
+  Divide `max` by the number of instances. For example, with 4 instances and a PostgreSQL `max_connections` of 100, set `max: 20` per instance (leaving room for admin connections).
+</Callout>
+
+### Manual Setup
+
+You can also configure the pool manually without `createPooledAdapter`:
 
 ```ts
 import { Pool } from "pg";
@@ -90,8 +152,8 @@ import { drizzleAdapter } from "@summa/drizzle-adapter";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  max: 20,                    // Maximum connections
-  idleTimeoutMillis: 30000,   // Close idle connections after 30s
+  max: 20,
+  idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,
 });
 
@@ -102,6 +164,44 @@ export const summa = createSumma({
   currency: "USD",
 });
 ```
+
+## Read Replicas
+
+For read-heavy workloads, use `createReadReplicaAdapter()` to route reads to replica(s) and writes to the primary:
+
+```ts
+import { createReadReplicaAdapter } from "@summa/core/db";
+import { drizzleAdapter } from "@summa/drizzle-adapter";
+
+const primary = drizzleAdapter(drizzle(primaryPool));
+const replica = drizzleAdapter(drizzle(replicaPool));
+
+const adapter = createReadReplicaAdapter({
+  primary,
+  replicas: [replica],
+  strategy: "round-robin",   // or "random" (default)
+});
+
+export const summa = createSumma({ database: adapter });
+```
+
+### How It Works
+
+| Operation | Routed to |
+|-----------|-----------|
+| `findOne` (without `forUpdate`) | Replica |
+| `findMany` | Replica |
+| `count` | Replica |
+| `raw` (SELECT queries) | Replica |
+| `findOne` (with `forUpdate`) | Primary |
+| `create`, `update`, `delete` | Primary |
+| `rawMutate` | Primary |
+| `transaction` (all ops inside) | Primary |
+| `advisoryLock` | Primary |
+
+<Callout type="warn" title="Replication lag">
+  PostgreSQL streaming replication has a small delay (typically < 100ms). Reads immediately after writes may return stale data if routed to a replica. Operations inside a transaction always use the primary for read-your-writes consistency.
+</Callout>
 
 ## How It Works
 
@@ -144,27 +244,63 @@ await summa.transactions.transfer({
 
 ```ts
 import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa/core/db";
+import { createRedisStorage } from "@summa/redis-storage";
 import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
+import Redis from "ioredis";
 
-const pool = new Pool({
+// Connection pools
+const primaryPool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
   connectionString: process.env.DATABASE_URL,
-  max: 20,
+});
+const replicaPool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_REPLICA_URL,
 });
 
-const db = drizzle(pool);
+// Drizzle instances
+const primaryDb = drizzle(primaryPool);
+const replicaDb = drizzle(replicaPool);
+
+// Pooled adapters with monitoring
+const primary = createPooledAdapter({ pool: primaryPool, drizzle: primaryDb });
+const replica = createPooledAdapter({ pool: replicaPool, drizzle: replicaDb });
+
+// Read replica routing
+const adapter = createReadReplicaAdapter({
+  primary: primary.adapter,
+  replicas: [replica.adapter],
+});
+
+// Redis for rate limiting & caching
+const redis = new Redis(process.env.REDIS_URL!);
+const { storage, disconnect } = createRedisStorage({ client: redis });
 
 export const summa = createSumma({
-  database: drizzleAdapter(db),
+  database: adapter,
   currency: "USD",
+  secondaryStorage: storage,
   plugins: [auditLog(), reconciliation(), velocityLimits()],
 });
 
-// Run migrations
-// npx summa migrate push
-
-// Start background workers
+// Start workers
 await summa.workers.start();
+
+// Graceful shutdown
+async function shutdown() {
+  await summa.workers.stop();
+  await disconnect();
+  await primary.close();
+  await replica.close();
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 ```

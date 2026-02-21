@@ -102,6 +102,7 @@ import {
   scheduledTransactions,
   maintenance,
   observability,
+  statements,
 } from "summa/plugins";
 
 plugins: [
@@ -116,6 +117,7 @@ plugins: [
   scheduledTransactions(),
   maintenance(),
   observability(),
+  statements(),
 ]
 ```
 
@@ -144,6 +146,7 @@ advanced: {
 | `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
 | `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
 | `enableEventSourcing` | `boolean` | `true` | Write events to the event log |
+| `enableHashChain` | `boolean` | `true` | SHA-256 hash chain for tamper detection |
 
 <Callout type="warn" title="Hash chain is always enabled">
   The SHA-256 hash chain is critical for tamper detection and is always enabled when event sourcing is on. It cannot be disabled independently.
@@ -217,7 +220,41 @@ const summa = createSumma({
 
 ## `secondaryStorage`
 
-Optional key-value store for rate limiting and caching. Used by the rate limiter when `storage: "secondary"` is configured.
+Optional key-value store for rate limiting, idempotency caching, and distributed state. **Recommended for multi-instance deployments** — without it, rate limiting is per-process only.
+
+### Using `@summa/redis-storage` (Recommended)
+
+The `@summa/redis-storage` package provides a production-ready `SecondaryStorage` implementation:
+
+```bash
+pnpm add @summa/redis-storage ioredis
+```
+
+```ts
+import Redis from "ioredis";
+import { createRedisStorage } from "@summa/redis-storage";
+
+const redis = new Redis(process.env.REDIS_URL!);
+const { storage, disconnect, ping } = createRedisStorage({
+  client: redis,
+  keyPrefix: "summa:",   // Default — prefix for all keys
+});
+
+const summa = createSumma({
+  database: adapter,
+  secondaryStorage: storage,
+});
+
+// Health check
+const healthy = await ping(); // true if Redis is reachable
+
+// On shutdown
+await disconnect();
+```
+
+### Custom Implementation
+
+You can also implement the `SecondaryStorage` interface directly:
 
 ```ts
 interface SecondaryStorage {
@@ -228,7 +265,7 @@ interface SecondaryStorage {
 }
 ```
 
-Example with Redis:
+Example with the `redis` package:
 
 ```ts
 import { createClient } from "redis";

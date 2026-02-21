@@ -48,22 +48,45 @@ The plugin hooks into `afterTransaction`, `afterAccountCreate`, and `afterHoldCo
 
 ## Querying Audit Logs
 
+Use the standalone `queryAuditLog` function to search the audit trail:
+
 ```ts
-const logs = await summa.auditLog.query({
-  targetId: account.id,
-  limit: 50,
+import { queryAuditLog } from "summa/plugins";
+
+const logs = await queryAuditLog(summa.$context, {
+  operation: "transaction.credit",  // Filter by operation type
+  actor: "admin@example.com",       // Filter by actor
+  since: new Date("2025-01-01"),    // Start date
+  until: new Date("2025-02-01"),    // End date
+  limit: 50,                        // Default: 50
+  offset: 0,                        // Pagination offset
 });
 
 for (const entry of logs) {
+  console.log(entry.id);         // Unique entry ID
   console.log(entry.operation);  // "transaction.credit"
   console.log(entry.params);     // { holderId: "user_123", amount: 10000, ... }
+  console.log(entry.actor);      // "admin@example.com" or null
   console.log(entry.timestamp);  // "2025-01-15T10:30:00Z"
 }
 ```
 
+### Query Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `operation` | `string` | — | Filter by operation type |
+| `actor` | `string` | — | Filter by actor identifier |
+| `since` | `Date` | — | Entries after this date |
+| `until` | `Date` | — | Entries before this date |
+| `limit` | `number` | `50` | Max entries to return |
+| `offset` | `number` | `0` | Pagination offset |
+
 ## Type Inference
 
 ```ts
+import type { AuditLogEntry } from "summa/plugins";
+
 type AuditEntry = typeof summa.$Infer.AuditLogEntry;
 // { id, operation, params, actor, timestamp }
 ```

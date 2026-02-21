@@ -294,6 +294,13 @@ Plugins can register additional endpoints via their `endpoints` array. These are
 |--------|------|-------------|
 | `GET` | `/metrics` | Prometheus-compatible metrics (text format) |
 
+**Statements plugin** (when enabled):
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/statements/:holderId` | Full account statement (JSON, CSV, or PDF) |
+| `GET` | `/statements/:holderId/summary` | Statement summary only (no line items) |
+
 ## Rate Limiting
 
 Summa includes built-in rate limiting with configurable presets:
@@ -343,6 +350,32 @@ When rate limiting is enabled, every response includes:
 | `X-RateLimit-Remaining` | Remaining requests in current window |
 | `X-RateLimit-Reset` | Unix timestamp when the window resets |
 | `Retry-After` | Seconds to wait (only present when rate limited) |
+
+## Security Headers
+
+Every API response includes the following security headers by default:
+
+| Header | Value | Purpose |
+|--------|-------|---------|
+| `X-Content-Type-Options` | `nosniff` | Prevents MIME-type sniffing |
+| `X-Frame-Options` | `DENY` | Prevents clickjacking via iframes |
+| `Referrer-Policy` | `strict-origin-when-cross-origin` | Limits referrer information leakage |
+| `X-XSS-Protection` | `0` | Disables legacy browser XSS filter (modern best practice) |
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'` | Restricts resource loading and framing |
+
+These headers are applied automatically and cannot be disabled. If you need additional headers (e.g., `Strict-Transport-Security`), add them at your reverse proxy or via the `onResponse` hook:
+
+```ts
+const handler = createSummaHono(summa, {
+  onResponse: (req, res) => {
+    res.headers = {
+      ...res.headers,
+      "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
+    };
+    return res;
+  },
+});
+```
 
 ## CSRF Protection
 

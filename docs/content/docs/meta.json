@@ -12,7 +12,6 @@
 		"---Adapters---",
 		"...adapters",
 		"---Plugins---",
-		"plugins",
 		"...plugins",
 		"---Integrations---",
 		"api-reference",
@@ -22,6 +21,7 @@
 		"cli",
 		"error-codes",
 		"---Guides---",
+		"scaling",
 		"testing",
 		"deployment"
 	]

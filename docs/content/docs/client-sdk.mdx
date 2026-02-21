@@ -225,6 +225,30 @@ const client = createSummaClient({
 });
 ```
 
+## Low-Level Fetch Client
+
+For advanced use cases, the SDK also exports the internal `FetchClient` with typed `get`, `post`, and `del` methods:
+
+```ts
+import { createFetchClient } from "@summa/client/fetch";
+
+const http = createFetchClient({
+  baseURL: "http://ledger:3000/api/ledger",
+  timeout: 10_000,
+});
+
+const accounts = await http.get<{ accounts: Account[] }>("/accounts", { status: "active" });
+const txn = await http.post<Transaction>("/transactions/credit", { holderId: "user_123", amount: 5000, reference: "dep-001" });
+```
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `get` | `get<T>(path, query?)` | GET request with optional query params |
+| `post` | `post<T>(path, body?)` | POST request with JSON body |
+| `del` | `del<T>(path, body?)` | DELETE request with optional JSON body |
+
+The `FetchClient` applies the same interceptors, timeout, and error parsing as the main client.
+
 ## Proxy Client
 
 For dynamic or plugin endpoints not covered by the typed client, use the **proxy client**. It maps property access chains to URL paths automatically:
@@ -391,11 +415,14 @@ const transfer = mutation((c, params) => c.transactions.transfer(params));
 </button>
 ```
 
-| Function | Returns | Description |
-|----------|---------|-------------|
-| `createSummaStore(options)` | `{ client, query, mutation }` | Create a store factory |
-| `query(fn)` | Readable store `{ data, error, loading }` + `refetch()` | Auto-fetching store |
-| `mutation(fn)` | Readable store `{ data, error, loading }` + `trigger(vars)` | On-demand mutation store |
+| Export | Returns | Description |
+|--------|---------|-------------|
+| `createSummaStore(options)` | `SummaStore` | Create a store factory with `{ client, query, mutation }` |
+| `query(fn)` | `SummaQueryStore<T>` | Readable store `{ data, error, loading }` + `refetch()` |
+| `mutation(fn)` | `SummaMutationStore<T, V>` | Readable store `{ data, error, loading }` + `trigger(vars)` |
+| `SummaStore` | interface | Type for the store factory object |
+| `SummaQueryStore<T>` | interface | Readable store extending Svelte `Readable` |
+| `SummaMutationStore<T, V>` | interface | Readable store extending Svelte `Readable` |
 
 </Tab>
 </Tabs>

@@ -20,6 +20,26 @@ const webhooks = createWebhookHandler({
 });
 ```
 
+### Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `secret` | `string` | Required | HMAC-SHA256 secret for signing and verifying payloads |
+| `signatureHeader` | `string` | `"x-summa-signature"` | HTTP header name for the signature |
+| `tolerance` | `number` | `300000` (5 min) | Maximum age of a webhook payload in milliseconds. Payloads older than this are rejected to prevent replay attacks. |
+
+The `tolerance` option prevents **replay attacks** — if an attacker intercepts a signed payload and tries to re-send it after the tolerance window, `receive()` will throw `"Webhook payload is too old"`. Set to `0` to disable timestamp checking (not recommended for production).
+
+### Types
+
+```ts
+import type {
+  WebhookHandler,
+  WebhookHandlerOptions,
+  WebhookPayload,
+} from "summa/webhooks";
+```
+
 Generate a secret using the CLI:
 
 ```bash
@@ -72,7 +92,8 @@ app.post("/webhooks/summa", (req, res) => {
     console.log(payload.event, payload.data);
     res.sendStatus(200);
   } catch (error) {
-    // Invalid signature or expired timestamp
+    // "Invalid webhook signature" — HMAC mismatch
+    // "Webhook payload is too old" — timestamp exceeds tolerance
     res.sendStatus(401);
   }
 });

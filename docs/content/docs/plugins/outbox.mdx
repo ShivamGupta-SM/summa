@@ -56,15 +56,26 @@ outbox({
 4. Successfully processed events are marked as delivered
 5. Failed events are retried up to `maxRetries` times, then moved to the DLQ (if [dlqManager](/docs/plugins/dlq-manager) is enabled)
 
-## Manual Processing
+## Querying Outbox Stats
+
+### `getOutboxStats`
+
+Returns aggregate statistics about the outbox:
 
 ```ts
-await summa.outbox.process();
+import { getOutboxStats } from "summa/plugins";
+
+const stats = await getOutboxStats(summa.$context);
+console.log(stats.pending);    // Events awaiting delivery
+console.log(stats.processed);  // Successfully delivered events
+console.log(stats.failed);     // Events that exhausted all retries
 ```
 
 ## Type Inference
 
 ```ts
+import type { OutboxStats } from "summa/plugins";
+
 type Stats = typeof summa.$Infer.OutboxStats;
 // { pending: number, processed: number, failed: number }
 ```

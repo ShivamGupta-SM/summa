@@ -1,0 +1,303 @@
+---
+title: Statements
+description: Account statement generation with JSON, CSV, and PDF download support.
+icon: TableCells
+---
+
+## Overview
+
+The statements plugin generates **account statements** for any date range. It combines entry records and transaction data to produce line-item statements with computed summaries (opening/closing balance, totals). Supports JSON, CSV, and PDF output formats.
+
+For large statements, use the **async background generation** feature to avoid request timeouts — submit a job and poll for the result.
+
+## Setup
+
+```ts
+import { statements } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [statements()],
+});
+```
+
+## Configuration
+
+```ts
+statements({
+  basePath: "/statements",  // Default — prefix for all statement routes
+})
+```
+
+<TypeTable
+  type={{
+    basePath: { type: "string", description: "URL prefix for all statement endpoints.", default: '"/statements"' },
+  }}
+/>
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/statements/:holderId` | Full account statement (JSON, CSV, or PDF) |
+| `GET` | `/statements/:holderId/summary` | Summary only (no line items) |
+| `POST` | `/statements/:holderId/generate` | Submit async CSV/PDF generation job |
+| `GET` | `/statements/jobs/:jobId` | Poll job status / download result |
+
+### Full Statement
+
+```
+GET /statements/:holderId?format=json&dateFrom=2026-01-01&dateTo=2026-02-01&page=1&perPage=50
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `format` | `string` | `"json"` | Output format: `"json"` \| `"csv"` \| `"pdf"` |
+| `dateFrom` | `string` | 30 days ago | Start date (ISO 8601) |
+| `dateTo` | `string` | now | End date (ISO 8601) |
+| `page` | `number` | `1` | Page number (JSON format only) |
+| `perPage` | `number` | `50` | Items per page, max 500 (JSON format only) |
+
+**JSON response:**
+
+```json
+{
+  "summary": {
+    "holderId": "user_123",
+    "accountId": "uuid",
+    "currency": "USD",
+    "dateFrom": "2026-01-01T00:00:00.000Z",
+    "dateTo": "2026-02-01T00:00:00.000Z",
+    "openingBalance": 100000,
+    "closingBalance": 150000,
+    "totalCredits": 75000,
+    "totalDebits": 25000,
+    "netChange": 50000,
+    "transactionCount": 12,
+    "entryCount": 24
+  },
+  "entries": [
+    {
+      "entryId": "uuid",
+      "transactionId": "uuid",
+      "transactionRef": "deposit-001",
+      "description": "Monthly deposit",
+      "entryType": "CREDIT",
+      "amount": 50000,
+      "amountDecimal": "500.00",
+      "currency": "USD",
+      "balanceBefore": 100000,
+      "balanceAfter": 150000,
+      "date": "2026-01-15T10:30:00.000Z"
+    }
+  ],
+  "hasMore": false,
+  "total": 24
+}
+```
+
+**CSV response:**
+
+```json
+{
+  "format": "csv",
+  "filename": "statement-user_123-2026-01-01-2026-02-01.csv",
+  "content": "# Account Statement\n# Holder ID: user_123\n..."
+}
+```
+
+The CSV includes header comments with summary data followed by a standard CSV table:
+
+```
+Date,Transaction Ref,Description,Entry Type,Amount,Amount (Decimal),Currency,Balance Before,Balance After
+```
+
+**PDF response:**
+
+```json
+{
+  "format": "pdf",
+  "filename": "statement-user_123-2026-01-01-2026-02-01.pdf",
+  "content": "base64-encoded-pdf-data"
+}
+```
+
+The PDF includes a formatted header, summary box, and paginated entry table.
+
+### Summary Only
+
+```
+GET /statements/:holderId/summary?dateFrom=2026-01-01&dateTo=2026-02-01
+```
+
+Returns only the `StatementSummary` object without line items — useful for dashboard widgets.
+
+## Async Background Generation
+
+For large account histories, synchronous CSV/PDF generation can cause request timeouts. Use the async job endpoints instead — submit a job and poll for the result.
+
+<Callout type="info" title="Workers required">
+  Async generation requires `summa.workers.start()` to process jobs. The `statement-generator` worker runs every 5 seconds and processes up to 5 pending jobs per cycle.
+</Callout>
+
+### Submit a Job
+
+```
+POST /statements/:holderId/generate
+Content-Type: application/json
+
+{
+  "format": "pdf",
+  "dateFrom": "2026-01-01",
+  "dateTo": "2026-02-01"
+}
+```
+
+**Response (202 Accepted):**
+
+```json
+{
+  "jobId": "a1b2c3d4-...",
+  "status": "pending",
+  "pollUrl": "/statements/jobs/a1b2c3d4-..."
+}
+```
+
+| Body Field | Type | Default | Description |
+|------------|------|---------|-------------|
+| `format` | `string` | `"csv"` | Output format: `"csv"` or `"pdf"` |
+| `dateFrom` | `string` | 30 days ago | Start date (ISO 8601) |
+| `dateTo` | `string` | now | End date (ISO 8601) |
+
+### Poll Job Status
+
+```
+GET /statements/jobs/:jobId
+```
+
+**Pending/Processing:**
+
+```json
+{
+  "jobId": "a1b2c3d4-...",
+  "status": "processing",
+  "createdAt": "2026-02-01T10:00:00.000Z"
+}
+```
+
+**Completed:**
+
+```json
+{
+  "jobId": "a1b2c3d4-...",
+  "status": "completed",
+  "format": "pdf",
+  "filename": "statement-user_123-2026-01-01-2026-02-01.pdf",
+  "content": "base64-encoded-content",
+  "completedAt": "2026-02-01T10:00:05.000Z"
+}
+```
+
+**Failed:**
+
+```json
+{
+  "jobId": "a1b2c3d4-...",
+  "status": "failed",
+  "error": "Account not found",
+  "completedAt": "2026-02-01T10:00:05.000Z"
+}
+```
+
+### Schema
+
+The plugin creates a `statement_job` table to track generation jobs. This table is created automatically when you run migrations with the statements plugin enabled.
+
+## Programmatic API
+
+The plugin also exports standalone functions for direct use without HTTP:
+
+```ts
+import {
+  getAccountStatement,
+  getStatementSummary,
+  generateStatementCsv,
+  generateStatementPdf,
+} from "summa/plugins";
+
+// Full statement with pagination
+const statement = await getAccountStatement(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+  page: 1,
+  perPage: 50,
+});
+
+// Summary only
+const summary = await getStatementSummary(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+
+// CSV string
+const csv = await generateStatementCsv(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+
+// PDF buffer
+const pdf = await generateStatementPdf(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+```
+
+## Types
+
+```ts
+interface StatementEntry {
+  entryId: string;
+  transactionId: string;
+  transactionRef: string;
+  description: string | null;
+  entryType: "DEBIT" | "CREDIT";
+  amount: number;
+  amountDecimal: string;
+  currency: string;
+  balanceBefore: number | null;
+  balanceAfter: number | null;
+  date: string;
+}
+
+interface StatementSummary {
+  holderId: string;
+  accountId: string;
+  currency: string;
+  dateFrom: string;
+  dateTo: string;
+  openingBalance: number;
+  closingBalance: number;
+  totalCredits: number;
+  totalDebits: number;
+  netChange: number;
+  transactionCount: number;
+  entryCount: number;
+}
+
+interface StatementResult {
+  summary: StatementSummary;
+  entries: StatementEntry[];
+  hasMore: boolean;
+  total: number;
+}
+```
+
+## Notes
+
+- The plugin creates a `statement_job` table for async generation. Other queries use existing `entry_record`, `transaction_record`, and `account_balance` tables.
+- Default date range is the last 30 days if `dateFrom`/`dateTo` are not specified
+- CSV and PDF formats fetch all entries (no pagination limit) in 500-row batches
+- JSON format respects `page`/`perPage` with a maximum of 500 entries per page
+- PDF generation requires `pdfkit` as a peer dependency
+- For large statements (thousands of entries), prefer `POST /:holderId/generate` over synchronous `GET /:holderId?format=csv|pdf` to avoid request timeouts
+- The `statement-generator` worker requires a distributed lease — only one instance processes jobs across a cluster

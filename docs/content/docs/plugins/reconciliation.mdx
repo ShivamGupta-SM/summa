@@ -21,6 +21,13 @@ const summa = createSumma({
 });
 ```
 
+The `reconciliation()` factory takes no configuration options. It registers two background workers:
+
+| Worker | Interval | Lease Required | Description |
+|--------|----------|:-:|-------------|
+| `daily-reconciliation` | `1d` | Yes | Runs the full 5-step verification |
+| `block-checkpoint` | `1h` | Yes | Creates hash chain checkpoints |
+
 ## Verification Steps
 
 The reconciliation process runs these checks:
@@ -31,11 +38,57 @@ The reconciliation process runs these checks:
 4. **User account balance verification** — stored balance matches SUM of all entries
 5. **System account balance with hot entries** — includes pending hot account entries in the sum
 
-## Manual Reconciliation
+## Querying Reconciliation Status
+
+Use the standalone `getReconciliationStatus` function to query the current watermark and recent reconciliation results:
 
 ```ts
-const result = await summa.reconciliation.run();
-console.log(result.mismatches); // Array of accounts with balance discrepancies
+import { getReconciliationStatus } from "summa/plugins";
+
+const status = await getReconciliationStatus(summa.$context);
+
+// Watermark — last run info
+console.log(status.watermark.lastRunDate);      // ISO timestamp
+console.log(status.watermark.lastMismatches);    // 0 = healthy
+
+// Recent results — paginated
+for (const result of status.recentResults) {
+  console.log(result.run_date, result.status, result.total_mismatches);
+  console.log(`Duration: ${result.duration_ms}ms`);
+}
+```
+
+### Parameters
+
+```ts
+const status = await getReconciliationStatus(ctx, {
+  limit: 10,    // Max results (default: 10, max: 100)
+  offset: 0,    // Pagination offset (default: 0)
+});
+```
+
+### Return Type
+
+```ts
+{
+  watermark: {
+    lastEntryCreatedAt: string | null;  // Last processed entry timestamp
+    lastRunDate: string | null;         // Last reconciliation run
+    lastMismatches: number;             // Mismatches found in last run
+  };
+  recentResults: Array<{
+    run_date: string;
+    status: string;                     // "passed" | "failed"
+    total_mismatches: number;
+    step0_result: Record<string, unknown>;   // Per-txn double-entry
+    step0b_result: Record<string, unknown>;  // Duplicate detection
+    step0c_result: Record<string, unknown>;  // Lock version check
+    step1_result: Record<string, unknown>;   // User account balances
+    step2_result: Record<string, unknown>;   // System account balances
+    step3_result: Record<string, unknown>;   // Hash chain checkpoints
+    duration_ms: number;
+  }>;
+}
 ```
 
 ## CLI Verification

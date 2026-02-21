@@ -6,14 +6,15 @@
 		"reconciliation",
 		"snapshots",
 		"velocity-limits",
+		"hold-expiry",
 		"outbox",
+		"dlq-manager",
 		"hot-accounts",
 		"scheduled-transactions",
-		"hold-expiry",
 		"maintenance",
-		"dlq-manager",
 		"admin",
 		"open-api",
-		"observability"
+		"observability",
+		"statements"
 	]
 }
