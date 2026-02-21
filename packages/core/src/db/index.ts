@@ -15,6 +15,7 @@ export {
 } from "./adapter-utils.js";
 export type { SqlDialect } from "./dialect.js";
 export { postgresDialect } from "./dialects/postgres.js";
+export { createReadReplicaAdapter, type ReadReplicaOptions } from "./read-replica.js";
 export type { SecondaryStorage } from "./secondary-storage.js";
 export {
 	queueAfterTransactionHook,

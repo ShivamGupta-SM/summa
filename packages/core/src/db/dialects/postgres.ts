@@ -44,6 +44,10 @@ export const postgresDialect: SqlDialect = {
 	},
 
 	interval(value: string): string {
+		// Validate interval to prevent SQL injection — only allow safe patterns like "1 day", "30 minutes"
+		if (!/^\d+\s+[a-z]+$/i.test(value)) {
+			throw new Error(`Invalid interval value: "${value}"`);
+		}
 		return `INTERVAL '${value}'`;
 	},
 
