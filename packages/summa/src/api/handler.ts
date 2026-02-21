@@ -199,14 +199,14 @@ const routes: Route[] = [
 		const err = validateBody(req.body, { reason: "string", frozenBy: "string" });
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { reason: string; frozenBy: string };
-		const result = await summa.accounts.freeze({ holderId: params.holderId ?? "", ...body });
+		const result = await summa.accounts.freeze({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/unfreeze", async (req, summa, params) => {
 		const err = validateBody(req.body, { unfrozenBy: "string" });
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { unfrozenBy: string };
-		const result = await summa.accounts.unfreeze({ holderId: params.holderId ?? "", ...body });
+		const result = await summa.accounts.unfreeze({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/accounts/:holderId/close", async (req, summa, params) => {
@@ -217,7 +217,7 @@ const routes: Route[] = [
 		});
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { closedBy: string; reason?: string; transferToHolderId?: string };
-		const result = await summa.accounts.close({ holderId: params.holderId ?? "", ...body });
+		const result = await summa.accounts.close({ ...body, holderId: params.holderId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("GET", "/accounts/:holderId", async (_req, summa, params) => {
@@ -334,14 +334,14 @@ const routes: Route[] = [
 		const err = validateBody(req.body, { amount: "number?" });
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { amount?: number };
-		const result = await summa.holds.commit({ holdId: params.holdId ?? "", ...body });
+		const result = await summa.holds.commit({ ...body, holdId: params.holdId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("POST", "/holds/:holdId/void", async (req, summa, params) => {
 		const err = validateBody(req.body, { reason: "string?" });
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { reason?: string };
-		const result = await summa.holds.void({ holdId: params.holdId ?? "", ...body });
+		const result = await summa.holds.void({ ...body, holdId: params.holdId ?? "" });
 		return json(200, result);
 	}),
 	defineRoute("GET", "/holds/:id", async (_req, summa, params) => {
@@ -358,6 +358,16 @@ const routes: Route[] = [
 			currency: "string",
 		});
 		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
+		const VALID_LIMIT_TYPES = new Set(["per_transaction", "daily", "monthly"]);
+		const { limitType } = req.body as { limitType: string };
+		if (!VALID_LIMIT_TYPES.has(limitType)) {
+			return json(400, {
+				error: {
+					code: "VALIDATION_ERROR",
+					message: `Invalid limitType: "${limitType}". Must be one of: per_transaction, daily, monthly`,
+				},
+			});
+		}
 		const result = await summa.limits.set(req.body as Parameters<Summa["limits"]["set"]>[0]);
 		return json(201, result);
 	}),
@@ -374,10 +384,12 @@ const routes: Route[] = [
 		return json(200, result);
 	}),
 	defineRoute("DELETE", "/limits/:holderId", async (req, summa, params) => {
+		const err = validateBody(req.body, { limitType: "string", category: "string?" });
+		if (err) return json(400, { error: { code: "VALIDATION_ERROR", message: err.error } });
 		const body = req.body as { limitType: LimitType; category?: string };
 		await summa.limits.remove({
-			holderId: params.holderId ?? "",
 			...body,
+			holderId: params.holderId ?? "",
 		});
 		return json(204, null);
 	}),
@@ -415,7 +427,7 @@ interface CompiledPluginRoute {
 	endpoint: PluginEndpoint;
 }
 
-let compiledPluginRoutes: CompiledPluginRoute[] | null = null;
+const compiledPluginRoutesCache = new WeakMap<SummaContext, CompiledPluginRoute[]>();
 
 function compilePluginRoutes(ctx: SummaContext): CompiledPluginRoute[] {
 	const compiled: CompiledPluginRoute[] = [];
@@ -439,10 +451,12 @@ function compilePluginRoutes(ctx: SummaContext): CompiledPluginRoute[] {
 }
 
 function getPluginRoutes(ctx: SummaContext): CompiledPluginRoute[] {
-	if (!compiledPluginRoutes) {
-		compiledPluginRoutes = compilePluginRoutes(ctx);
+	let cached = compiledPluginRoutesCache.get(ctx);
+	if (!cached) {
+		cached = compilePluginRoutes(ctx);
+		compiledPluginRoutesCache.set(ctx, cached);
 	}
-	return compiledPluginRoutes;
+	return cached;
 }
 
 function matchCompiledRoute(
@@ -514,9 +528,19 @@ export async function handleRequest(
 		}
 	}
 
-	// Helper to merge rate limit + request ID headers into response
+	// Security headers applied to every response
+	const securityHeaders: Record<string, string> = {
+		"X-Content-Type-Options": "nosniff",
+		"X-Frame-Options": "DENY",
+		"Referrer-Policy": "strict-origin-when-cross-origin",
+		"X-XSS-Protection": "0",
+		"Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+	};
+
+	// Helper to merge security + rate limit + request ID headers into response
 	const withHeaders = (response: ApiResponse): ApiResponse => {
 		response.headers = {
+			...securityHeaders,
 			...response.headers,
 			...rlHeaders,
 			"X-Request-Id": requestId,

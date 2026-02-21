@@ -38,6 +38,8 @@ export {
 	getAccountStatement,
 	getStatementSummary,
 	type StatementEntry,
+	type StatementJob,
+	type StatementJobStatus,
 	type StatementOptions,
 	type StatementResult,
 	type StatementSummary,

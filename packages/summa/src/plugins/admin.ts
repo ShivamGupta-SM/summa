@@ -34,6 +34,30 @@ function json(status: number, body: unknown): PluginApiResponse {
 	return { status, body };
 }
 
+const VALID_TX_STATUSES = new Set([
+	"pending",
+	"inflight",
+	"posted",
+	"expired",
+	"voided",
+	"reversed",
+]);
+const VALID_TX_TYPES = new Set(["credit", "debit", "transfer"]);
+const VALID_HOLD_STATUSES = new Set(["inflight", "posted", "voided", "expired"]);
+const VALID_ACCOUNT_STATUSES = new Set(["active", "frozen", "closed"]);
+
+/** Clamp pagination params to safe integer ranges */
+function parsePagination(query: Record<string, string | undefined>): {
+	page: number;
+	perPage: number;
+	offset: number;
+} {
+	const page = Math.max(1, Math.floor(Number(query.page) || 1));
+	const perPage = Math.min(Math.max(1, Math.floor(Number(query.perPage) || 50)), 200);
+	const offset = (page - 1) * perPage;
+	return { page, perPage, offset };
+}
+
 // =============================================================================
 // PLUGIN FACTORY
 // =============================================================================
@@ -41,6 +65,14 @@ function json(status: number, body: unknown): PluginApiResponse {
 export function admin(options?: AdminOptions): SummaPlugin {
 	const prefix = options?.basePath ?? "/admin";
 	const authorize = options?.authorize;
+
+	if (!authorize) {
+		console.warn(
+			"[summa/admin] WARNING: Admin plugin initialized without an `authorize` callback. " +
+				"All admin endpoints are publicly accessible. " +
+				"Pass an `authorize` function to protect admin routes.",
+		);
+	}
 
 	// Wrap each endpoint handler with authorization check
 	function withAuth(handler: PluginEndpoint["handler"]): PluginEndpoint["handler"] {
@@ -60,6 +92,14 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/accounts`,
 			handler: async (req, ctx) => {
+				if (req.query.status && !VALID_ACCOUNT_STATUSES.has(req.query.status)) {
+					return json(400, {
+						error: {
+							code: "VALIDATION_ERROR",
+							message: `Invalid account status: "${req.query.status}"`,
+						},
+					});
+				}
 				const result = await accounts.listAccounts(ctx, {
 					page: req.query.page ? Number(req.query.page) : undefined,
 					perPage: req.query.perPage ? Number(req.query.perPage) : undefined,
@@ -98,8 +138,8 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			handler: async (req, ctx) => {
 				const body = req.body as { reason: string; frozenBy: string };
 				const result = await accounts.freezeAccount(ctx, {
-					holderId: req.params.holderId ?? "",
 					...body,
+					holderId: req.params.holderId ?? "",
 				});
 				return json(200, result);
 			},
@@ -110,8 +150,8 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			handler: async (req, ctx) => {
 				const body = req.body as { unfrozenBy: string };
 				const result = await accounts.unfreezeAccount(ctx, {
-					holderId: req.params.holderId ?? "",
 					...body,
+					holderId: req.params.holderId ?? "",
 				});
 				return json(200, result);
 			},
@@ -126,8 +166,8 @@ export function admin(options?: AdminOptions): SummaPlugin {
 					transferToHolderId?: string;
 				};
 				const result = await accounts.closeAccount(ctx, {
-					holderId: req.params.holderId ?? "",
 					...body,
+					holderId: req.params.holderId ?? "",
 				});
 				return json(200, result);
 			},
@@ -138,19 +178,33 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/transactions`,
 			handler: async (req: PluginApiRequest, ctx: SummaContext) => {
-				const page = req.query.page ? Number(req.query.page) : 1;
-				const perPage = Math.min(req.query.perPage ? Number(req.query.perPage) : 50, 200);
-				const offset = (page - 1) * perPage;
+				const { perPage, offset } = parsePagination(req.query);
 
 				const conditions: string[] = [];
 				const params: unknown[] = [];
 				let paramIdx = 1;
 
 				if (req.query.status) {
+					if (!VALID_TX_STATUSES.has(req.query.status)) {
+						return json(400, {
+							error: {
+								code: "VALIDATION_ERROR",
+								message: `Invalid transaction status: "${req.query.status}"`,
+							},
+						});
+					}
 					conditions.push(`t.status = $${paramIdx++}`);
 					params.push(req.query.status);
 				}
 				if (req.query.type) {
+					if (!VALID_TX_TYPES.has(req.query.type)) {
+						return json(400, {
+							error: {
+								code: "VALIDATION_ERROR",
+								message: `Invalid transaction type: "${req.query.type}"`,
+							},
+						});
+					}
 					conditions.push(`t.type = $${paramIdx++}`);
 					params.push(req.query.type);
 				}
@@ -198,8 +252,8 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			handler: async (req, ctx) => {
 				const body = req.body as { reason: string; amount?: number; idempotencyKey?: string };
 				const result = await transactions.refundTransaction(ctx, {
-					transactionId: req.params.id ?? "",
 					...body,
+					transactionId: req.params.id ?? "",
 				});
 				return json(200, result);
 			},
@@ -210,15 +264,21 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			method: "GET",
 			path: `${prefix}/holds`,
 			handler: async (req: PluginApiRequest, ctx: SummaContext) => {
-				const page = req.query.page ? Number(req.query.page) : 1;
-				const perPage = Math.min(req.query.perPage ? Number(req.query.perPage) : 50, 200);
-				const offset = (page - 1) * perPage;
+				const { perPage, offset } = parsePagination(req.query);
 
 				const conditions: string[] = [];
 				const params: unknown[] = [];
 				let paramIdx = 1;
 
 				if (req.query.status) {
+					if (!VALID_HOLD_STATUSES.has(req.query.status)) {
+						return json(400, {
+							error: {
+								code: "VALIDATION_ERROR",
+								message: `Invalid hold status: "${req.query.status}"`,
+							},
+						});
+					}
 					conditions.push(`status = $${paramIdx++}`);
 					params.push(req.query.status);
 				}

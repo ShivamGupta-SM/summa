@@ -50,7 +50,7 @@ export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 				id: "hot-account-processor",
 				description: "Batch processes pending hot_account_entry rows into system account balances",
 				interval: "30s",
-				leaseRequired: false,
+				leaseRequired: true,
 				handler: async (ctx: SummaContext) => {
 					const count = await processHotAccountBatch(ctx, batchSize);
 					if (count > 0) {

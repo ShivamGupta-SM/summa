@@ -1,13 +1,14 @@
 // =============================================================================
 // STATEMENTS PLUGIN — Account statement generation with CSV/JSON download
 // =============================================================================
-// Read-only plugin that generates account statements for any date range.
-// Combines entry_record and transaction_record data to produce line-item
-// statements with computed summaries (opening/closing balance, totals).
+// Generates account statements for any date range. Combines entry_record and
+// transaction_record data to produce line-item statements with computed
+// summaries (opening/closing balance, totals).
 //
-// No new tables required — queries existing entry_record, transaction_record,
-// and account_balance tables.
+// Supports async background generation for CSV/PDF via the statement_job table
+// and a background worker, preventing request timeouts on large statements.
 
+import { randomUUID } from "node:crypto";
 import type { PluginApiResponse, PluginEndpoint, SummaContext, SummaPlugin } from "@summa/core";
 import { minorToDecimal } from "@summa/core";
 import PDFDocument from "pdfkit";
@@ -114,10 +115,16 @@ function mapEntryRow(row: RawEntryRow, currency: string): StatementEntry {
 }
 
 function escapeCsvField(value: string): string {
-	if (value.includes(",") || value.includes('"') || value.includes("\n")) {
-		return `"${value.replace(/"/g, '""')}"`;
+	// Prevent CSV formula injection — prefix formula-trigger characters with a single quote
+	// so spreadsheet apps treat the value as text, not a formula
+	let safe = value;
+	if (/^[=+\-@\t\r]/.test(safe)) {
+		safe = `'${safe}`;
 	}
-	return value;
+	if (safe.includes(",") || safe.includes('"') || safe.includes("\n") || safe !== value) {
+		return `"${safe.replace(/"/g, '""')}"`;
+	}
+	return safe;
 }
 
 function resolveDate(date: string | undefined, fallback: string): string {
@@ -602,6 +609,171 @@ export async function generateStatementPdf(
 }
 
 // =============================================================================
+// ASYNC STATEMENT JOB TYPES
+// =============================================================================
+
+export type StatementJobStatus = "pending" | "processing" | "completed" | "failed";
+
+export interface StatementJob {
+	id: string;
+	holderId: string;
+	format: "csv" | "pdf";
+	status: StatementJobStatus;
+	dateFrom: string;
+	dateTo: string;
+	result: string | null;
+	filename: string | null;
+	error: string | null;
+	createdAt: string;
+	completedAt: string | null;
+}
+
+interface RawStatementJobRow {
+	id: string;
+	holder_id: string;
+	format: string;
+	status: string;
+	date_from: string;
+	date_to: string;
+	result: string | null;
+	filename: string | null;
+	error: string | null;
+	created_at: string | Date;
+	completed_at: string | Date | null;
+}
+
+function mapJobRow(row: RawStatementJobRow): StatementJob {
+	return {
+		id: row.id,
+		holderId: row.holder_id,
+		format: row.format as "csv" | "pdf",
+		status: row.status as StatementJobStatus,
+		dateFrom: row.date_from,
+		dateTo: row.date_to,
+		result: row.result,
+		filename: row.filename,
+		error: row.error,
+		createdAt: typeof row.created_at === "string" ? row.created_at : row.created_at.toISOString(),
+		completedAt: row.completed_at
+			? typeof row.completed_at === "string"
+				? row.completed_at
+				: row.completed_at.toISOString()
+			: null,
+	};
+}
+
+// =============================================================================
+// ASYNC JOB QUERY FUNCTIONS
+// =============================================================================
+
+async function createStatementJob(
+	ctx: SummaContext,
+	params: {
+		holderId: string;
+		format: "csv" | "pdf";
+		dateFrom: string;
+		dateTo: string;
+	},
+): Promise<StatementJob> {
+	const id = randomUUID();
+	const now = new Date().toISOString();
+	const from = params.dateFrom.slice(0, 10);
+	const to = params.dateTo.slice(0, 10);
+	const filename = `statement-${params.holderId}-${from}-${to}.${params.format}`;
+
+	const rows = await ctx.adapter.raw<RawStatementJobRow>(
+		`INSERT INTO statement_job (id, holder_id, format, status, date_from, date_to, filename, created_at)
+		 VALUES ($1, $2, $3, 'pending', $4, $5, $6, $7)
+		 RETURNING *`,
+		[id, params.holderId, params.format, params.dateFrom, params.dateTo, filename, now],
+	);
+
+	const row = rows[0];
+	if (!row) throw new Error("INSERT INTO statement_job returned no rows");
+	return mapJobRow(row);
+}
+
+async function getStatementJob(ctx: SummaContext, jobId: string): Promise<StatementJob | null> {
+	const rows = await ctx.adapter.raw<RawStatementJobRow>(
+		"SELECT * FROM statement_job WHERE id = $1",
+		[jobId],
+	);
+	const row = rows[0];
+	if (!row) return null;
+	return mapJobRow(row);
+}
+
+async function processStatementJobs(ctx: SummaContext): Promise<number> {
+	const d = ctx.dialect;
+
+	// Claim up to 5 pending jobs atomically
+	const pendingJobs = await ctx.adapter.raw<RawStatementJobRow>(
+		`UPDATE statement_job
+		 SET status = 'processing'
+		 WHERE id IN (
+		   SELECT id FROM statement_job
+		   WHERE status = 'pending'
+		   ORDER BY created_at ASC
+		   LIMIT 5
+		   ${d.forUpdateSkipLocked()}
+		 )
+		 ${d.returning(["*"])}`,
+		[],
+	);
+
+	let processed = 0;
+
+	for (const row of pendingJobs) {
+		const job = mapJobRow(row);
+		try {
+			let content: string;
+
+			if (job.format === "csv") {
+				const csv = await generateStatementCsv(ctx, job.holderId, {
+					dateFrom: job.dateFrom,
+					dateTo: job.dateTo,
+				});
+				if (!csv) {
+					await ctx.adapter.rawMutate(
+						`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
+						["Account not found", new Date().toISOString(), job.id],
+					);
+					continue;
+				}
+				content = csv;
+			} else {
+				const pdf = await generateStatementPdf(ctx, job.holderId, {
+					dateFrom: job.dateFrom,
+					dateTo: job.dateTo,
+				});
+				if (!pdf) {
+					await ctx.adapter.rawMutate(
+						`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
+						["Account not found", new Date().toISOString(), job.id],
+					);
+					continue;
+				}
+				content = pdf.toString("base64");
+			}
+
+			await ctx.adapter.rawMutate(
+				`UPDATE statement_job SET status = 'completed', result = $1, completed_at = $2 WHERE id = $3`,
+				[content, new Date().toISOString(), job.id],
+			);
+			processed++;
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			await ctx.adapter.rawMutate(
+				`UPDATE statement_job SET status = 'failed', error = $1, completed_at = $2 WHERE id = $3`,
+				[errorMsg.slice(0, 1000), new Date().toISOString(), job.id],
+			);
+		}
+	}
+
+	return processed;
+}
+
+// =============================================================================
 // PLUGIN FACTORY
 // =============================================================================
 
@@ -626,7 +798,88 @@ export function statements(options?: StatementOptions): SummaPlugin {
 				return json(200, summary);
 			},
 		},
-		// Full statement endpoint
+
+		// --- Async job endpoints ---
+
+		// Submit a background statement generation job (CSV or PDF)
+		{
+			method: "POST",
+			path: `${prefix}/:holderId/generate`,
+			handler: async (req, ctx) => {
+				const holderId = req.params.holderId ?? "";
+				if (!holderId) return json(400, { error: "holderId is required" });
+
+				const body = req.body as { format?: string; dateFrom?: string; dateTo?: string } | null;
+				const format = body?.format ?? "csv";
+				if (format !== "csv" && format !== "pdf") {
+					return json(400, { error: "format must be 'csv' or 'pdf'" });
+				}
+
+				// Verify account exists before creating job
+				const account = await resolveAccount(ctx, holderId);
+				if (!account) return json(404, { error: "Account not found" });
+
+				const now = new Date().toISOString();
+				const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+				const dateFrom = body?.dateFrom ?? thirtyDaysAgo;
+				const dateTo = body?.dateTo ?? now;
+
+				const job = await createStatementJob(ctx, {
+					holderId,
+					format,
+					dateFrom,
+					dateTo,
+				});
+
+				return json(202, {
+					jobId: job.id,
+					status: job.status,
+					pollUrl: `${prefix}/jobs/${job.id}`,
+				});
+			},
+		},
+
+		// Poll job status / download result
+		{
+			method: "GET",
+			path: `${prefix}/jobs/:jobId`,
+			handler: async (req, ctx) => {
+				const jobId = req.params.jobId ?? "";
+				if (!jobId) return json(400, { error: "jobId is required" });
+
+				const job = await getStatementJob(ctx, jobId);
+				if (!job) return json(404, { error: "Job not found" });
+
+				if (job.status === "completed") {
+					return json(200, {
+						jobId: job.id,
+						status: job.status,
+						format: job.format,
+						filename: job.filename,
+						content: job.result,
+						completedAt: job.completedAt,
+					});
+				}
+
+				if (job.status === "failed") {
+					return json(200, {
+						jobId: job.id,
+						status: job.status,
+						error: job.error,
+						completedAt: job.completedAt,
+					});
+				}
+
+				// pending or processing
+				return json(200, {
+					jobId: job.id,
+					status: job.status,
+					createdAt: job.createdAt,
+				});
+			},
+		},
+
+		// Full statement endpoint (JSON remains synchronous — it's paginated and fast)
 		{
 			method: "GET",
 			path: `${prefix}/:holderId`,
@@ -640,6 +893,8 @@ export function statements(options?: StatementOptions): SummaPlugin {
 					dateTo: req.query.dateTo,
 				};
 
+				// CSV and PDF via GET still work synchronously for backward compat,
+				// but users should prefer POST /:holderId/generate for large statements.
 				if (format === "csv") {
 					const csv = await generateStatementCsv(ctx, holderId, dateOpts);
 					if (!csv) return json(404, { error: "Account not found" });
@@ -693,7 +948,47 @@ export function statements(options?: StatementOptions): SummaPlugin {
 			StatementEntry: StatementEntry;
 			StatementSummary: StatementSummary;
 			StatementResult: StatementResult;
+			StatementJob: StatementJob;
 		},
 		endpoints,
+
+		// Schema for the statement_job table
+		schema: {
+			statement_job: {
+				columns: {
+					id: { type: "uuid", primaryKey: true, notNull: true },
+					holder_id: { type: "text", notNull: true },
+					format: { type: "text", notNull: true },
+					status: { type: "text", notNull: true, default: "'pending'" },
+					date_from: { type: "text", notNull: true },
+					date_to: { type: "text", notNull: true },
+					result: { type: "text" },
+					filename: { type: "text" },
+					error: { type: "text" },
+					created_at: { type: "timestamp", notNull: true },
+					completed_at: { type: "timestamp" },
+				},
+				indexes: [
+					{ name: "idx_statement_job_status", columns: ["status"] },
+					{ name: "idx_statement_job_holder", columns: ["holder_id"] },
+				],
+			},
+		},
+
+		// Background worker to process statement generation jobs
+		workers: [
+			{
+				id: "statement-generator",
+				description: "Processes pending statement generation jobs (CSV/PDF)",
+				interval: "5s",
+				leaseRequired: true,
+				handler: async (ctx) => {
+					const processed = await processStatementJobs(ctx);
+					if (processed > 0) {
+						ctx.logger.info("Statement generator processed jobs", { count: processed });
+					}
+				},
+			},
+		],
 	};
 }

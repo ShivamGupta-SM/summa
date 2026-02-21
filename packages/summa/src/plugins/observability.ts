@@ -95,13 +95,20 @@ function createMetricsCollector(serviceName: string): MetricsCollector {
 // =============================================================================
 
 const REQUEST_START_TIMES = new Map<string, number>();
+const MAX_PENDING_REQUESTS = 10_000;
+const STALE_REQUEST_MS = 60_000;
+
+/** Sanitize metric name to prevent Prometheus injection — only [a-zA-Z0-9_:] allowed */
+function sanitizeMetricName(name: string): string {
+	return name.replace(/[^a-zA-Z0-9_:]/g, "_");
+}
 
 // =============================================================================
 // PLUGIN FACTORY
 // =============================================================================
 
 export function observability(options?: ObservabilityOptions): SummaPlugin {
-	const serviceName = options?.serviceName ?? "summa";
+	const serviceName = sanitizeMetricName(options?.serviceName ?? "summa");
 	const tracingEnabled = options?.tracing !== false;
 	const metricsEnabled = options?.metrics !== false;
 	const traceHeader = options?.traceHeader ?? "traceparent";
@@ -129,6 +136,18 @@ export function observability(options?: ObservabilityOptions): SummaPlugin {
 					const traceId =
 						req.headers?.[traceHeader] ?? req.headers?.["x-request-id"] ?? crypto.randomUUID();
 					const requestKey = `${traceId}:${Date.now()}`;
+
+					// Evict stale entries to prevent memory leaks from dropped connections
+					if (REQUEST_START_TIMES.size >= MAX_PENDING_REQUESTS) {
+						const now = performance.now();
+						for (const [k, v] of REQUEST_START_TIMES) {
+							if (now - v > STALE_REQUEST_MS) {
+								REQUEST_START_TIMES.delete(k);
+								metrics.activeRequests = Math.max(0, metrics.activeRequests - 1);
+							}
+							if (REQUEST_START_TIMES.size < MAX_PENDING_REQUESTS / 2) break;
+						}
+					}
 
 					REQUEST_START_TIMES.set(requestKey, performance.now());
 					metrics.activeRequests++;
