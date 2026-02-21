@@ -1,0 +1,263 @@
+---
+title: Scaling
+description: Scale Summa from thousands to millions of transactions with read replicas, connection pooling, and Redis.
+icon: ChartBar
+---
+
+## Overview
+
+Summa is designed to scale from a single-instance deployment to a distributed multi-instance cluster. This guide covers the built-in scalability features and when to enable them.
+
+## Architecture at Scale
+
+A production Summa deployment with all scalability features enabled:
+
+```
+                    ┌─────────────┐
+                    │  Load       │
+                    │  Balancer   │
+                    └──────┬──────┘
+               ┌───────────┼───────────┐
+               ▼           ▼           ▼
+         ┌──────────┐┌──────────┐┌──────────┐
+         │ Summa    ││ Summa    ││ Summa    │
+         │ Instance ││ Instance ││ Instance │
+         └─────┬────┘└─────┬────┘└─────┬────┘
+               │           │           │
+               ▼           ▼           ▼
+         ┌─────────────────────────────────┐
+         │            Redis                │
+         │  (rate limits, idempotency,     │
+         │   distributed state)            │
+         └─────────────────────────────────┘
+               │
+     ┌─────────┴─────────┐
+     ▼                   ▼
+┌──────────┐      ┌──────────┐
+│ Primary  │──▶   │ Replica  │
+│   DB     │      │   DB     │
+│ (writes) │      │ (reads)  │
+└──────────┘      └──────────┘
+```
+
+## Estimated Throughput
+
+| Configuration | Estimated TPS | Notes |
+|---------------|:---:|-------|
+| Single instance, default config | 1,000–5,000 | Limited by advisory locks and single DB |
+| + Connection pooling | 3,000–8,000 | Better connection reuse |
+| + Read replicas | 10,000–20,000 | Offloads read queries |
+| + Redis secondary storage | 15,000–30,000 | Distributed rate limiting, multi-instance |
+| + Hot accounts plugin | 20,000–50,000 | Reduces lock contention on high-volume accounts |
+
+## Quick Start
+
+Enable all scalability features with a single setup:
+
+```ts
+import { Pool } from "pg";
+import { drizzle } from "drizzle-orm/node-postgres";
+import {
+  createPooledAdapter,
+  RECOMMENDED_POOL_CONFIG,
+} from "@summa/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa/core/db";
+import { createRedisStorage } from "@summa/redis-storage";
+import Redis from "ioredis";
+
+// 1. Connection pools with production defaults
+const primaryPool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_URL,
+});
+const replicaPool = new Pool({
+  ...RECOMMENDED_POOL_CONFIG,
+  connectionString: process.env.DATABASE_REPLICA_URL,
+});
+
+// 2. Read replica routing
+const primary = createPooledAdapter({
+  pool: primaryPool,
+  drizzle: drizzle(primaryPool),
+});
+const replica = createPooledAdapter({
+  pool: replicaPool,
+  drizzle: drizzle(replicaPool),
+});
+const adapter = createReadReplicaAdapter({
+  primary: primary.adapter,
+  replicas: [replica.adapter],
+});
+
+// 3. Redis for distributed state
+const redis = new Redis(process.env.REDIS_URL!);
+const { storage, disconnect } = createRedisStorage({ client: redis });
+
+// 4. Create Summa
+const summa = createSumma({
+  database: adapter,
+  secondaryStorage: storage,
+  plugins: [/* your plugins */],
+});
+```
+
+## Feature Details
+
+### Connection Pooling
+
+Connection pooling prevents "too many connections" errors and improves throughput by reusing database connections.
+
+```bash
+pnpm add @summa/drizzle-adapter
+```
+
+`RECOMMENDED_POOL_CONFIG` provides production-ready defaults:
+
+| Setting | Value | Purpose |
+|---------|-------|---------|
+| `max` | `20` | Max connections per instance |
+| `min` | `5` | Warm idle connections |
+| `idleTimeoutMillis` | `30000` | Close idle connections after 30s |
+| `connectionTimeoutMillis` | `10000` | Fail fast if pool exhausted |
+| `maxLifetimeMillis` | `1800000` | Recycle connections every 30min |
+| `statement_timeout` | `30000` | Kill runaway queries after 30s |
+
+`createPooledAdapter()` adds pool monitoring via `stats()` and graceful shutdown via `close()`.
+
+See [Drizzle Adapter — Connection Pooling](/docs/adapters/drizzle#connection-pooling) for full reference.
+
+### Read Replicas
+
+Read replicas offload read queries to one or more PostgreSQL streaming replicas, freeing the primary for writes.
+
+```bash
+# No additional install — included in @summa/core
+```
+
+```ts
+import { createReadReplicaAdapter } from "@summa/core/db";
+
+const adapter = createReadReplicaAdapter({
+  primary: primaryAdapter,
+  replicas: [replicaAdapter1, replicaAdapter2],
+  strategy: "round-robin",  // or "random" (default)
+});
+```
+
+**Routing rules:**
+- Reads (`findOne`, `findMany`, `count`, SELECT queries) go to replicas
+- Writes (`create`, `update`, `delete`, `rawMutate`) go to primary
+- `FOR UPDATE` queries go to primary (takes row locks)
+- All operations inside a `transaction()` go to primary
+
+<Callout type="warn" title="Replication lag">
+  PostgreSQL streaming replication has a small delay (typically &lt; 100ms). Operations inside a transaction always use the primary, ensuring read-your-writes consistency where it matters.
+</Callout>
+
+See [Drizzle Adapter — Read Replicas](/docs/adapters/drizzle#read-replicas) for routing details.
+
+### Redis Secondary Storage
+
+Redis enables distributed state for multi-instance deployments. Without it, rate limiting is per-process only and idempotency keys aren't shared.
+
+```bash
+pnpm add @summa/redis-storage ioredis
+```
+
+```ts
+import Redis from "ioredis";
+import { createRedisStorage } from "@summa/redis-storage";
+
+const { storage, disconnect, ping } = createRedisStorage({
+  client: new Redis(process.env.REDIS_URL!),
+  keyPrefix: "summa:",  // default
+});
+```
+
+**What Redis enables:**
+- **Distributed rate limiting** — `storage: "secondary"` shares counters across instances
+- **Shared idempotency cache** — prevents duplicate transactions across instances
+- **Plugin state caching** — read-through cache for frequently accessed data
+
+See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) for setup options.
+
+### Background Statement Generation
+
+Large CSV/PDF statement generation can cause request timeouts. The statements plugin includes a background worker that processes generation jobs asynchronously.
+
+```ts
+// Submit a job
+const res = await fetch("/statements/user_123/generate", {
+  method: "POST",
+  body: JSON.stringify({ format: "pdf", dateFrom: "2026-01-01" }),
+});
+const { jobId } = await res.json();
+
+// Poll for result
+const job = await fetch(`/statements/jobs/${jobId}`);
+// { status: "completed", content: "base64...", filename: "..." }
+```
+
+The `statement-generator` worker runs every 5 seconds and processes up to 5 pending jobs per cycle. See [Statements Plugin](/docs/plugins/statements#async-background-generation) for full API reference.
+
+## Graceful Shutdown
+
+When scaling across multiple instances, always shut down cleanly:
+
+```ts
+async function shutdown() {
+  // 1. Stop accepting new requests
+  server.close();
+
+  // 2. Stop background workers (releases distributed leases)
+  await summa.workers.stop();
+
+  // 3. Disconnect Redis
+  await disconnect();
+
+  // 4. Drain connection pools
+  await primary.close();
+  await replica.close();
+
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+## Monitoring
+
+### Pool Health
+
+Monitor connection pool exhaustion — the #1 cause of latency spikes:
+
+```ts
+setInterval(() => {
+  const s = primary.stats();
+  if (s.waitingCount > 0) {
+    logger.warn("Pool exhaustion", {
+      active: s.activeCount,
+      waiting: s.waitingCount,
+      total: s.totalCount,
+    });
+  }
+}, 30_000);
+```
+
+### Redis Health
+
+```ts
+const healthy = await ping();
+if (!healthy) {
+  logger.error("Redis unreachable — rate limiting degraded");
+}
+```
+
+## What's Next
+
+For workloads beyond 50,000 TPS, consider:
+- **Event store partitioning** — partition `ledger_event` by time for faster queries
+- **CQRS** — separate read/write models with materialized views
+- **Database sharding** — shard by account for horizontal write scaling
+- **Dedicated message queue** — replace outbox polling with Kafka/Redis Streams
