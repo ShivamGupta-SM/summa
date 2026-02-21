@@ -28,7 +28,7 @@ export const NavLink = ({
 			<Link
 				href={href}
 				className={cn(
-					"flex items-center h-14 px-4 text-sm transition-colors",
+					"flex items-center h-14 px-4 text-sm transition-colors duration-200",
 					"group-hover:text-foreground",
 					isActive ? "text-foreground" : "text-muted-foreground",
 				)}

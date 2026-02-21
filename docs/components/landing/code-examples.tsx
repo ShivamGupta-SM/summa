@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, MotionConfig, motion } from "framer-motion";
-import { Check, Copy } from "lucide-react";
+import { Check, Clipboard, File } from "lucide-react";
 import { useTheme } from "next-themes";
 import { Highlight, themes } from "prism-react-renderer";
 import { useEffect, useState } from "react";
@@ -66,16 +66,6 @@ export const summa = createSumma({
 	},
 ];
 
-function TrafficLightsIcon(props: React.ComponentPropsWithoutRef<"svg">) {
-	return (
-		<svg aria-hidden="true" width="42" height="10" fill="none" {...props}>
-			<circle cx="5" cy="5" r="4.5" className="fill-red-400" />
-			<circle cx="21" cy="5" r="4.5" className="fill-amber-400" />
-			<circle cx="37" cy="5" r="4.5" className="fill-emerald-400" />
-		</svg>
-	);
-}
-
 export function CodeExamples() {
 	const [activeTab, setActiveTab] = useState(0);
 	const [copied, setCopied] = useState(false);
@@ -99,48 +89,55 @@ export function CodeExamples() {
 		setCopied(true);
 	};
 
+	const isDark = !mounted || resolvedTheme === "dark";
+
 	return (
 		<MotionConfig transition={{ duration: 0.5, type: "spring", bounce: 0 }}>
-			<div className="relative w-full overflow-hidden bg-gradient-to-tr from-slate-100 to-slate-200 dark:from-slate-950/90 dark:via-slate-950 dark:to-slate-950/90 ring-1 ring-white/10 backdrop-blur-lg rounded-sm">
-				<div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 px-4 py-3">
-					<TrafficLightsIcon />
-					<div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
+			<div className="relative w-full overflow-hidden bg-zinc-950 border border-zinc-800 shadow-2xl shadow-black/20">
+				{/* Title bar */}
+				<div className="flex items-center border-b border-zinc-800 bg-zinc-900">
+					{/* Tab strip */}
+					<div className="flex items-stretch overflow-x-auto no-scrollbar">
 						{examples.map((tab, index) => (
 							<button
+								type="button"
 								key={tab.name}
 								onClick={() => setActiveTab(index)}
-								className="relative px-3 py-1 text-xs font-mono rounded-full whitespace-nowrap"
+								className={`relative flex items-center gap-2 px-4 h-9 text-xs font-mono border-r border-zinc-800 transition-colors whitespace-nowrap ${
+									activeTab === index
+										? "bg-zinc-950 text-zinc-300"
+										: "bg-zinc-900 text-zinc-500 hover:text-zinc-400 hover:bg-zinc-900/80"
+								}`}
 							>
 								{activeTab === index && (
 									<motion.div
-										layoutId="tab-code-examples"
-										className="absolute inset-0 bg-slate-800 dark:bg-slate-700 rounded-full"
+										layoutId="code-examples-active"
+										className="absolute top-0 left-0 right-0 h-px bg-brand"
 									/>
 								)}
-								<span
-									className={`relative z-10 ${
-										activeTab === index
-											? "text-white"
-											: "text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
-									}`}
-								>
-									{tab.name}
-								</span>
+								<File className="size-3 shrink-0 opacity-50" />
+								{tab.name}
 							</button>
 						))}
 					</div>
+
+					{/* Spacer + copy */}
+					<div className="flex-1" />
 					<button
+						type="button"
 						onClick={handleCopy}
-						className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 transition-colors"
+						className="flex items-center justify-center size-9 text-zinc-500 hover:text-zinc-300 transition-colors"
 						aria-label="Copy code"
 					>
 						{copied ? (
-							<Check className="size-4" />
+							<Check className="size-3.5 text-emerald-400" />
 						) : (
-							<Copy className="size-4" />
+							<Clipboard className="size-3.5" />
 						)}
 					</button>
 				</div>
+
+				{/* Code area */}
 				<motion.div animate={{ height: bounds.height }} className="overflow-hidden">
 					<div ref={ref}>
 						<AnimatePresence mode="popLayout" initial={false}>
@@ -149,28 +146,31 @@ export function CodeExamples() {
 								initial={{ opacity: 0 }}
 								animate={{ opacity: 1 }}
 								exit={{ opacity: 0 }}
-								transition={{ duration: 0.2 }}
+								transition={{ duration: 0.15 }}
 							>
 								<Highlight
-									theme={
-										!mounted || resolvedTheme === "dark"
-											? themes.nightOwl
-											: themes.github
-									}
+									theme={isDark ? themes.nightOwl : themes.nightOwl}
 									code={examples[activeTab]?.code ?? ""}
 									language="typescript"
 								>
 									{({ tokens, getLineProps, getTokenProps }) => (
-										<pre className="px-4 py-4 text-[13px] leading-relaxed overflow-x-auto">
+										<pre className="py-4 text-[13px] leading-6 overflow-x-auto no-scrollbar">
 											<code>
 												{tokens.map((line, i) => (
-													<div key={i} {...getLineProps({ line })} className="flex">
-														<span className="select-none w-8 shrink-0 text-right pr-4 text-slate-400 dark:text-slate-600 font-mono">
+													<div
+														key={`l${i.toString()}`}
+														{...getLineProps({ line })}
+														className="flex px-4 hover:bg-white/3 transition-colors duration-75"
+													>
+														<span className="select-none w-8 shrink-0 text-right pr-4 text-zinc-700 font-mono text-xs tabular-nums leading-6">
 															{i + 1}
 														</span>
-														<span>
+														<span className="flex-1 min-w-0">
 															{line.map((token, key) => (
-																<span key={key} {...getTokenProps({ token })} />
+																<span
+																	key={`t${key.toString()}`}
+																	{...getTokenProps({ token })}
+																/>
 															))}
 														</span>
 													</div>

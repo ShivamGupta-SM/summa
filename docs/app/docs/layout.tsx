@@ -15,6 +15,19 @@ export default function Layout({ children }: { children: ReactNode }) {
 					</>
 				),
 			}}
+			links={[
+				{
+					text: "Home",
+					url: "/",
+					active: "url",
+				},
+				{
+					text: "Docs",
+					url: "/docs",
+					active: "nested-url",
+				},
+			]}
+			githubUrl="https://github.com/summa-ledger/summa"
 		>
 			{children}
 		</DocsLayout>

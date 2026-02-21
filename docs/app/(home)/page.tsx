@@ -1,20 +1,24 @@
 import {
 	ArrowPathIcon,
+	BanknotesIcon,
+	BuildingStorefrontIcon,
 	CheckCircleIcon,
 	CircleStackIcon,
 	CodeBracketSquareIcon,
+	CreditCardIcon,
 	CubeTransparentIcon,
+	CurrencyDollarIcon,
 	FingerPrintIcon,
 	LockClosedIcon,
 	ShieldCheckIcon,
 	ShieldExclamationIcon,
+	WalletIcon,
 } from "@heroicons/react/24/outline";
-import { ArrowRight, Check } from "lucide-react";
+import { ArrowRight, Check, Plus } from "lucide-react";
 import Link from "next/link";
 import { CodeExamples } from "@/components/landing/code-examples";
 import { CodePreview } from "@/components/landing/code-preview";
 import { GradientBG } from "@/components/landing/gradient-bg";
-import { Ripple } from "@/components/landing/ripple";
 import Section from "@/components/landing/section";
 import { Spotlight } from "@/components/landing/spotlight";
 
@@ -96,6 +100,89 @@ const features = [
 		),
 		description:
 			"Full inference through plugins, adapters, and configuration. Catch errors at compile time, not in production.",
+	},
+];
+
+const useCases = [
+	{
+		icon: WalletIcon,
+		label: "Digital Wallets",
+		description: "User balances, top-ups, peer-to-peer transfers with real-time balance tracking and holds.",
+	},
+	{
+		icon: CreditCardIcon,
+		label: "Payment Processing",
+		description: "Authorization holds, capture/void flows, multi-currency settlements with idempotent operations.",
+	},
+	{
+		icon: BuildingStorefrontIcon,
+		label: "Marketplace Payouts",
+		description: "Split payments, escrow accounts, seller disbursements with multi-destination transfers.",
+	},
+	{
+		icon: BanknotesIcon,
+		label: "Lending & Credit",
+		description: "Loan disbursement, repayment tracking, interest accrual with scheduled transactions.",
+	},
+	{
+		icon: CurrencyDollarIcon,
+		label: "SaaS Billing",
+		description: "Usage-based metering, prepaid credits, subscription lifecycle with velocity limits.",
+	},
+	{
+		icon: CubeTransparentIcon,
+		label: "Crypto & DeFi",
+		description: "On-chain reconciliation, multi-asset tracking, atomic swaps with event-sourced audit trails.",
+	},
+];
+
+const plugins = [
+	{ name: "Audit Log", description: "Immutable event log for every mutation" },
+	{ name: "Reconciliation", description: "Match external transactions to internal entries" },
+	{ name: "Snapshots", description: "Point-in-time balance snapshots for reporting" },
+	{ name: "Velocity Limits", description: "Rate and amount limits per account or holder" },
+	{ name: "Hold Expiry", description: "Auto-expire authorization holds after TTL" },
+	{ name: "Scheduled Tx", description: "Future-dated transactions with cron triggers" },
+	{ name: "Outbox", description: "Transactional outbox pattern for reliable events" },
+	{ name: "Dead Letter", description: "Capture and replay failed operations" },
+	{ name: "Hot Accounts", description: "Optimized high-throughput account handling" },
+	{ name: "Admin", description: "Management API for accounts and operations" },
+	{ name: "Statements", description: "Generate account statements in JSON or CSV" },
+	{ name: "OpenAPI", description: "Auto-generated API documentation" },
+	{ name: "Observability", description: "Metrics, traces, and structured logging" },
+	{ name: "Maintenance", description: "Database cleanup and optimization tasks" },
+];
+
+const frameworks = [
+	{
+		name: "Express",
+		svg: (
+			<path d="M24 18.588a1.529 1.529 0 01-1.895-.72l-3.45-4.771-.5-.667-4.003 5.444a1.466 1.466 0 01-1.802.708l5.158-6.92-4.798-6.251a1.595 1.595 0 011.9.666l3.576 4.83 3.596-4.81a1.435 1.435 0 011.788-.668L21.708 7.9l-2.522 3.283a.666.666 0 000 .994l4.804 6.412zM.002 11.576l.42-2.075c1.154-4.103 5.858-5.81 9.094-3.27 1.895 1.489 2.368 3.597 2.275 5.973H1.116C.943 16.447 4.005 19.009 7.92 17.7a4.078 4.078 0 002.582-2.876c.207-.666.548-.78 1.174-.588a5.417 5.417 0 01-2.589 3.957 6.272 6.272 0 01-7.306-.933 6.575 6.575 0 01-1.64-3.858c0-.235-.08-.455-.134-.666A88.33 88.33 0 010 11.577zm1.127-.286h9.654c-.06-3.076-2.001-5.258-4.59-5.278-2.882-.04-4.944 2.094-5.071 5.264z" />
+		),
+	},
+	{
+		name: "Fastify",
+		svg: (
+			<path d="M23.245 6.49L24 4.533l-.031-.121-7.473 1.967c.797-1.153.523-2.078.523-2.078s-2.387 1.524-4.193 1.485c-1.804-.04-2.387-.52-5.155.362-2.768.882-3.551 3.59-4.351 4.173-.804.583-3.32 2.477-3.32 2.477l.006.034 2.27-.724s-.622.585-1.945 2.37l-.062-.057.002.011s1.064 1.626 2.107 1.324a2.14 2.14 0 0 0 .353-.147c.419.234.967.463 1.572.525 0 0-.41-.475-.752-1.017l.238-.154.865.318-.096-.812c.003-.003.006-.003.008-.006l.849.311-.105-.738a5.65 5.65 0 0 1 .322-.158l.885-3.345 3.662-2.497-.291.733c-.741 1.826-2.135 2.256-2.135 2.256l-.582.22c-.433.512-.614.637-.764 2.353.348-.088.682-.107.984-.028 1.564.421 2.107 2.307 1.685 2.827-.104.13-.356.354-.673.617H7.77l-.008.514-.065.051h-.645l-.009.504-.17.127c-.607.011-1.373-.518-1.373-.518 0 .481.401 1.225.401 1.225l.07-.034-.061.045s1.625 1.083 2.646.681c.91-.356 3.263-2.213 5.296-3.093l6.15-1.62.811-2.1-4.688 1.235v-1.889l5.5-1.448.811-2.1-6.31 1.662V8.367zm-11.163 4l1.459-.384.02.074-.455 1.179-1.513.398zm.503 2.526l-1.512.398.489-1.266 1.459-.385.02.073zm1.971-.424l-1.513.398.49-1.266 1.459-.385.02.073Z" />
+		),
+	},
+	{
+		name: "Hono",
+		svg: (
+			<path d="M12.445.002a45.529 45.529 0 0 0-5.252 8.146 8.595 8.595 0 0 1-.555-.53 27.796 27.796 0 0 0-1.205-1.542 8.762 8.762 0 0 0-1.251 2.12 20.743 20.743 0 0 0-1.448 5.88 8.867 8.867 0 0 0 .338 3.468c1.312 3.48 3.794 5.593 7.445 6.337 3.055.438 5.755-.333 8.097-2.312 2.677-2.59 3.359-5.634 2.047-9.132a33.287 33.287 0 0 0-2.988-5.59A91.34 91.34 0 0 0 12.615.053a.216.216 0 0 0-.17-.051Zm-.336 3.906a50.93 50.93 0 0 1 4.794 6.552c.448.767.817 1.57 1.108 2.41.606 2.386-.044 4.354-1.951 5.904-1.845 1.298-3.87 1.683-6.072 1.156-2.376-.737-3.75-2.335-4.121-4.794a5.107 5.107 0 0 1 .242-2.266c.358-.908.79-1.774 1.3-2.601l1.446-2.121a397.33 397.33 0 0 0 3.254-4.24Z" />
+		),
+	},
+	{
+		name: "Next.js",
+		svg: (
+			<path d="M18.665 21.978C16.758 23.255 14.465 24 12 24 5.377 24 0 18.623 0 12S5.377 0 12 0s12 5.377 12 12c0 3.583-1.574 6.801-4.067 9.001L9.219 7.2H7.2v9.596h1.615V9.251l9.85 12.727Zm-3.332-8.533 1.6 2.061V7.2h-1.6v6.245Z" />
+		),
+	},
+	{
+		name: "Deno",
+		svg: (
+			<path d="M1.105 18.02A11.9 11.9 0 0 1 0 12.985q0-.698.078-1.376a12 12 0 0 1 .231-1.34A12 12 0 0 1 4.025 4.02a12 12 0 0 1 5.46-2.771a12 12 0 0 1 3.428-.23c1.452.112 2.825.477 4.077 1.05a12 12 0 0 1 2.78 1.774a12.02 12.02 0 0 1 4.053 7.078A12 12 0 0 1 24 12.985q0 .454-.036.914a12 12 0 0 1-.728 3.305a12 12 0 0 1-2.38 3.875c-1.33 1.357-3.02 1.962-4.43 1.936a4.4 4.4 0 0 1-2.724-1.024c-.99-.853-1.391-1.83-1.53-2.919a5 5 0 0 1 .128-1.518c.105-.38.37-1.116.76-1.437-.455-.197-1.04-.624-1.226-.829-.045-.05-.04-.13 0-.183a.155.155 0 0 1 .177-.053c.392.134.869.267 1.372.35.66.111 1.484.25 2.317.292 2.03.1 4.153-.813 4.812-2.627s.403-3.609-1.96-4.685-3.454-2.356-5.363-3.128c-1.247-.505-2.636-.205-4.06.582-3.838 2.121-7.277 8.822-5.69 15.032a.191.191 0 0 1-.315.19a12 12 0 0 1-1.25-1.634a12 12 0 0 1-.769-1.404M11.57 6.087c.649-.051 1.214.501 1.31 1.236.13.979-.228 1.99-1.41 2.013-1.01.02-1.315-.997-1.248-1.614.066-.616.574-1.575 1.35-1.635" />
+		),
 	},
 ];
 
@@ -256,69 +343,95 @@ const adaptersList = [
 	},
 ];
 
+function LineMarker({ side }: { side: "left" | "right" }) {
+	return (
+		<div className={`pointer-events-none absolute -bottom-2 hidden lg:block z-30 ${side === "left" ? "left-6 lg:left-12 xl:left-16 -translate-x-1/2" : "right-6 lg:right-12 xl:right-16 translate-x-1/2"}`}>
+			<Plus className="size-4 text-zinc-300 dark:text-zinc-700" strokeWidth={1} />
+		</div>
+	);
+}
+
 export default function HomePage() {
 	return (
-		<main className="min-h-dvh overflow-x-hidden">
+		<main className="min-h-dvh overflow-x-hidden relative bg-background">
+			{/* Structural vertical lines — dashed, better-auth style */}
+			<div className="pointer-events-none absolute inset-y-0 left-6 w-px z-20 hidden lg:block lg:left-12 xl:left-16 border-l border-dashed border-zinc-200 dark:border-zinc-800" />
+			<div className="pointer-events-none absolute inset-y-0 right-6 w-px z-20 hidden lg:block lg:right-12 xl:right-16 border-r border-dashed border-zinc-200 dark:border-zinc-800" />
+
 			{/* Announcement Bar */}
-			<div className="bg-secondary/50 border-b border-dashed border-border">
-				<div className="max-w-6xl mx-auto flex items-center justify-center h-10 px-4">
-					<div className="flex items-center gap-2 text-xs sm:text-sm">
-						<span className="font-medium">Summa is now open source</span>
-						<span className="text-muted-foreground hidden sm:inline">|</span>
-						<Link
-							href="https://github.com/summa-ledger/summa"
-							target="_blank"
-							rel="noopener noreferrer"
-							className="font-semibold text-brand hover:text-brand/80 transition-colors inline-flex items-center gap-1"
-						>
-							Star on GitHub
-							<ArrowRight className="size-3" />
-						</Link>
-					</div>
+			<div className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800">
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto flex items-center justify-center h-10 px-6 lg:px-12">
+					<Link
+						href="https://github.com/summa-ledger/summa"
+						target="_blank"
+						rel="noopener noreferrer"
+						className="group inline-flex items-center gap-3 text-sm"
+					>
+						<span className="inline-flex items-center px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider bg-brand/10 text-brand border border-brand/20">
+							New
+						</span>
+						<span className="text-muted-foreground group-hover:text-foreground transition-colors">
+							Summa is now open source
+						</span>
+						<ArrowRight className="size-3 text-muted-foreground group-hover:text-foreground group-hover:translate-x-0.5 transition-all" />
+					</Link>
 				</div>
 			</div>
 
 			{/* Hero */}
-			<Section className="overflow-y-clip" customPaddings id="hero">
-				<section className="relative w-full flex items-center justify-center bg-background antialiased py-16 md:py-24 lg:py-28">
+			<Section className="overflow-y-clip border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="hero">
+				<section className="relative w-full antialiased py-20 md:py-28 lg:py-36">
 					<Spotlight />
 					<div className="absolute inset-0 pointer-events-none">
-						<div className="absolute inset-0 bg-dot text-foreground/[0.07] dark:text-white/[0.04]" />
-						<div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_-10%,oklch(0.55_0.17_160_/_0.08),transparent_70%)]" />
-						<div className="absolute inset-0 bg-gradient-to-b from-transparent via-background/60 to-background" />
+						<div className="absolute inset-0 bg-dot text-foreground/5 dark:text-white/3" />
+						<div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_50%_at_50%_-20%,oklch(0.55_0.17_160/0.08),transparent_70%)]" />
+						<div className="absolute inset-0 bg-linear-to-b from-transparent via-transparent to-background" />
 					</div>
 
-					<div className="max-w-6xl mx-auto px-4 sm:px-6 relative z-10 w-full">
-						<div className="grid grid-cols-1 items-center gap-12 lg:grid-cols-2 lg:gap-16">
-							{/* Left — Text */}
-							<div className="relative z-10">
-								<div className="space-y-5">
-									<div className="space-y-3">
-										<div className="flex items-center gap-1.5">
-											<svg
-												xmlns="http://www.w3.org/2000/svg"
-												width="0.8em"
-												height="0.8em"
-												viewBox="0 0 24 24"
-												aria-hidden="true"
-											>
-												<path fill="currentColor" d="M12 17l1.56-3.42L17 12l-3.44-1.56L12 7l-1.57 3.44L7 12l3.43 1.58z" />
-												<path fill="currentColor" d="M13 4V2c4.66.5 8.33 4.19 8.85 8.85c.6 5.49-3.35 10.43-8.85 11.03v-2c3.64-.45 6.5-3.32 6.96-6.96A7.994 7.994 0 0 0 13 4m-7.33.2A9.8 9.8 0 0 1 11 2v2.06c-1.43.2-2.78.78-3.9 1.68zM2.05 11a9.8 9.8 0 0 1 2.21-5.33L5.69 7.1A8 8 0 0 0 4.05 11zm2.22 7.33A10.04 10.04 0 0 1 2.06 13h2c.18 1.42.75 2.77 1.63 3.9zm1.4 1.41l1.39-1.37h.04c1.13.88 2.48 1.45 3.9 1.63v2c-1.96-.21-3.82-1-5.33-2.26" />
-											</svg>
-											<span className="text-xs font-medium tracking-wide text-muted-foreground">
-												Financial Infrastructure
-											</span>
-										</div>
+					<LineMarker side="left" />
+					<LineMarker side="right" />
 
-										<h1 className="text-foreground tracking-tighter text-3xl sm:text-4xl md:text-5xl text-pretty font-medium">
-											The ledger your
-											<br className="hidden sm:block" />
-											{" "}money deserves.
-										</h1>
-										<p className="text-muted-foreground text-sm md:text-base max-w-md">
-											Event-sourced, double-entry, type-safe — built for teams that
-											ship financial infrastructure in TypeScript.
+					<div className="max-w-400 mx-auto px-6 lg:px-12 relative z-10 w-full">
+						<div className="grid grid-cols-1 items-center gap-16 lg:grid-cols-2 lg:gap-24">
+							{/* Left — Text */}
+							<div className="relative z-10 max-w-xl">
+								<div className="space-y-8">
+									<div className="space-y-5">
+										<p className="text-sm font-medium text-brand tracking-wide">
+											Financial Infrastructure for TypeScript
 										</p>
+										<h1 className="text-foreground tracking-tighter text-4xl sm:text-5xl md:text-6xl lg:text-7xl text-balance font-semibold leading-[1.08]">
+											Stop building your ledger from scratch.
+										</h1>
+										<p className="text-muted-foreground text-base md:text-lg leading-relaxed max-w-md">
+											Event-sourced, double-entry, type-safe — the financial
+											ledger that grows with your product. From first transaction
+											to millions.
+										</p>
+									</div>
+
+									{/* CTA Buttons */}
+									<div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+										<Link
+											href="/docs"
+											className="group inline-flex items-center justify-center h-10 px-6 text-sm font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors"
+										>
+											Get Started
+											<ArrowRight className="size-3.5 ml-2 group-hover:translate-x-0.5 transition-transform" />
+										</Link>
+										<Link
+											href="https://github.com/summa-ledger/summa"
+											target="_blank"
+											rel="noopener noreferrer"
+											className="inline-flex items-center justify-center h-10 px-6 text-sm font-medium border border-border text-foreground hover:bg-accent transition-colors gap-2"
+										>
+											<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 496 512" aria-hidden="true">
+												<path fill="currentColor" d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6c-3.3.3-5.6-1.3-5.6-3.6c0-2 2.3-3.6 5.2-3.6c3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9c2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9c.3 2 2.9 3.3 5.9 2.6c2.9-.7 4.9-2.6 4.6-4.6c-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2c12.8 2.3 17.3-5.6 17.3-12.1c0-6.2-.3-40.4-.3-61.4c0 0-70 15-84.7-29.8c0 0-11.4-29.1-27.8-36.6c0 0-22.9-15.7 1.6-15.4c0 0 24.9 2 38.6 25.8c21.9 38.6 58.6 27.5 72.9 20.9c2.3-16 8.8-27.1 16-33.7c-55.9-6.2-112.3-14.3-112.3-110.5c0-27.5 7.6-41.3 23.6-58.9c-2.6-6.5-11.1-33.3 2.6-67.9c20.9-6.5 69 27 69 27c20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27c13.7 34.7 5.2 61.4 2.6 67.9c16 17.7 25.8 31.5 25.8 58.9c0 96.5-58.9 104.2-114.8 110.5c9.2 7.9 17 22.9 17 46.4c0 33.7-.3 75.4-.3 83.6c0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252C496 113.3 383.5 8 244.8 8" />
+											</svg>
+											Star on GitHub
+										</Link>
 									</div>
 
 									{/* Terminal Install */}
@@ -336,7 +449,7 @@ export default function HomePage() {
 													npm i{" "}
 													<span className="relative dark:text-fuchsia-300 text-fuchsia-800">
 														summa
-														<span className="absolute h-2 bg-gradient-to-tr from-white via-slate-200 to-emerald-200/50 blur-3xl w-full top-0 left-2" />
+														<span className="absolute h-2 bg-linear-to-tr from-white via-slate-200 to-emerald-200/50 blur-3xl w-full top-0 left-2" />
 													</span>
 												</p>
 											</div>
@@ -355,69 +468,44 @@ export default function HomePage() {
 											</div>
 										</GradientBG>
 									</div>
-
-									{/* CTA Buttons */}
-									<div className="flex flex-col gap-4 sm:flex-row sm:items-center">
-										<Link
-											href="/docs"
-											className="inline-flex items-center justify-center px-6 py-2.5 text-sm font-medium tracking-wide uppercase bg-foreground text-background hover:bg-foreground/90 transition-colors duration-200"
-										>
-											Get Started
-										</Link>
-										<Link
-											href="https://github.com/summa-ledger/summa"
-											target="_blank"
-											rel="noopener noreferrer"
-											className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
-										>
-											<svg xmlns="http://www.w3.org/2000/svg" width="1.2em" height="1.2em" viewBox="0 0 496 512" aria-hidden="true">
-												<path fill="currentColor" d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6c-3.3.3-5.6-1.3-5.6-3.6c0-2 2.3-3.6 5.2-3.6c3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9c2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9c.3 2 2.9 3.3 5.9 2.6c2.9-.7 4.9-2.6 4.6-4.6c-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2c12.8 2.3 17.3-5.6 17.3-12.1c0-6.2-.3-40.4-.3-61.4c0 0-70 15-84.7-29.8c0 0-11.4-29.1-27.8-36.6c0 0-22.9-15.7 1.6-15.4c0 0 24.9 2 38.6 25.8c21.9 38.6 58.6 27.5 72.9 20.9c2.3-16 8.8-27.1 16-33.7c-55.9-6.2-112.3-14.3-112.3-110.5c0-27.5 7.6-41.3 23.6-58.9c-2.6-6.5-11.1-33.3 2.6-67.9c20.9-6.5 69 27 69 27c20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27c13.7 34.7 5.2 61.4 2.6 67.9c16 17.7 25.8 31.5 25.8 58.9c0 96.5-58.9 104.2-114.8 110.5c9.2 7.9 17 22.9 17 46.4c0 33.7-.3 75.4-.3 83.6c0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252C496 113.3 383.5 8 244.8 8" />
-											</svg>
-											Star on GitHub
-										</Link>
-									</div>
 								</div>
 							</div>
 
 							{/* Right — Code Preview */}
 							<div className="relative">
-								<div className="relative">
-									<div className="from-emerald-400/50 via-sky-300/30 to-blue-400/40 absolute inset-0 bg-gradient-to-tr opacity-10 blur-lg" />
-									<div className="from-slate-300 via-slate-300/70 to-emerald-300/50 absolute inset-0 bg-gradient-to-tr opacity-5" />
-									<CodePreview />
-								</div>
+								<CodePreview />
 							</div>
 						</div>
 					</div>
 				</section>
 			</Section>
 
-			{/* Features */}
-			<Section className="" customPaddings id="features">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 lg:py-24">
-					<div className="mb-12">
-						<p className="text-xs font-mono uppercase tracking-widest text-brand mb-3">Core Features</p>
-						<h2 className="text-3xl md:text-4xl font-medium tracking-tight">
-							Everything you need.
-							<br />
-							<span className="text-muted-foreground">Nothing you don't.</span>
+			{/* Use Cases — inspired by Blnk & TigerBeetle */}
+			<Section className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="use-cases">
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Use Cases</p>
+						<h2 className="text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tighter">
+							One ledger.{" "}
+							<span className="text-muted-foreground">Every use case.</span>
 						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							From digital wallets to lending platforms — Summa provides the financial primitives your product needs.
+						</p>
 					</div>
-					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border">
-						{features.map((feature) => (
-							<div key={feature.id} className="bg-background p-8 lg:p-10">
-								<div className="flex items-center gap-2 mb-4">
-									<feature.icon className="size-4 text-brand" />
+					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						{useCases.map((useCase) => (
+							<div key={useCase.label} className="bg-background p-8 lg:p-10 group hover:bg-zinc-50/50 dark:hover:bg-zinc-900/30 transition-colors">
+								<div className="flex items-center gap-2.5 mb-5">
+									<useCase.icon className="size-5 text-brand" />
 									<p className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
-										{feature.label}
+										{useCase.label}
 									</p>
 								</div>
-								<h3 className="text-xl font-medium tracking-tight md:text-2xl">
-									{feature.title}
-								</h3>
-								<p className="mt-3 text-sm leading-relaxed text-muted-foreground">
-									{feature.description}
-									<a className="ml-2 underline" href={feature.href}>Learn more</a>
+								<p className="text-sm leading-relaxed text-muted-foreground">
+									{useCase.description}
 								</p>
 							</div>
 						))}
@@ -425,23 +513,71 @@ export default function HomePage() {
 				</div>
 			</Section>
 
-			{/* How It Works */}
-			<Section className="bg-secondary/30 dark:bg-secondary/10" customPaddings id="how-it-works">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 lg:py-24">
-					<div className="mb-12">
-						<p className="text-xs font-mono uppercase tracking-widest text-brand mb-3">How It Works</p>
-						<h2 className="text-2xl md:text-3xl font-medium tracking-tight">
-							From zero to production in <strong>four steps</strong>.
+			{/* Features */}
+			<Section className="relative bg-zinc-50 dark:bg-zinc-950/80 border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="features">
+				<div className="pointer-events-none absolute inset-0 bg-dot text-zinc-300/30 dark:text-zinc-700/15" />
+				<div className="pointer-events-none absolute inset-0 bg-linear-to-b from-transparent via-transparent to-background/60" />
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32 relative">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Core Features</p>
+						<h2 className="text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tighter">
+							Everything you need.
+							<br />
+							<span className="text-muted-foreground">Nothing you don't.</span>
 						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							A purpose-built financial ledger with the primitives you need to move money safely.
+						</p>
 					</div>
-					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border">
+					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						{features.map((feature) => (
+							<div key={feature.id} className="bg-background p-8 lg:p-10 group hover:bg-zinc-50/50 dark:hover:bg-zinc-900/30 transition-colors">
+								<div className="flex items-center gap-2.5 mb-5">
+									<feature.icon className="size-5 text-brand" />
+									<p className="text-xs font-mono uppercase tracking-wider text-muted-foreground">
+										{feature.label}
+									</p>
+								</div>
+								<h3 className="text-lg font-semibold tracking-tight md:text-xl">
+									{feature.title}
+								</h3>
+								<p className="mt-3 text-sm leading-relaxed text-muted-foreground">
+									{feature.description}
+								</p>
+								<Link href={feature.href} className="inline-flex items-center gap-1.5 mt-5 text-sm text-brand hover:underline group/link">
+									Learn more
+									<ArrowRight className="size-3 group-hover/link:translate-x-0.5 transition-transform" />
+								</Link>
+							</div>
+						))}
+					</div>
+				</div>
+			</Section>
+
+			{/* How It Works */}
+			<Section className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="how-it-works">
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32 relative">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">How It Works</p>
+						<h2 className="text-3xl md:text-4xl font-semibold tracking-tighter">
+							From zero to production in four steps.
+						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							Configure once, then start moving money. No boilerplate, no ceremony.
+						</p>
+					</div>
+					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
 						{steps.map((item) => (
 							<div key={item.step} className="bg-background p-8 lg:p-10">
-								<div className="flex items-center gap-3 mb-4">
-									<span className="text-2xl font-light tracking-tight text-brand/40">{item.step}</span>
+								<div className="flex items-center gap-3 mb-5">
+									<span className="text-3xl font-extralight tracking-tighter text-brand/25 tabular-nums font-mono">{item.step}</span>
 									<p className="text-xs font-mono uppercase tracking-wider text-muted-foreground">{item.label}</p>
 								</div>
-								<h3 className="text-lg font-medium tracking-tight md:text-xl">{item.title}</h3>
+								<h3 className="text-lg font-semibold tracking-tight">{item.title}</h3>
 								<p className="mt-3 text-sm leading-relaxed text-muted-foreground">{item.description}</p>
 							</div>
 						))}
@@ -449,55 +585,39 @@ export default function HomePage() {
 				</div>
 			</Section>
 
-			{/* Adapters */}
-			<Section className="" customPaddings id="adapters">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 lg:py-24">
-					<div className="mb-12">
-						<p className="text-xs font-mono uppercase tracking-widest text-brand mb-3">Database Adapters</p>
-						<h2 className="text-2xl md:text-3xl font-medium tracking-tight">
-							Bring your own <strong>ORM</strong>.
+			{/* Code Examples */}
+			<Section className="relative bg-zinc-50 dark:bg-zinc-950/80 border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="code-examples">
+				<div className="pointer-events-none absolute inset-0 bg-dot text-zinc-300/30 dark:text-zinc-700/15" />
+				<div className="pointer-events-none absolute inset-0 bg-linear-to-b from-transparent via-transparent to-background/60" />
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32 relative">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Beyond the Basics</p>
+						<h2 className="text-3xl md:text-4xl font-semibold tracking-tighter">
+							Production-grade from day one.
 						</h2>
-						<p className="mt-2 text-sm text-muted-foreground max-w-lg">
-							Swap adapters without touching business logic. Same API, same types, any database.
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							Authorization holds, event replay, and plugin composition — real financial primitives, not toy abstractions.
 						</p>
 					</div>
-					<div className="grid grid-cols-2 md:grid-cols-5 gap-px bg-border border border-border">
-						{adaptersList.map((db) => (
-							<div key={db.name} className="bg-background flex flex-col items-center justify-center p-8 md:p-10 gap-3">
-								<svg viewBox={db.viewBox} fill="currentColor" className="size-7 text-foreground/60" aria-hidden="true">
-									{db.svg}
-								</svg>
-								<p className="text-muted-foreground text-sm">{db.name}</p>
-							</div>
-						))}
-					</div>
-				</div>
-			</Section>
-
-			{/* Code Examples */}
-			<Section className="bg-secondary/30 dark:bg-secondary/10" customPaddings id="code-examples">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 lg:py-24">
-					<div className="mb-12">
-						<p className="text-xs font-mono uppercase tracking-widest text-brand mb-3">Beyond the Basics</p>
-						<h2 className="text-2xl md:text-3xl font-medium tracking-tight">
-							Production-grade from <strong>day one</strong>.
-						</h2>
-					</div>
-					<div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-border border border-border">
-						<div className="bg-background p-8 lg:p-10 flex flex-col justify-center">
-							<h3 className="text-lg md:text-xl font-medium tracking-tight mb-3">
+					<div className="grid grid-cols-1 lg:grid-cols-2 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						<div className="bg-background p-10 lg:p-14 flex flex-col justify-center">
+							<h3 className="text-xl md:text-2xl font-semibold tracking-tight mb-4">
 								Real financial primitives,<br />not toy abstractions.
 							</h3>
-							<p className="text-sm leading-relaxed text-muted-foreground">
+							<p className="text-base leading-relaxed text-muted-foreground">
 								Authorization holds for payment processors.
 								Event replay for audit compliance. Plugin
 								composition for velocity limits, reconciliation,
 								and snapshots — all type-safe.
 							</p>
-							<div className="mt-6 flex flex-col gap-2">
+							<div className="mt-8 flex flex-col gap-3.5">
 								{["Authorization holds with commit/void", "Immutable event log with replay", "Composable plugins with type inference"].map((item) => (
-									<div key={item} className="flex items-center gap-2 text-sm text-muted-foreground">
-										<Check className="size-3 shrink-0 text-brand" />
+									<div key={item} className="flex items-center gap-3 text-sm text-muted-foreground">
+										<div className="flex items-center justify-center size-5 border border-brand/30 bg-brand/5 shrink-0">
+											<Check className="size-3 text-brand" />
+										</div>
 										{item}
 									</div>
 								))}
@@ -512,24 +632,113 @@ export default function HomePage() {
 				</div>
 			</Section>
 
+			{/* Plugin Ecosystem — inspired by Formance's modular story */}
+			<Section className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="plugins">
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Plugin Ecosystem</p>
+						<h2 className="text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tighter">
+							14 plugins.{" "}
+							<span className="text-muted-foreground">Compose what you need.</span>
+						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							Every plugin is opt-in with full type inference. Add audit logs, velocity limits, reconciliation — or build your own.
+						</p>
+					</div>
+					<div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						{plugins.map((plugin) => (
+							<div key={plugin.name} className="bg-background p-6 lg:p-8 group hover:bg-zinc-50/50 dark:hover:bg-zinc-900/30 transition-colors">
+								<div className="flex items-center gap-2 mb-3">
+									<div className="size-2 bg-brand/40 group-hover:bg-brand transition-colors" />
+									<p className="text-sm font-medium tracking-tight text-foreground">{plugin.name}</p>
+								</div>
+								<p className="text-xs leading-relaxed text-muted-foreground">{plugin.description}</p>
+							</div>
+						))}
+						<div className="bg-background p-6 lg:p-8 flex flex-col items-center justify-center text-center">
+							<p className="text-xs text-muted-foreground mb-3">Need something custom?</p>
+							<Link href="/docs/plugins" className="inline-flex items-center gap-1.5 text-sm text-brand hover:underline group/link">
+								Build your own
+								<ArrowRight className="size-3 group-hover/link:translate-x-0.5 transition-transform" />
+							</Link>
+						</div>
+					</div>
+				</div>
+			</Section>
+
+			{/* Adapters + Frameworks */}
+			<Section className="relative bg-zinc-50 dark:bg-zinc-950/80 border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="adapters">
+				<div className="pointer-events-none absolute inset-0 bg-dot text-zinc-300/30 dark:text-zinc-700/15" />
+				<div className="pointer-events-none absolute inset-0 bg-linear-to-b from-transparent via-transparent to-background/60" />
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32 relative">
+					{/* Database Adapters */}
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Database Adapters</p>
+						<h2 className="text-3xl md:text-4xl font-semibold tracking-tighter">
+							Bring your own ORM.
+						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							Swap adapters without touching business logic. Same API, same types, any database.
+						</p>
+					</div>
+					<div className="grid grid-cols-2 md:grid-cols-5 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						{adaptersList.map((db) => (
+							<div key={db.name} className="bg-background flex flex-col items-center justify-center p-8 md:p-12 gap-3 group hover:bg-zinc-50/80 dark:hover:bg-zinc-900/40 transition-colors duration-200">
+								<svg viewBox={db.viewBox} fill="currentColor" className="size-8 text-foreground/40 group-hover:text-foreground/70 transition-colors duration-200" aria-hidden="true">
+									{db.svg}
+								</svg>
+								<p className="text-muted-foreground text-sm font-medium group-hover:text-foreground/70 transition-colors duration-200">{db.name}</p>
+							</div>
+						))}
+					</div>
+
+					{/* Framework Integrations */}
+					<div className="max-w-2xl mb-16 mt-24">
+						<p className="text-sm font-medium text-brand mb-4">Framework Integrations</p>
+						<h2 className="text-3xl md:text-4xl font-semibold tracking-tighter">
+							Works with your stack.
+						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							First-class HTTP handlers for every major framework. Mount the API or use the core programmatically.
+						</p>
+					</div>
+					<div className="grid grid-cols-2 md:grid-cols-5 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						{frameworks.map((fw) => (
+							<div key={fw.name} className="bg-background flex flex-col items-center justify-center p-8 md:p-12 gap-3 group hover:bg-zinc-50/80 dark:hover:bg-zinc-900/40 transition-colors duration-200">
+								<svg viewBox="0 0 24 24" fill="currentColor" className="size-8 text-foreground/40 group-hover:text-foreground/70 transition-colors duration-200" aria-hidden="true">
+									{fw.svg}
+								</svg>
+								<p className="text-muted-foreground text-sm font-medium group-hover:text-foreground/70 transition-colors duration-200">{fw.name}</p>
+							</div>
+						))}
+					</div>
+				</div>
+			</Section>
+
 			{/* Security */}
-			<Section className="" customPaddings id="security">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-16 lg:py-24">
-					<div className="mb-12">
-						<p className="text-xs font-mono uppercase tracking-widest text-brand mb-3">Security</p>
-						<h2 className="text-3xl md:text-4xl font-medium tracking-tight">Trust is not optional.</h2>
-						<p className="mt-3 text-sm md:text-base text-muted-foreground max-w-lg">
+			<Section className="relative border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="security">
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Security</p>
+						<h2 className="text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tighter">Trust is not optional.</h2>
+						<p className="mt-4 text-base md:text-lg text-muted-foreground max-w-lg">
 							Every layer is hardened — from parameterized queries to cryptographic audit trails.
 						</p>
 					</div>
-					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-border border border-border">
+					<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
 						{securityFeatures.map((item) => (
-							<div key={item.label} className="bg-background p-8 lg:p-10">
-								<div className="flex items-center gap-2 mb-4">
-									<item.icon className="size-4 text-brand" />
+							<div key={item.label} className="bg-background p-8 lg:p-10 hover:bg-zinc-50/50 dark:hover:bg-zinc-900/30 transition-colors">
+								<div className="flex items-center gap-2.5 mb-5">
+									<item.icon className="size-5 text-brand" />
 									<p className="text-xs font-mono uppercase tracking-wider text-muted-foreground">{item.label}</p>
 								</div>
-								<h3 className="text-xl font-medium tracking-tight md:text-2xl">{item.title}</h3>
+								<h3 className="text-lg font-semibold tracking-tight md:text-xl">{item.title}</h3>
 								<p className="mt-3 text-sm leading-relaxed text-muted-foreground">{item.description}</p>
 							</div>
 						))}
@@ -537,45 +746,181 @@ export default function HomePage() {
 				</div>
 			</Section>
 
-			{/* CTA */}
-			<Section className="bg-secondary/30 dark:bg-secondary/10" customPaddings id="cta">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-20 lg:py-28">
-					<div className="relative overflow-hidden border border-border bg-background p-12 md:p-16">
-						<Ripple className="opacity-65" />
-						<div className="relative z-10 flex flex-col items-center text-center gap-6">
-							<p className="text-xs font-mono uppercase tracking-widest text-brand">Get Started</p>
-							<h2 className="max-w-lg text-2xl md:text-4xl font-medium tracking-tight">Your ledger is waiting.</h2>
-							<p className="text-muted-foreground text-sm md:text-base max-w-md">
-								Ship financial infrastructure that's auditable, type-safe,
-								and ready for scale — in an afternoon.
-							</p>
+			{/* Open Source Stats + Developer Numbers */}
+			<Section className="relative bg-zinc-50 dark:bg-zinc-950/80 border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="open-source">
+				<div className="pointer-events-none absolute inset-0 bg-dot text-zinc-300/30 dark:text-zinc-700/15" />
+				<div className="pointer-events-none absolute inset-0 bg-linear-to-b from-transparent via-transparent to-background/60" />
+				<LineMarker side="left" />
+				<LineMarker side="right" />
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-24 lg:py-32 relative">
+					<div className="max-w-2xl mb-16">
+						<p className="text-sm font-medium text-brand mb-4">Open Source</p>
+						<h2 className="text-3xl md:text-4xl font-semibold tracking-tighter">
+							Built in the open.
+						</h2>
+						<p className="mt-4 text-base text-muted-foreground max-w-lg">
+							MIT licensed. Read every line, fork it, extend it. No vendor lock-in, no black boxes.
+						</p>
+					</div>
+					<div className="grid grid-cols-2 md:grid-cols-4 gap-px bg-zinc-200 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-800">
+						<div className="bg-background p-10 lg:p-12 text-center">
+							<p className="text-4xl md:text-5xl font-semibold tracking-tighter text-foreground">MIT</p>
+							<p className="mt-2 text-sm text-muted-foreground">Open source license</p>
+						</div>
+						<div className="bg-background p-10 lg:p-12 text-center">
+							<p className="text-4xl md:text-5xl font-semibold tracking-tighter text-foreground">14</p>
+							<p className="mt-2 text-sm text-muted-foreground">Built-in plugins</p>
+						</div>
+						<div className="bg-background p-10 lg:p-12 text-center">
+							<p className="text-4xl md:text-5xl font-semibold tracking-tighter text-foreground">20+</p>
+							<p className="mt-2 text-sm text-muted-foreground">API endpoints</p>
+						</div>
+						<div className="bg-background p-10 lg:p-12 text-center">
+							<p className="text-4xl md:text-5xl font-semibold tracking-tighter text-foreground">0</p>
+							<p className="mt-2 text-sm text-muted-foreground">External runtime deps</p>
+						</div>
+					</div>
+				</div>
+			</Section>
+
+			{/* CTA — Formance-inspired animated design */}
+			<Section className="relative overflow-hidden border-b border-dashed border-zinc-200 dark:border-zinc-800" customPaddings id="cta">
+				{/* Solid vertical lines — brand color */}
+				<div className="pointer-events-none absolute inset-0 z-10">
+					<div className="absolute top-0 bottom-0 left-6 lg:left-12 xl:left-16 w-px bg-brand/30" />
+					<div className="absolute top-0 bottom-0 right-6 lg:right-12 xl:right-16 w-px bg-brand/30" />
+				</div>
+
+				{/* Beam sweep on left line */}
+				<div className="pointer-events-none absolute top-0 bottom-0 left-6 lg:left-12 xl:left-16 w-px z-10 overflow-hidden">
+					<div className="absolute w-full h-32 animate-beam-sweep bg-linear-to-b from-transparent via-brand to-transparent" />
+				</div>
+				{/* Beam sweep on right line (offset) */}
+				<div className="pointer-events-none absolute top-0 bottom-0 right-6 lg:right-12 xl:right-16 w-px z-10 overflow-hidden">
+					<div className="absolute w-full h-32 animate-beam-sweep bg-linear-to-b from-transparent via-brand to-transparent" style={{ animationDelay: "1.5s" }} />
+				</div>
+
+				{/* Grid background */}
+				<div className="pointer-events-none absolute inset-0 bg-grid-small text-zinc-200/60 dark:text-zinc-800/40" />
+
+				{/* Central glow */}
+				<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_50%_60%_at_50%_50%,oklch(0.55_0.17_160/0.08),transparent_70%)] animate-glow-pulse" />
+
+				{/* Fade to background edges */}
+				<div className="pointer-events-none absolute inset-0 bg-[radial-gradient(ellipse_80%_80%_at_50%_50%,transparent_30%,var(--background)_80%)]" />
+
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-32 lg:py-44 relative z-20">
+					<div className="flex flex-col items-center text-center gap-8">
+						<p className="text-sm font-medium text-brand">
+							Start building today
+						</p>
+						<h2 className="max-w-2xl text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tighter">
+							Stop fighting your ledger.
+						</h2>
+						<p className="text-muted-foreground text-base md:text-lg max-w-md">
+							Ship financial infrastructure that's auditable, type-safe,
+							and ready for scale — in an afternoon.
+						</p>
+						<div className="flex flex-col sm:flex-row items-center gap-3 mt-2">
 							<Link
 								href="/docs"
-								className="px-8 py-2.5 text-sm font-medium tracking-wide uppercase bg-foreground text-background hover:bg-foreground/90 transition-colors duration-200"
+								className="group inline-flex items-center justify-center h-11 px-8 text-sm font-medium bg-foreground text-background hover:bg-foreground/90 transition-colors"
 							>
 								Read the Docs
+								<ArrowRight className="size-3.5 ml-2 group-hover:translate-x-0.5 transition-transform" />
+							</Link>
+							<Link
+								href="https://github.com/summa-ledger/summa"
+								target="_blank"
+								rel="noopener noreferrer"
+								className="inline-flex items-center justify-center h-11 px-8 text-sm font-medium border border-border text-foreground hover:bg-accent transition-colors"
+							>
+								View on GitHub
 							</Link>
 						</div>
 					</div>
 				</div>
 			</Section>
 
-			{/* Footer */}
-			<footer className="border-t border-border">
-				<div className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
-					<div className="flex flex-col sm:flex-row items-center justify-between gap-4">
-						<p className="text-xs text-muted-foreground">MIT License. Built with TypeScript.</p>
-						<div className="flex items-center gap-4">
-							<Link href="https://github.com/summa-ledger/summa" target="_blank" rel="noopener noreferrer" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-								GitHub
-							</Link>
-							<Link href="https://www.npmjs.com/package/summa" target="_blank" rel="noopener noreferrer" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-								npm
-							</Link>
-							<Link href="/docs" className="text-xs text-muted-foreground hover:text-foreground transition-colors">
-								Docs
-							</Link>
+			{/* Footer — Bastion-inspired dark, spacious layout */}
+			<footer className="relative bg-zinc-950 text-zinc-400 dark:bg-zinc-950">
+				<div className="max-w-400 mx-auto px-6 lg:px-12 py-16 lg:py-20">
+					<div className="grid grid-cols-2 gap-10 sm:grid-cols-3 lg:grid-cols-6 lg:gap-8">
+						{/* Brand */}
+						<div className="col-span-2 sm:col-span-3 lg:col-span-2 mb-4 lg:mb-0">
+							<div className="flex items-center gap-2.5">
+								<svg width="60" height="60" viewBox="0 0 60 60" fill="none" className="size-5" aria-hidden="true">
+									<path d="M12 8H48V16H24L34 30L24 44H48V52H12V44L26 30L12 16V8Z" className="fill-white" />
+								</svg>
+								<span className="text-sm font-medium tracking-tight text-white">SUMMA.</span>
+							</div>
+							<p className="mt-4 text-sm leading-relaxed max-w-64">
+								Event-sourced, double-entry financial ledger for TypeScript.
+							</p>
+							{/* Social icons */}
+							<div className="mt-6 flex items-center gap-4">
+								<Link href="https://github.com/summa-ledger/summa" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-white transition-colors" aria-label="GitHub">
+									<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 496 512" fill="currentColor" aria-hidden="true">
+										<path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6c-3.3.3-5.6-1.3-5.6-3.6c0-2 2.3-3.6 5.2-3.6c3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9c2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9c.3 2 2.9 3.3 5.9 2.6c2.9-.7 4.9-2.6 4.6-4.6c-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2c12.8 2.3 17.3-5.6 17.3-12.1c0-6.2-.3-40.4-.3-61.4c0 0-70 15-84.7-29.8c0 0-11.4-29.1-27.8-36.6c0 0-22.9-15.7 1.6-15.4c0 0 24.9 2 38.6 25.8c21.9 38.6 58.6 27.5 72.9 20.9c2.3-16 8.8-27.1 16-33.7c-55.9-6.2-112.3-14.3-112.3-110.5c0-27.5 7.6-41.3 23.6-58.9c-2.6-6.5-11.1-33.3 2.6-67.9c20.9-6.5 69 27 69 27c20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27c13.7 34.7 5.2 61.4 2.6 67.9c16 17.7 25.8 31.5 25.8 58.9c0 96.5-58.9 104.2-114.8 110.5c9.2 7.9 17 22.9 17 46.4c0 33.7-.3 75.4-.3 83.6c0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252C496 113.3 383.5 8 244.8 8" />
+									</svg>
+								</Link>
+								<Link href="https://www.npmjs.com/package/summa" target="_blank" rel="noopener noreferrer" className="text-zinc-500 hover:text-white transition-colors" aria-label="npm">
+									<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 256 256" aria-hidden="true">
+										<path fill="currentColor" d="M0 256V0h256v256z" />
+										<path fill="#18181b" d="M48 48h160v160h-32V80h-48v128H48z" />
+									</svg>
+								</Link>
+							</div>
 						</div>
+
+						{/* Documentation */}
+						<div>
+							<p className="text-xs font-medium uppercase tracking-wider text-zinc-500 mb-5">Documentation</p>
+							<ul className="space-y-3">
+								<li><Link href="/docs" className="text-sm hover:text-white transition-colors">Getting Started</Link></li>
+								<li><Link href="/docs/configuration" className="text-sm hover:text-white transition-colors">Configuration</Link></li>
+								<li><Link href="/docs/api-reference" className="text-sm hover:text-white transition-colors">API Reference</Link></li>
+							</ul>
+						</div>
+
+						{/* Product */}
+						<div>
+							<p className="text-xs font-medium uppercase tracking-wider text-zinc-500 mb-5">Product</p>
+							<ul className="space-y-3">
+								<li><Link href="/docs/plugins" className="text-sm hover:text-white transition-colors">Plugins</Link></li>
+								<li><Link href="/docs/adapters/drizzle" className="text-sm hover:text-white transition-colors">Adapters</Link></li>
+								<li><Link href="/docs/cli" className="text-sm hover:text-white transition-colors">CLI</Link></li>
+							</ul>
+						</div>
+
+						{/* Resources */}
+						<div>
+							<p className="text-xs font-medium uppercase tracking-wider text-zinc-500 mb-5">Resources</p>
+							<ul className="space-y-3">
+								<li><Link href="/docs/transactions" className="text-sm hover:text-white transition-colors">Transactions</Link></li>
+								<li><Link href="/docs/holds" className="text-sm hover:text-white transition-colors">Holds</Link></li>
+								<li><Link href="/docs/events" className="text-sm hover:text-white transition-colors">Events</Link></li>
+								<li><Link href="/docs/accounts" className="text-sm hover:text-white transition-colors">Accounts</Link></li>
+							</ul>
+						</div>
+
+						{/* Legal */}
+						<div>
+							<p className="text-xs font-medium uppercase tracking-wider text-zinc-500 mb-5">Legal</p>
+							<ul className="space-y-3">
+								<li><Link href="https://github.com/summa-ledger/summa/blob/main/LICENSE" target="_blank" rel="noopener noreferrer" className="text-sm hover:text-white transition-colors">MIT License</Link></li>
+							</ul>
+						</div>
+					</div>
+
+					{/* Bottom bar */}
+					<div className="mt-16 pt-8 border-t border-zinc-800 flex flex-col sm:flex-row items-center justify-between gap-4">
+						<p className="text-xs text-zinc-600">
+							&copy; {new Date().getFullYear()} Summa. All rights reserved.
+						</p>
+						<p className="text-xs text-zinc-600">
+							Open source under the MIT License.
+						</p>
 					</div>
 				</div>
 			</footer>

@@ -44,7 +44,7 @@ export function ThemeToggle(props: ComponentProps<typeof Button>) {
 			}}
 			{...props}
 			className={cn(
-				"flex shrink-0 size-10 navbar:size-14 navbar:border-l text-muted-foreground hover:text-foreground max-navbar:hover:bg-transparent rounded-none",
+				"flex shrink-0 size-10 navbar:size-14 text-muted-foreground hover:text-foreground max-navbar:hover:bg-transparent rounded-none",
 				props.className,
 			)}
 		>
