@@ -1,6 +1,6 @@
 {
   "name": "@summa-ledger/summa",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Event-sourced double-entry financial ledger for TypeScript — EXPERIMENTAL, not yet production-ready",
   "type": "module",
   "license": "MIT",
