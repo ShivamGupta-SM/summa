@@ -6,12 +6,12 @@ icon: CircleStack
 
 ## Overview
 
-Summa creates and manages its own database tables. All tables live in a configurable PostgreSQL schema (default: `"@summa-ledger/summa"`), keeping them isolated from your application tables.
+Summa creates and manages its own database tables. All tables live in a configurable PostgreSQL schema (default: `"summa"`), keeping them isolated from your application tables.
 
 ```ts
 const summa = createSumma({
   database: adapter,
-  schema: "@summa-ledger/summa", // PostgreSQL schema name (default)
+  schema: "summa", // PostgreSQL schema name (default)
 });
 ```
 

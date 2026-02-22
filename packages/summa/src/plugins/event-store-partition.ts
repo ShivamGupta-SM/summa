@@ -25,7 +25,7 @@ export interface EventStorePartitionOptions {
 	/** Detach partitions older than this many intervals. Null = never detach. Default: null */
 	retainPartitions?: number | null;
 
-	/** PostgreSQL schema. Default: "@summa-ledger/summa" */
+	/** PostgreSQL schema. Default: "summa" */
 	schema?: string;
 }
 

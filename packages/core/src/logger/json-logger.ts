@@ -17,7 +17,7 @@ const LEVEL_PRIORITY: Record<LogLevel, number> = {
 export interface JsonLoggerOptions {
 	/** Minimum log level to emit. Default: `"info"` */
 	level?: LogLevel;
-	/** Service name for structured output. Default: `"@summa-ledger/summa"` */
+	/** Service name for structured output. Default: `"summa"` */
 	service?: string;
 	/** Keys to redact from log data. Values replaced with "[REDACTED]". Default: common PII keys */
 	redactKeys?: string[];
@@ -37,7 +37,7 @@ export interface JsonLoggerOptions {
  * ```
  */
 export function createJsonLogger(options: JsonLoggerOptions = {}): SummaLogger {
-	const { level = "info", service = "@summa-ledger/summa" } = options;
+	const { level = "info", service = "summa" } = options;
 	const minPriority = LEVEL_PRIORITY[level];
 	const redactKeys = buildRedactKeys(options.redactKeys);
 

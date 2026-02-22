@@ -161,7 +161,7 @@ function createDatabaseRateLimiter(
 	adapter: SummaAdapter,
 	schema?: string,
 ): RateLimiter {
-	const t = createTableResolver(schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(schema ?? "summa");
 
 	async function getCount(key: string): Promise<{ count: number; windowStart: Date }> {
 		const windowStart = new Date(Date.now() - config.window * 1000);

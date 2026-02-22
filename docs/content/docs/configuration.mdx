@@ -16,7 +16,7 @@ const summa = createSumma({
   currency: "USD",            // Default currency (ISO 4217)
   ledgerId: "ledger-uuid",    // Ledger ID for multi-tenancy
   functionalCurrency: "USD",  // Reporting consolidation currency
-  schema: "@summa-ledger/summa",            // PostgreSQL schema (default: "@summa-ledger/summa")
+  schema: "summa",            // PostgreSQL schema (default: "summa")
   systemAccounts: { ... },    // System account definitions
   plugins: [ ... ],           // Plugin instances
   advanced: { ... },          // Performance and safety tuning
@@ -82,18 +82,18 @@ functionalCurrency: "USD"  // All reports consolidate to USD
 
 ### `schema`
 
-PostgreSQL schema namespace for all Summa tables. Defaults to `"@summa-ledger/summa"`, which keeps all ledger tables isolated from your application's `public` schema.
+PostgreSQL schema namespace for all Summa tables. Defaults to `"summa"`, which keeps all ledger tables isolated from your application's `public` schema.
 
 ```ts
-schema: "@summa-ledger/summa"   // Default — tables in "@summa-ledger/summa"."account_balance", etc.
+schema: "summa"   // Default — tables in "summa"."account_balance", etc.
 schema: "ledger"  // Custom — tables in "ledger"."account_balance", etc.
 schema: "public"  // All tables in the public schema (not recommended)
 ```
 
-All table references are automatically qualified at runtime (e.g., `"@summa-ledger/summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
+All table references are automatically qualified at runtime (e.g., `"summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
 
 <Callout type="info" title="Schema naming">
-  The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"@summa-ledger/summa"`, `"ledger"`, `"fin_data"`.
+  The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"summa"`, `"ledger"`, `"fin_data"`.
 </Callout>
 
 <Callout type="warn" title="Changing the schema after deployment">
@@ -366,7 +366,7 @@ Each log line is emitted as single-line JSON, suitable for log aggregation (ELK,
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `level` | `"debug" \| "info" \| "warn" \| "error"` | `"info"` | Minimum log level to emit |
-| `service` | `string` | `"@summa-ledger/summa"` | Service name in structured output |
+| `service` | `string` | `"summa"` | Service name in structured output |
 | `redactKeys` | `string[]` | See below | Keys to redact from log data |
 
 #### PII Redaction

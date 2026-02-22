@@ -357,7 +357,7 @@ import { generatePartitionDDL, partitionMaintenance } from "@summa-ledger/summa/
 
 // 1. Generate migration DDL (run once)
 const ddl = generatePartitionDDL({
-  schema: "@summa-ledger/summa",
+  schema: "summa",
   tables: {
     entry_record: { type: "range", column: "created_at", interval: "monthly" },
     transaction_record: { type: "range", column: "created_at", interval: "monthly" },

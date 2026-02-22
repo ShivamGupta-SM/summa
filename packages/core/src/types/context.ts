@@ -45,7 +45,7 @@ export interface ResolvedSummaOptions {
 	functionalCurrency: string;
 	systemAccounts: Record<string, string>;
 	advanced: ResolvedAdvancedOptions;
-	/** PostgreSQL schema for all Summa tables. Default: "@summa-ledger/summa" */
+	/** PostgreSQL schema for all Summa tables. Default: "summa" */
 	schema: string;
 	/** Core worker configuration. All workers enabled by default. */
 	coreWorkers?: CoreWorkerOptions;

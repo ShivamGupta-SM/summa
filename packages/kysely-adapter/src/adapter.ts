@@ -108,10 +108,7 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 	};
 
 	const executor = createKyselyExecutor(db);
-	const methods = buildSqlAdapterMethods(
-		executor,
-		() => sharedOptions.schema ?? "@summa-ledger/summa",
-	);
+	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
 
 	return {
 		id: "kysely",
@@ -120,10 +117,7 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return db.transaction().execute(async (tx) => {
 				const txExecutor = createKyselyExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(
-					txExecutor,
-					() => sharedOptions.schema ?? "@summa-ledger/summa",
-				);
+				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
 				const txAdapter: SummaTransactionAdapter = {
 					id: "kysely",
 					...txMethods,

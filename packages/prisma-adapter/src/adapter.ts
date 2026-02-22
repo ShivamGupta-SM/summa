@@ -80,10 +80,7 @@ export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
 	};
 
 	const executor = createPrismaExecutor(prisma);
-	const methods = buildSqlAdapterMethods(
-		executor,
-		() => sharedOptions.schema ?? "@summa-ledger/summa",
-	);
+	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
 
 	return {
 		id: "prisma",
@@ -92,10 +89,7 @@ export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return prisma.$transaction(async (tx) => {
 				const txExecutor = createPrismaExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(
-					txExecutor,
-					() => sharedOptions.schema ?? "@summa-ledger/summa",
-				);
+				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
 				const txAdapter: SummaTransactionAdapter = {
 					id: "prisma",
 					...txMethods,

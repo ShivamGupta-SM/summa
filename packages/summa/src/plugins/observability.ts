@@ -17,7 +17,7 @@ import type {
 // =============================================================================
 
 export interface ObservabilityOptions {
-	/** Service name for tracing and metrics. Default: "@summa-ledger/summa" */
+	/** Service name for tracing and metrics. Default: "summa" */
 	serviceName?: string;
 	/** Enable request tracing via onRequest/onResponse hooks. Default: true */
 	tracing?: boolean;
@@ -113,7 +113,7 @@ function sanitizeMetricName(name: string): string {
 // =============================================================================
 
 export function observability(options?: ObservabilityOptions): SummaPlugin {
-	const serviceName = sanitizeMetricName(options?.serviceName ?? "@summa-ledger/summa");
+	const serviceName = sanitizeMetricName(options?.serviceName ?? "summa");
 	const tracingEnabled = options?.tracing !== false;
 	const metricsEnabled = options?.metrics !== false;
 	const traceHeader = options?.traceHeader ?? "traceparent";

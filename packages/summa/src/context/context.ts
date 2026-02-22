@@ -89,7 +89,7 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 	};
 
 	const defaultCurrency = options.currency ?? "USD";
-	const schema = options.schema ?? "@summa-ledger/summa";
+	const schema = options.schema ?? "summa";
 	const resolvedOptions: ResolvedSummaOptions = {
 		currency: defaultCurrency,
 		functionalCurrency: options.functionalCurrency ?? defaultCurrency,

@@ -15,7 +15,7 @@ import {
 	varchar,
 } from "drizzle-orm/pg-core";
 
-export const summaSchema = pgSchema("@summa-ledger/summa");
+export const summaSchema = pgSchema("summa");
 
 // =============================================================================
 // 0. LEDGER REGISTRY (Multi-tenancy)

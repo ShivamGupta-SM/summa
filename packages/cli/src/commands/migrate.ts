@@ -389,7 +389,7 @@ async function loadContext(command: Command, urlOption?: string): Promise<Loaded
 	const configFlag: string | undefined = parent?.opts().config;
 
 	let configDbUrl: string | undefined;
-	let schema = "@summa-ledger/summa";
+	let schema = "summa";
 	const config = await getConfig({ cwd, configPath: configFlag });
 	if (config?.options) {
 		const db = config.options.database;

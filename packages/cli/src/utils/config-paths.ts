@@ -5,7 +5,7 @@
 // user's summa config. Mirrors the better-auth approach: multiply base
 // filenames by common directory prefixes.
 
-const baseNames = ["summa.config", "@summa-ledger/summa", "ledger"];
+const baseNames = ["summa.config", "summa", "ledger"];
 
 const extensions = [".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs"];
 

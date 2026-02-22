@@ -7,21 +7,40 @@
 export type RawErrorCode = {
 	message: string;
 	status: number;
+	/**
+	 * Whether this error is transient (retrying may succeed).
+	 *
+	 * Inspired by TigerBeetle's `CreateTransferResult.transient()` which classifies
+	 * each error code as either transient (balance changes, account not yet created)
+	 * or deterministic (validation failures, flag conflicts).
+	 *
+	 * - `true`: Condition may change — client should retry with a NEW idempotency key.
+	 * - `false` (default): Condition is permanent — retrying will always fail.
+	 */
+	transient?: boolean;
 };
 
 export const BASE_ERROR_CODES = {
-	INSUFFICIENT_BALANCE: { message: "Insufficient balance", status: 400 },
-	ACCOUNT_FROZEN: { message: "Account is frozen", status: 403 },
-	ACCOUNT_CLOSED: { message: "Account is closed", status: 403 },
-	LIMIT_EXCEEDED: { message: "Transaction limit exceeded", status: 429 },
-	NOT_FOUND: { message: "Resource not found", status: 404 },
-	INVALID_ARGUMENT: { message: "Invalid argument", status: 400 },
-	DUPLICATE: { message: "Duplicate operation", status: 409 },
-	CONFLICT: { message: "Resource conflict", status: 409 },
-	INTERNAL: { message: "Internal error", status: 500 },
-	HOLD_EXPIRED: { message: "Hold has expired", status: 410 },
-	CHAIN_INTEGRITY_VIOLATION: { message: "Hash chain integrity violated", status: 500 },
-	RATE_LIMITED: { message: "Rate limit exceeded", status: 429 },
+	// Transient errors — condition may change, client should retry with a NEW idempotency key.
+	// Inspired by TigerBeetle's transient error classification.
+	INSUFFICIENT_BALANCE: { message: "Insufficient balance", status: 400, transient: true },
+	ACCOUNT_FROZEN: { message: "Account is frozen", status: 403, transient: true },
+	LIMIT_EXCEEDED: { message: "Transaction limit exceeded", status: 429, transient: true },
+	NOT_FOUND: { message: "Resource not found", status: 404, transient: true },
+	HOLD_EXPIRED: { message: "Hold has expired", status: 410, transient: true },
+	RATE_LIMITED: { message: "Rate limit exceeded", status: 429, transient: true },
+
+	// Deterministic errors — condition is permanent, retrying will always fail.
+	ACCOUNT_CLOSED: { message: "Account is closed", status: 403, transient: false },
+	INVALID_ARGUMENT: { message: "Invalid argument", status: 400, transient: false },
+	DUPLICATE: { message: "Duplicate operation", status: 409, transient: false },
+	CONFLICT: { message: "Resource conflict", status: 409, transient: false },
+	INTERNAL: { message: "Internal error", status: 500, transient: false },
+	CHAIN_INTEGRITY_VIOLATION: {
+		message: "Hash chain integrity violated",
+		status: 500,
+		transient: false,
+	},
 } as const satisfies Record<string, RawErrorCode>;
 
 export type BaseErrorCode = keyof typeof BASE_ERROR_CODES;

@@ -23,7 +23,7 @@ const summa = createSumma({
 
 ```ts
 observability({
-  serviceName: "ledger",           // Metric prefix (default: "@summa-ledger/summa")
+  serviceName: "ledger",           // Metric prefix (default: "summa")
   tracing: true,                   // Enable request tracing (default: true)
   metrics: true,                   // Enable /metrics endpoint (default: true)
   traceHeader: "traceparent",      // Header for trace ID propagation (default: "traceparent")
@@ -32,7 +32,7 @@ observability({
 
 <TypeTable
   type={{
-    serviceName: { type: "string", description: "Service name for metric prefixes.", default: '"@summa-ledger/summa"' },
+    serviceName: { type: "string", description: "Service name for metric prefixes.", default: '"summa"' },
     tracing: { type: "boolean", description: "Enable request tracing via onRequest/onResponse hooks.", default: "true" },
     metrics: { type: "boolean", description: "Enable Prometheus-style /metrics endpoint.", default: "true" },
     traceHeader: { type: "string", description: "HTTP header for trace ID propagation.", default: '"traceparent"' },

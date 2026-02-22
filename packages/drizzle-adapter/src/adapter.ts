@@ -116,10 +116,7 @@ export function drizzleAdapter(db: any): SummaAdapter {
 	};
 
 	const executor = createDrizzleExecutor(db);
-	const methods = buildSqlAdapterMethods(
-		executor,
-		() => sharedOptions.schema ?? "@summa-ledger/summa",
-	);
+	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
 
 	return {
 		id: "drizzle",
@@ -129,10 +126,7 @@ export function drizzleAdapter(db: any): SummaAdapter {
 			// biome-ignore lint/suspicious/noExplicitAny: Drizzle transaction type varies by driver
 			return db.transaction(async (tx: any) => {
 				const txExecutor = createDrizzleExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(
-					txExecutor,
-					() => sharedOptions.schema ?? "@summa-ledger/summa",
-				);
+				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
 				const txAdapter: SummaTransactionAdapter = {
 					id: "drizzle",
 					...txMethods,

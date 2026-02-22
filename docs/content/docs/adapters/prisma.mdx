@@ -54,14 +54,14 @@ model AccountBalance {
   // ... more fields
 
   @@map("account_balance")
-  @@schema("@summa-ledger/summa")
+  @@schema("summa")
   @@index([holderId], name: "account_balance_holder_id_idx")
 }
 
 // ... all other models
 ```
 
-When using a non-public schema (default: `"@summa-ledger/summa"`), the generated Prisma models include `@@schema("@summa-ledger/summa")` and the datasource block includes `schemas = ["@summa-ledger/summa"]`.
+When using a non-public schema (default: `"summa"`), the generated Prisma models include `@@schema("summa")` and the datasource block includes `schemas = ["summa"]`.
 
 ## Migrations
 

@@ -37,12 +37,12 @@ npx summa generate --adapter drizzle --out src/db/summa-schema.ts
 
 This outputs schema-aware table definitions you can import alongside your own Drizzle schema. If you have plugins configured in your `summa.config.ts`, the generated schema will include their tables too.
 
-When `schema` is set to a non-public value (default: `"@summa-ledger/summa"`), the generated file uses `pgSchema()` to namespace all tables:
+When `schema` is set to a non-public value (default: `"summa"`), the generated file uses `pgSchema()` to namespace all tables:
 
 ```ts title="src/db/summa-schema.ts (generated)"
 import { pgSchema, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const summaSchema = pgSchema("@summa-ledger/summa");
+export const summaSchema = pgSchema("summa");
 
 export const accountBalance = summaSchema.table("account_balance", {
   id: uuid("id").primaryKey(),

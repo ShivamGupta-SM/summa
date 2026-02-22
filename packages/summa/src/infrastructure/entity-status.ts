@@ -52,7 +52,7 @@ export async function getEntityStatus(
 	entityType: string,
 	entityId: string,
 ): Promise<EntityStatus | null> {
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 	const rows = await tx.raw<{
 		status: string;
 		previous_status: string | null;
@@ -95,7 +95,7 @@ export async function getEntityStatus(
  */
 export async function transitionEntityStatus(params: TransitionParams): Promise<EntityStatus> {
 	const { tx, entityType, entityId, status, reason, metadata } = params;
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 
 	// Get current status for validation and previousStatus tracking
 	const current = await getEntityStatus(tx, entityType, entityId);
@@ -181,7 +181,7 @@ export async function getEntityStatusHistory(
 	entityType: string,
 	entityId: string,
 ): Promise<EntityStatus[]> {
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 	const rows = await tx.raw<{
 		status: string;
 		previous_status: string | null;

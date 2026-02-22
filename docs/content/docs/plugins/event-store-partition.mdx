@@ -34,7 +34,7 @@ eventStorePartition({
   interval: "monthly",        // Partition interval: "monthly" or "weekly" (default: "monthly")
   createAhead: 3,             // Create partitions this many intervals ahead (default: 3)
   retainPartitions: null,     // Detach after N intervals, null = never detach (default: null)
-  schema: "@summa-ledger/summa",            // PostgreSQL schema name (default: from config)
+  schema: "summa",            // PostgreSQL schema name (default: from config)
 })
 ```
 

@@ -469,7 +469,7 @@ async function reverseAccountEntries(
 	amount: number,
 	updateDenormalizedCache = false,
 ): Promise<void> {
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 
 	// User account entries are sequential (SELECT+INSERT+UPDATE)
 	if (original.destination_account_id) {

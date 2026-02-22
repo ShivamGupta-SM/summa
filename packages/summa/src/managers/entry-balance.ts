@@ -123,7 +123,7 @@ export async function insertEntryAndUpdateBalance(
 	params: InsertEntryParams,
 ): Promise<InsertEntryResult> {
 	const { tx, transactionId, entryType, amount, currency, isHotAccount } = params;
-	const t = createTableResolver(params.tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(params.tx.options?.schema ?? "summa");
 
 	// --- HOT ACCOUNT PATH: just insert the entry, no balance logic ---
 	if (isHotAccount) {

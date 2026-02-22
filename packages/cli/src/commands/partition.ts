@@ -28,7 +28,7 @@ function generateSubCommand(): Command {
 	return new Command("generate")
 		.description("Generate SQL for partitioning ledger_event table")
 		.option("--interval <interval>", "Partition interval (monthly|weekly)", "monthly")
-		.option("--schema <schema>", "PostgreSQL schema name", "@summa-ledger/summa")
+		.option("--schema <schema>", "PostgreSQL schema name", "summa")
 		.option("-o, --output <path>", "Output file path (default: auto-generated)")
 		.action(async (options: { interval: string; schema: string; output?: string }) => {
 			const parent = partitionCommand.parent;
@@ -182,7 +182,7 @@ function statusSubCommand(): Command {
 	return new Command("status")
 		.description("Show current partition status for ledger_event")
 		.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
-		.option("--schema <schema>", "PostgreSQL schema name", "@summa-ledger/summa")
+		.option("--schema <schema>", "PostgreSQL schema name", "summa")
 		.action(async (options: { url?: string; schema?: string }) => {
 			const parent = partitionCommand.parent;
 			const cwd: string = parent?.opts().cwd ?? process.cwd();
@@ -191,7 +191,7 @@ function statusSubCommand(): Command {
 			p.intro(pc.bgCyan(pc.black(" summa partition status ")));
 
 			let configDbUrl: string | undefined;
-			let schema = options.schema ?? "@summa-ledger/summa";
+			let schema = options.schema ?? "summa";
 			const config = await getConfig({ cwd, configPath: configFlag });
 			if (config?.options) {
 				const db = config.options.database;

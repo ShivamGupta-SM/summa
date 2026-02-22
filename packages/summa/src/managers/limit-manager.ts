@@ -211,7 +211,7 @@ export async function enforceLimitsWithAccountId(
 		return;
 	}
 
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 
 	const limits = await tx.raw<RawLimitRow>(
 		`SELECT * FROM ${t("account_limit")}
@@ -334,7 +334,7 @@ export async function logTransactionInTx(
 		);
 	}
 
-	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
+	const t = createTableResolver(tx.options?.schema ?? "summa");
 	await tx.raw(
 		`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
      VALUES ($1, $2, $3, $4, $5, $6)`,
@@ -562,7 +562,7 @@ async function getUsageBoth(
 	category?: string,
 	t?: ReturnType<typeof createTableResolver>,
 ): Promise<{ daily: number; monthly: number }> {
-	if (!t) t = createTableResolver("@summa-ledger/summa");
+	if (!t) t = createTableResolver("summa");
 	// Build dynamic query
 	const conditions: string[] = ["account_id = $1", "created_at >= $2"];
 	const params: unknown[] = [accountId, startOfMonth.toISOString()];

@@ -77,7 +77,7 @@ export const doctorCommand = new Command("doctor")
 		// Try loading the config
 		let _configLoaded = false;
 		let configDbUrl: string | undefined;
-		let schema = "@summa-ledger/summa";
+		let schema = "summa";
 
 		if (configFile) {
 			const config = await getConfig({ cwd, configPath: configFlag });

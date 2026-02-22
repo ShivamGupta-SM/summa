@@ -29,12 +29,12 @@ try {
 }
 
 const BANNER = `
-  ${pc.bold(pc.cyan("@summa-ledger/summa"))} ${pc.dim(`v${cliVersion}`)}
+  ${pc.bold(pc.cyan("summa"))} ${pc.dim(`v${cliVersion}`)}
   ${pc.dim("Event-sourced double-entry ledger")}
 `;
 
 const program = new Command()
-	.name("@summa-ledger/summa")
+	.name("summa")
 	.description("CLI for summa — event-sourced double-entry ledger")
 	.version(cliVersion, "-v, --version")
 	.option("--cwd <dir>", "Working directory", process.cwd())

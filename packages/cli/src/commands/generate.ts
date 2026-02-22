@@ -321,7 +321,7 @@ export const generateCommand = new Command("generate")
 
 		// Try to load config for plugin schemas and schema setting
 		const config = await getConfig({ cwd, configPath });
-		const schema = (config?.options?.schema as string) ?? "@summa-ledger/summa";
+		const schema = (config?.options?.schema as string) ?? "summa";
 
 		// Import getSummaTables dynamically (resolved at runtime, not statically typed)
 		let tables: Record<string, TableDefinition>;

@@ -97,7 +97,7 @@ See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) f
 
 #### Schema Namespace
 
-By default, Summa creates all tables in the `"@summa-ledger/summa"` PostgreSQL schema, keeping them isolated from your application's `public` schema. You can verify this after migration:
+By default, Summa creates all tables in the `"summa"` PostgreSQL schema, keeping them isolated from your application's `public` schema. You can verify this after migration:
 
 ```sql
 \dt summa.*          -- List all Summa tables

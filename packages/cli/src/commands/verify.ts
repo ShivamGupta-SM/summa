@@ -45,7 +45,7 @@ export const verifyCommand = new Command("verify")
 
 			// Try loading config for DATABASE_URL extraction and schema
 			let configDbUrl: string | undefined;
-			let schema = "@summa-ledger/summa";
+			let schema = "summa";
 			const config = await getConfig({ cwd, configPath: configFlag });
 			if (config?.options) {
 				const db = config.options.database;
