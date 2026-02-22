@@ -40,7 +40,7 @@ jobs:
         if: steps.changesets.outputs.published == 'true'
         run: |
           echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" > .npmrc
-          echo "@summa:registry=https://npm.pkg.github.com" >> .npmrc
+          echo "@summa-ledger:registry=https://npm.pkg.github.com" >> .npmrc
 
           for pkg in packages/*/; do
             if [ -f "$pkg/package.json" ] && [ -f "$pkg/dist/index.mjs" ]; then
