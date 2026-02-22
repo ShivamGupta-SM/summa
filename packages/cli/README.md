@@ -1,11 +1,11 @@
-# @summa/cli
+# @summa-ledger/cli
 
 Command-line interface for the Summa ledger.
 
 ## Installation
 
 ```bash
-npm install -g @summa/cli
+npm install -g @summa-ledger/cli
 ```
 
 ## Usage

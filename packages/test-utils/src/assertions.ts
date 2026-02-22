@@ -1,4 +1,4 @@
-import type { Summa } from "summa";
+import type { Summa } from "@summa-ledger/summa";
 
 /**
  * Assert that the fundamental double-entry invariant holds:

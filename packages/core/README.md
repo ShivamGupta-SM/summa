@@ -1,24 +1,24 @@
-# @summa/core
+# @summa-ledger/core
 
 Shared types, error system, and utilities for the Summa ledger ecosystem.
 
 ## Installation
 
 ```bash
-npm install @summa/core
+npm install @summa-ledger/core
 ```
 
 ## Usage
 
 ```ts
-import { SummaError, createErrorCodes } from "@summa/core";
-import type { Account, LedgerTransaction, SummaOptions } from "@summa/core";
+import { SummaError, createErrorCodes } from "@summa-ledger/core";
+import type { Account, LedgerTransaction, SummaOptions } from "@summa-ledger/core";
 ```
 
 ### Error System
 
 ```ts
-import { SummaError, BASE_ERROR_CODES } from "@summa/core";
+import { SummaError, BASE_ERROR_CODES } from "@summa-ledger/core";
 
 throw new SummaError("ACCOUNT_NOT_FOUND", "No account for holder");
 ```
@@ -27,11 +27,11 @@ throw new SummaError("ACCOUNT_NOT_FOUND", "No account for holder");
 
 | Export             | Description                          |
 | ------------------ | ------------------------------------ |
-| `@summa/core`      | Core types and error classes         |
-| `@summa/core/db`   | Database adapter interfaces, `SqlExecutor`, pool types, read replicas |
-| `@summa/core/error` | Error codes and `SummaError`        |
-| `@summa/core/logger` | Logger interface                   |
-| `@summa/core/utils` | Internal utilities                  |
+| `@summa-ledger/core`      | Core types and error classes         |
+| `@summa-ledger/core/db`   | Database adapter interfaces, `SqlExecutor`, pool types, read replicas |
+| `@summa-ledger/core/error` | Error codes and `SummaError`        |
+| `@summa-ledger/core/logger` | Logger interface                   |
+| `@summa-ledger/core/utils` | Internal utilities                  |
 
 ## Documentation
 

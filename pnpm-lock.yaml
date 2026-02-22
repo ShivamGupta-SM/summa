@@ -156,13 +156,13 @@ importers:
 
   examples/basic:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@summa/memory-adapter':
+      '@summa-ledger/memory-adapter':
         specifier: workspace:*
         version: link:../../packages/memory-adapter
-      summa:
+      '@summa-ledger/summa':
         specifier: workspace:*
         version: link:../../packages/summa
     devDependencies:
@@ -178,10 +178,10 @@ importers:
       '@clack/prompts':
         specifier: ^1.0.1
         version: 1.0.1
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
-      '@summa/telemetry':
+      '@summa-ledger/telemetry':
         specifier: workspace:*
         version: link:../telemetry
       c12:
@@ -227,7 +227,7 @@ importers:
 
   packages/client:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
       react:
@@ -286,7 +286,7 @@ importers:
 
   packages/drizzle-adapter:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
       pg:
@@ -314,13 +314,16 @@ importers:
 
   packages/integration-tests:
     devDependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
-      '@summa/drizzle-adapter':
+      '@summa-ledger/drizzle-adapter':
         specifier: workspace:*
         version: link:../drizzle-adapter
-      '@summa/test-utils':
+      '@summa-ledger/summa':
+        specifier: workspace:*
+        version: link:../summa
+      '@summa-ledger/test-utils':
         specifier: workspace:*
         version: link:../test-utils
       drizzle-orm:
@@ -329,9 +332,6 @@ importers:
       pg:
         specifier: ^8.16.0
         version: 8.18.0
-      summa:
-        specifier: workspace:*
-        version: link:../summa
       typescript:
         specifier: 'catalog:'
         version: 5.9.3
@@ -341,7 +341,7 @@ importers:
 
   packages/kysely-adapter:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -366,7 +366,7 @@ importers:
 
   packages/memory-adapter:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -388,7 +388,7 @@ importers:
 
   packages/message-queue:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -416,7 +416,7 @@ importers:
 
   packages/prisma-adapter:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -441,10 +441,10 @@ importers:
 
   packages/projections:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
-      '@summa/message-queue':
+      '@summa-ledger/message-queue':
         specifier: workspace:*
         version: link:../message-queue
     devDependencies:
@@ -469,7 +469,7 @@ importers:
 
   packages/redis-storage:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -497,7 +497,7 @@ importers:
 
   packages/summa:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
       pdfkit:
@@ -553,10 +553,10 @@ importers:
 
   packages/test-utils:
     dependencies:
-      '@summa/core':
+      '@summa-ledger/core':
         specifier: workspace:*
         version: link:../core
-      summa:
+      '@summa-ledger/summa':
         specifier: workspace:*
         version: link:../summa
     devDependencies:
@@ -7156,14 +7156,6 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
-  '@vitest/mocker@3.2.4(vite@7.3.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))':
-    dependencies:
-      '@vitest/spy': 3.2.4
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-    optionalDependencies:
-      vite: 7.3.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2)
-
   '@vitest/mocker@3.2.4(vite@7.3.1(@types/node@25.3.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))':
     dependencies:
       '@vitest/spy': 3.2.4
@@ -11074,7 +11066,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.4
-      '@vitest/mocker': 3.2.4(vite@7.3.1(@types/node@22.19.11)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))
+      '@vitest/mocker': 3.2.4(vite@7.3.1(@types/node@25.3.0)(jiti@2.6.1)(lightningcss@1.31.1)(tsx@4.21.0)(yaml@2.8.2))
       '@vitest/pretty-format': 3.2.4
       '@vitest/runner': 3.2.4
       '@vitest/snapshot': 3.2.4

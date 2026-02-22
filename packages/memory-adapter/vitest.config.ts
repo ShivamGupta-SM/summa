@@ -8,7 +8,7 @@ export default defineConfig({
 	},
 	resolve: {
 		alias: {
-			"@summa/core": path.resolve(__dirname, "../core/src/index.ts"),
+			"@summa-ledger/core": path.resolve(__dirname, "../core/src/index.ts"),
 		},
 	},
 });

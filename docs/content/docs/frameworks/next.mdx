@@ -7,7 +7,7 @@ icon: Nextjs
 ## Installation
 
 ```bash
-pnpm add summa
+pnpm add @summa-ledger/summa
 ```
 
 No additional framework package needed — Next.js is already your app framework.
@@ -17,7 +17,7 @@ No additional framework package needed — Next.js is already your app framework
 Create a catch-all API route:
 
 ```ts title="app/api/ledger/[...path]/route.ts"
-import { createSummaNextHandler } from "summa/api/next";
+import { createSummaNextHandler } from "@summa-ledger/summa/api/next";
 import { summa } from "@/lib/summa";
 
 const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
@@ -30,8 +30,8 @@ export { GET, POST, PUT, PATCH, DELETE };
 Create your Summa instance in a shared module:
 
 ```ts title="lib/summa.ts"
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -131,8 +131,8 @@ export function middleware(request: NextRequest) {
 ## Rate Limiting
 
 ```ts
-import { createSummaNextHandler } from "summa/api/next";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaNextHandler } from "@summa-ledger/summa/api/next";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
   basePath: "/api/ledger",
@@ -154,9 +154,9 @@ const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
 ## Full Production Example
 
 ```ts title="lib/summa.ts"
-import { createSumma } from "summa";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
@@ -175,8 +175,8 @@ export const summa = createSumma({
 ```
 
 ```ts title="app/api/ledger/[...path]/route.ts"
-import { createSummaNextHandler } from "summa/api/next";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaNextHandler } from "@summa-ledger/summa/api/next";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 import { summa } from "@/lib/summa";
 
 const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {

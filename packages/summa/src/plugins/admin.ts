@@ -10,8 +10,8 @@ import type {
 	PluginEndpoint,
 	SummaContext,
 	SummaPlugin,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import * as accounts from "../managers/account-manager.js";
 import * as holds from "../managers/hold-manager.js";
 import * as transactions from "../managers/transaction-manager.js";

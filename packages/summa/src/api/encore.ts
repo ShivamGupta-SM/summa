@@ -15,7 +15,7 @@ import type { ApiHandlerOptions } from "./handler.js";
  * ```ts
  * // ledger/ledger.ts
  * import { api } from "encore.dev/api";
- * import { createSummaEncore } from "summa/api/encore";
+ * import { createSummaEncore } from "@summa-ledger/summa/api/encore";
  *
  * const handler = createSummaEncore(summa, { basePath: "/ledger" });
  *

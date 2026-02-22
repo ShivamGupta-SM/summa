@@ -7,14 +7,14 @@ icon: Kysely
 ## Installation
 
 ```bash
-pnpm add @summa/kysely-adapter kysely pg
+pnpm add @summa-ledger/kysely-adapter kysely pg
 ```
 
 ## Setup
 
 ```ts
-import { kyselyAdapter } from "@summa/kysely-adapter";
-import { createSumma } from "summa";
+import { kyselyAdapter } from "@summa-ledger/kysely-adapter";
+import { createSumma } from "@summa-ledger/summa";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
 
@@ -62,7 +62,7 @@ export interface TransactionRecordTable {
 
 // ... all other table interfaces
 
-// Keys are schema-qualified when using a non-public schema (default: "summa")
+// Keys are schema-qualified when using a non-public schema (default: "@summa-ledger/summa")
 export interface Database {
   "summa.account_balance": AccountBalanceTable;
   "summa.transaction_record": TransactionRecordTable;
@@ -129,7 +129,7 @@ import { Kysely, PostgresDialect } from "kysely";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/kysely-adapter";
+} from "@summa-ledger/kysely-adapter";
 
 const pool = new Pool({
   ...RECOMMENDED_POOL_CONFIG,
@@ -189,7 +189,7 @@ You can also configure the pool manually without `createPooledAdapter`:
 ```ts
 import { Pool } from "pg";
 import { Kysely, PostgresDialect } from "kysely";
-import { kyselyAdapter } from "@summa/kysely-adapter";
+import { kyselyAdapter } from "@summa-ledger/kysely-adapter";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -259,13 +259,13 @@ Kysely is a great choice when you want:
 ## Full Example
 
 ```ts
-import { createSumma } from "summa";
+import { createSumma } from "@summa-ledger/summa";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/kysely-adapter";
-import { createReadReplicaAdapter } from "@summa/core/db";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+} from "@summa-ledger/kysely-adapter";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
 

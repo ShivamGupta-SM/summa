@@ -18,9 +18,9 @@ import type {
 	SummaContext,
 	SummaPlugin,
 	TableDefinition,
-} from "@summa/core";
-import { SummaError, validatePluginOptions } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { SummaError, validatePluginOptions } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
@@ -71,7 +71,7 @@ export interface WebhookOptions {
 // TYPES — Outbox
 // =============================================================================
 
-/** Minimal MessageBus interface — avoids hard dependency on @summa/message-queue. */
+/** Minimal MessageBus interface — avoids hard dependency on @summa-ledger/message-queue. */
 export interface MessageBusLike {
 	publish(
 		topic: string,
@@ -88,7 +88,7 @@ export interface StreamPublisherOptions {
 export interface OutboxOptions {
 	/** User-provided publisher function. Receives topic name and payload. */
 	publisher?: (topic: string, payload: Record<string, unknown>) => Promise<void>;
-	/** MessageBus instance (e.g. from @summa/message-queue). Auto-creates a stream publisher. */
+	/** MessageBus instance (e.g. from @summa-ledger/message-queue). Auto-creates a stream publisher. */
 	messageQueue?: MessageBusLike;
 	/** Options for the auto-created stream publisher when using messageQueue. */
 	streamPublisherOptions?: StreamPublisherOptions;
@@ -777,8 +777,8 @@ export async function getOutboxStats(ctx: SummaContext): Promise<OutboxStats> {
  *
  * @example
  * ```ts
- * import { createRedisStreamsBus } from "@summa/message-queue";
- * import { outbox, createStreamPublisher } from "summa/plugins";
+ * import { createRedisStreamsBus } from "@summa-ledger/message-queue";
+ * import { outbox, createStreamPublisher } from "@summa-ledger/summa/plugins";
  *
  * const bus = createRedisStreamsBus({ client: redis });
  * const summa = createSumma({

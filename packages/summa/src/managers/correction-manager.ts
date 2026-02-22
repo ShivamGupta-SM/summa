@@ -13,9 +13,9 @@ import type {
 	LedgerTransaction,
 	SummaContext,
 	SummaTransactionAdapter,
-} from "@summa/core";
-import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { runAfterOperationHooks } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
@@ -469,7 +469,7 @@ async function reverseAccountEntries(
 	amount: number,
 	updateDenormalizedCache = false,
 ): Promise<void> {
-	const t = createTableResolver(tx.options?.schema ?? "summa");
+	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
 
 	// User account entries are sequential (SELECT+INSERT+UPDATE)
 	if (original.destination_account_id) {

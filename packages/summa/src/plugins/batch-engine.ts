@@ -13,14 +13,14 @@
 // see the same API surface as non-batched mode.
 
 import { randomUUID } from "node:crypto";
-import type { LedgerTransaction, SummaContext, SummaPlugin } from "@summa/core";
+import type { LedgerTransaction, SummaContext, SummaPlugin } from "@summa-ledger/core";
 import {
 	computeBalanceChecksum,
 	computeHash,
 	SummaError,
 	validatePluginOptions,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import { resolveAccountForUpdate } from "../managers/account-manager.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "../managers/idempotency.js";
@@ -58,8 +58,8 @@ export interface BatchableTransaction {
 	metadata: Record<string, unknown>;
 	/** System account identifier (e.g., "@World") */
 	systemAccount: string;
-	/** Allow overdraft (debit only) */
-	allowOverdraft: boolean;
+	/** @deprecated Ignored — overdraft is now controlled only at account level via allowOverdraft + overdraftLimit */
+	allowOverdraft?: boolean;
 	idempotencyKey?: string;
 	resolve: (result: LedgerTransaction) => void;
 	reject: (error: Error) => void;
@@ -282,14 +282,25 @@ export class TransactionBatchEngine {
 					const balanceAfter =
 						item.type === "credit" ? balanceBefore + item.amount : balanceBefore - item.amount;
 
-					// Check sufficient balance for debits
-					if (item.type === "debit" && !item.allowOverdraft && !account.allow_overdraft) {
+					// Check sufficient balance for debits (account-level only)
+					if (item.type === "debit") {
 						const availableBalance = balanceBefore - Number(account.pending_debit);
-						if (availableBalance < item.amount) {
+						if (!account.allow_overdraft && availableBalance < item.amount) {
 							item.reject(
 								SummaError.insufficientBalance("Insufficient balance for this transaction"),
 							);
 							continue;
+						}
+						if (account.allow_overdraft) {
+							const overdraftLimit = Number(account.overdraft_limit ?? 0);
+							if (overdraftLimit > 0 && availableBalance - item.amount < -overdraftLimit) {
+								item.reject(
+									SummaError.insufficientBalance(
+										`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
+									),
+								);
+								continue;
+							}
 						}
 					}
 

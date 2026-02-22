@@ -11,8 +11,8 @@ The data retention plugin manages data lifecycle for plugin-owned tables. Core c
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { dataRetention } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { dataRetention } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -51,7 +51,7 @@ Only configured policies are enforced — if a retention period is not set, that
 A single background worker runs on the configured `interval` (default: every 6 hours) and executes DELETE queries for each configured retention policy:
 
 ```sql
-DELETE FROM "summa"."rate_limit_log"
+DELETE FROM "@summa-ledger/summa"."rate_limit_log"
 WHERE created_at < NOW() - INTERVAL '30 days'
 ```
 

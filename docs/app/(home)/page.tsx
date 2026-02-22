@@ -1144,9 +1144,9 @@ export default function HomePage() {
 				</div>
 			</Section>
 
-			{/* CTA — Formance-inspired dark section with interactive grid */}
+			{/* CTA — Dark section with interactive grid */}
 			<section
-				className="relative overflow-hidden min-h-50 sm:min-h-62.5 md:min-h-100 bg-surface-deep"
+				className="relative overflow-hidden bg-surface-deep"
 				id="cta"
 				style={{
 					"--foreground": "oklch(0.93 0 0)",
@@ -1157,41 +1157,69 @@ export default function HomePage() {
 					"--accent": "oklch(0.22 0 0)",
 				} as React.CSSProperties}
 			>
-				{/* Interactive grid of lines that follow the cursor */}
 				<InteractiveGrid />
 
 				{/* Radial fade so text is readable over the grid */}
-				<div className="pointer-events-none absolute inset-0 z-2 bg-[radial-gradient(ellipse_50%_50%_at_50%_50%,var(--surface-deep)_0%,transparent_70%)]" style={{ opacity: 0.85 }} />
+				<div className="pointer-events-none absolute inset-0 z-2 bg-[radial-gradient(ellipse_60%_60%_at_50%_50%,var(--surface-deep)_0%,transparent_75%)]" style={{ opacity: 0.9 }} />
 
-				<div className="max-w-400 mx-auto px-4 sm:px-6 lg:px-12 py-16 sm:py-24 lg:py-44 relative z-10">
+				<div className="max-w-400 mx-auto px-4 sm:px-6 lg:px-12 py-24 sm:py-36 lg:py-48 relative z-10">
+					{/* Two-row layout: headline row + action row */}
 					<AnimateIn>
-						<div className="flex flex-col items-center text-center gap-6">
-							<p className="text-xs font-pixel text-brand tracking-widest uppercase">
-								Start building today
-							</p>
-							<h2 className="max-w-2xl text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tighter text-foreground">
-								Stop fighting your ledger.
-							</h2>
-							<p className="text-muted-foreground text-base md:text-lg max-w-md">
-								Ship immutable, append-only financial infrastructure with
-								Merkle proofs and double-entry integrity — in an afternoon.
-							</p>
-							<div className="flex flex-col sm:flex-row items-center gap-3 mt-4">
-								<Link
-									href="/docs"
-									className="group inline-flex items-center justify-center h-10 px-5 py-2 text-sm font-medium uppercase tracking-widest bg-brand text-primary-foreground hover:bg-brand/90 transition-colors"
-								>
-									Read the Docs
-									<ArrowRight className="size-3.5 ml-2 group-hover:translate-x-0.5 transition-transform" />
-								</Link>
-								<Link
-									href="https://github.com/summa-ledger/summa"
-									target="_blank"
-									rel="noopener noreferrer"
-									className="inline-flex items-center justify-center h-10 px-5 py-2 text-sm font-medium uppercase tracking-widest border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-								>
-									View on GitHub
-								</Link>
+						<div className="flex flex-col items-center gap-16 sm:gap-20">
+
+							{/* Top: headline + description */}
+							<div className="flex flex-col items-center text-center gap-5">
+								<p className="text-xs font-pixel text-brand tracking-widest uppercase">
+									Open Source &middot; MIT Licensed
+								</p>
+								<h2 className="max-w-3xl text-3xl sm:text-4xl md:text-5xl lg:text-6xl font-semibold tracking-tighter text-foreground leading-[1.1]">
+									Your ledger should be the last thing you worry about.
+								</h2>
+								<p className="text-muted-foreground text-base md:text-lg max-w-xl leading-relaxed">
+									Double-entry bookkeeping, Merkle-proofed audit trails, overdraft controls, multi-currency, and 34 plugins — all in a single <code className="text-[0.9em] font-code text-foreground/80">npm&nbsp;install</code>.
+								</p>
+							</div>
+
+							{/* Bottom: terminal + buttons side-by-side on desktop, stacked on mobile */}
+							<div className="flex flex-col sm:flex-row items-center gap-4 w-full max-w-lg">
+								{/* Terminal install */}
+								<div className="relative flex items-center w-full sm:flex-1 border border-[oklch(0.25_0_0)] bg-[oklch(0.09_0_0)] rounded-lg overflow-hidden">
+									<GradientBG className="w-full flex items-center gap-3 px-4 py-3">
+										<p className="text-[13px] sm:text-[14px] font-code font-normal text-[#e1e1e1] antialiased">
+											<span className="text-muted-foreground select-none">$&nbsp;</span>
+											<span className="text-[#e1e1e1]">npm i </span>
+											<span className="relative text-[#79c0ff]">
+												summa
+												<span className="absolute h-2 bg-linear-to-tr from-blue-400/20 to-violet-400/10 blur-2xl w-full top-0 left-2" />
+											</span>
+										</p>
+									</GradientBG>
+								</div>
+
+								{/* Divider */}
+								<span className="hidden sm:block text-muted-foreground/40 text-xs font-pixel select-none">or</span>
+
+								{/* Buttons */}
+								<div className="flex items-center gap-3">
+									<Link
+										href="/docs"
+										className="group inline-flex items-center justify-center h-10 px-5 py-2 text-sm font-medium uppercase tracking-widest bg-brand text-primary-foreground hover:bg-brand/90 transition-colors whitespace-nowrap"
+									>
+										Get Started
+										<ArrowRight className="size-3.5 ml-2 group-hover:translate-x-0.5 transition-transform" />
+									</Link>
+									<Link
+										href="https://github.com/summa-ledger/summa"
+										target="_blank"
+										rel="noopener noreferrer"
+										className="inline-flex items-center justify-center size-10 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+										aria-label="Star on GitHub"
+									>
+										<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 496 512" aria-hidden="true">
+											<path fill="currentColor" d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6c-3.3.3-5.6-1.3-5.6-3.6c0-2 2.3-3.6 5.2-3.6c3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9c2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9c.3 2 2.9 3.3 5.9 2.6c2.9-.7 4.9-2.6 4.6-4.6c-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2c12.8 2.3 17.3-5.6 17.3-12.1c0-6.2-.3-40.4-.3-61.4c0 0-70 15-84.7-29.8c0 0-11.4-29.1-27.8-36.6c0 0-22.9-15.7 1.6-15.4c0 0 24.9 2 38.6 25.8c21.9 38.6 58.6 27.5 72.9 20.9c2.3-16 8.8-27.1 16-33.7c-55.9-6.2-112.3-14.3-112.3-110.5c0-27.5 7.6-41.3 23.6-58.9c-2.6-6.5-11.1-33.3 2.6-67.9c20.9-6.5 69 27 69 27c20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27c13.7 34.7 5.2 61.4 2.6 67.9c16 17.7 25.8 31.5 25.8 58.9c0 96.5-58.9 104.2-114.8 110.5c9.2 7.9 17 22.9 17 46.4c0 33.7-.3 75.4-.3 83.6c0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252C496 113.3 383.5 8 244.8 8" />
+										</svg>
+									</Link>
+								</div>
 							</div>
 						</div>
 					</AnimateIn>

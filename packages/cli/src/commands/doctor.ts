@@ -42,7 +42,7 @@ export const doctorCommand = new Command("doctor")
 
 		// Check if summa is installed
 		try {
-			await import("summa/db" as string);
+			await import("@summa-ledger/summa/db" as string);
 			p.log.success(`  summa:           ${pc.green("installed")}`);
 			passed++;
 		} catch {
@@ -77,7 +77,7 @@ export const doctorCommand = new Command("doctor")
 		// Try loading the config
 		let _configLoaded = false;
 		let configDbUrl: string | undefined;
-		let schema = "summa";
+		let schema = "@summa-ledger/summa";
 
 		if (configFile) {
 			const config = await getConfig({ cwd, configPath: configFlag });

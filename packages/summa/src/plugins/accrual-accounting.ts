@@ -4,9 +4,14 @@
 // Recognize revenue/expense over time via scheduled journal entries.
 // Example: 12L annual insurance paid in Jan -> 1L/month expense over 12 months.
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 import { journalEntry } from "../managers/journal-manager.js";
 

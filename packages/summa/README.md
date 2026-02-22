@@ -5,14 +5,14 @@ Event-sourced double-entry financial ledger for TypeScript.
 ## Installation
 
 ```bash
-npm install summa
+npm install @summa-ledger/summa
 ```
 
 ## Usage
 
 ```ts
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 
 const summa = createSumma({
   database: drizzleAdapter(db),

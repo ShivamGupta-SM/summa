@@ -9,7 +9,7 @@ icon: ExclamationTriangle
 All Summa errors extend `SummaError` and include a typed error code, HTTP status, and descriptive message.
 
 ```ts
-import { SummaError } from "summa/error";
+import { SummaError } from "@summa-ledger/summa/error";
 
 try {
   await summa.transactions.transfer({
@@ -132,8 +132,8 @@ Plugins can declare additional error codes via `$ERROR_CODES`. These are merged 
 
 ```ts
 // Error class
-import { SummaError } from "summa/error";
+import { SummaError } from "@summa-ledger/summa/error";
 
 // Error code constants
-import { BASE_ERROR_CODES } from "summa/error";
+import { BASE_ERROR_CODES } from "@summa-ledger/summa/error";
 ```

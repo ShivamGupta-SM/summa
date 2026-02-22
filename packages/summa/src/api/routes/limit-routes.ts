@@ -2,7 +2,7 @@
 // LIMIT ROUTES
 // =============================================================================
 
-import type { LimitType } from "@summa/core";
+import type { LimitType } from "@summa-ledger/core";
 import type { Summa } from "../../summa/base.js";
 import type { Route } from "../handler.js";
 import { defineRoute, json } from "../handler.js";

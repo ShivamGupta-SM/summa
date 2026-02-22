@@ -17,8 +17,8 @@ Each snapshot records the latest verified `aggregate_version` and `hash` for an 
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { verificationSnapshots } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { verificationSnapshots } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -70,7 +70,7 @@ Unique constraint on `(ledger_id, aggregate_type, aggregate_id)`.
 The infrastructure module exposes functions for snapshot-aware verification:
 
 ```ts
-import { verifyFromSnapshot, createHashSnapshot } from "summa/infrastructure/hash-snapshot";
+import { verifyFromSnapshot, createHashSnapshot } from "@summa-ledger/summa/infrastructure/hash-snapshot";
 
 // Verify using snapshot (falls back to full scan if no snapshot exists)
 const result = await verifyFromSnapshot(ctx, "account", accountId, ledgerId);

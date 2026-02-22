@@ -13,8 +13,8 @@ The plugin wraps the core `partitionMaintenance()` function and provides a **dai
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { eventStorePartition } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { eventStorePartition } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -34,7 +34,7 @@ eventStorePartition({
   interval: "monthly",        // Partition interval: "monthly" or "weekly" (default: "monthly")
   createAhead: 3,             // Create partitions this many intervals ahead (default: 3)
   retainPartitions: null,     // Detach after N intervals, null = never detach (default: null)
-  schema: "summa",            // PostgreSQL schema name (default: from config)
+  schema: "@summa-ledger/summa",            // PostgreSQL schema name (default: from config)
 })
 ```
 
@@ -62,7 +62,7 @@ When `retainPartitions` is configured, the plugin checks `block_checkpoint` befo
 You can move detached partitions to an archive schema instead of leaving them as standalone tables:
 
 ```ts
-import { partitionMaintenance } from "summa/db";
+import { partitionMaintenance } from "@summa-ledger/summa/db";
 
 // For advanced use with archive schema
 const plugin = partitionMaintenance({

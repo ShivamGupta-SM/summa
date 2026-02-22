@@ -1,5 +1,5 @@
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 async function main() {
 	// Create a Summa instance with the in-memory adapter

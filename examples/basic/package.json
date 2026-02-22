@@ -1,5 +1,5 @@
 {
-	"name": "@summa/example-basic",
+	"name": "@summa-ledger/example-basic",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",
@@ -7,9 +7,9 @@
 		"start": "tsx src/index.ts"
 	},
 	"dependencies": {
-		"summa": "workspace:*",
-		"@summa/core": "workspace:*",
-		"@summa/memory-adapter": "workspace:*"
+		"@summa-ledger/summa": "workspace:*",
+		"@summa-ledger/core": "workspace:*",
+		"@summa-ledger/memory-adapter": "workspace:*"
 	},
 	"devDependencies": {
 		"tsx": "^4.20.0",

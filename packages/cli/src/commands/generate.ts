@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
-import type { ColumnDefinition, TableDefinition } from "@summa/core";
+import type { ColumnDefinition, TableDefinition } from "@summa-ledger/core";
 import { Command } from "commander";
 import pc from "picocolors";
 import { getConfig } from "../utils/get-config.js";
@@ -321,12 +321,12 @@ export const generateCommand = new Command("generate")
 
 		// Try to load config for plugin schemas and schema setting
 		const config = await getConfig({ cwd, configPath });
-		const schema = (config?.options?.schema as string) ?? "summa";
+		const schema = (config?.options?.schema as string) ?? "@summa-ledger/summa";
 
 		// Import getSummaTables dynamically (resolved at runtime, not statically typed)
 		let tables: Record<string, TableDefinition>;
 		try {
-			const mod = await import("summa/db" as string);
+			const mod = await import("@summa-ledger/summa/db" as string);
 			const getSummaTables = mod.getSummaTables as (opts?: {
 				plugins?: unknown[];
 			}) => Record<string, TableDefinition>;

@@ -11,8 +11,8 @@ The batch import plugin enables bulk transaction upload via CSV or JSON with a t
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { batchImport } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { batchImport } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -39,7 +39,7 @@ const summa = createSumma({
 Upload raw data as CSV or JSON:
 
 ```ts
-import { createBatch } from "summa/plugins";
+import { createBatch } from "@summa-ledger/summa/plugins";
 
 const batch = await createBatch(summa.$context, {
   name: "January payroll",
@@ -68,7 +68,7 @@ const batch = await createBatch(summa.$context, {
 Check all items for correctness before posting:
 
 ```ts
-import { validateBatch } from "summa/plugins";
+import { validateBatch } from "@summa-ledger/summa/plugins";
 
 const validated = await validateBatch(summa.$context, batch.id);
 console.log(validated.validItems);    // Items that passed validation
@@ -88,7 +88,7 @@ Validation can only be run on batches in `"staged"` status.
 Execute all valid items as transactions:
 
 ```ts
-import { postBatch } from "summa/plugins";
+import { postBatch } from "@summa-ledger/summa/plugins";
 
 const result = await postBatch(summa.$context, {
   batchId: batch.id,
@@ -108,7 +108,7 @@ Each item is posted with a deterministic idempotency key (`batch-{batchId}-item-
 ### Check Status
 
 ```ts
-import { getBatchStatus } from "summa/plugins";
+import { getBatchStatus } from "@summa-ledger/summa/plugins";
 
 const status = await getBatchStatus(summa.$context, batch.id);
 // status: "staged" | "validating" | "validated" | "posting" | "posted" | "partial" | "failed"
@@ -140,7 +140,7 @@ batchImport({
 ### List Batches
 
 ```ts
-import { listBatches } from "summa/plugins";
+import { listBatches } from "@summa-ledger/summa/plugins";
 
 const { batches, hasMore, total } = await listBatches(summa.$context, {
   status: "posted",  // Filter by status (optional)

@@ -24,24 +24,24 @@ import { Cards, Card } from "fumadocs-ui/components/card";
 <Tab value="pnpm">
 
 ```bash
-pnpm add summa @summa/core @summa/drizzle-adapter drizzle-orm
-pnpm add -D @summa/cli
+pnpm add @summa-ledger/summa @summa-ledger/core @summa-ledger/drizzle-adapter drizzle-orm
+pnpm add -D @summa-ledger/cli
 ```
 
 </Tab>
 <Tab value="npm">
 
 ```bash
-npm install summa @summa/core @summa/drizzle-adapter drizzle-orm
-npm install -D @summa/cli
+npm install @summa-ledger/summa @summa-ledger/core @summa-ledger/drizzle-adapter drizzle-orm
+npm install -D @summa-ledger/cli
 ```
 
 </Tab>
 <Tab value="yarn">
 
 ```bash
-yarn add summa @summa/core @summa/drizzle-adapter drizzle-orm
-yarn add -D @summa/cli
+yarn add @summa-ledger/summa @summa-ledger/core @summa-ledger/drizzle-adapter drizzle-orm
+yarn add -D @summa-ledger/cli
 ```
 
 </Tab>
@@ -56,9 +56,9 @@ Summa also supports [Prisma](/docs/adapters/prisma), [Kysely](/docs/adapters/kys
 ### Create your Summa instance
 
 ```ts title="src/summa.ts"
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -70,7 +70,7 @@ export const summa = createSumma({
 });
 ```
 
-The `database` field accepts any Summa adapter instance. The `currency` sets the default ISO 4217 currency code for the ledger. By default, all tables are created in the `"summa"` PostgreSQL schema — see [Configuration](/docs/configuration#schema) to customize.
+The `database` field accepts any Summa adapter instance. The `currency` sets the default ISO 4217 currency code for the ledger. By default, all tables are created in the `"@summa-ledger/summa"` PostgreSQL schema — see [Configuration](/docs/configuration#schema) to customize.
 
 </Step>
 
@@ -219,9 +219,9 @@ Workers use **distributed leases** — in a multi-instance deployment, only one 
 For CLI commands (`summa status`, `summa verify`, etc.), create a config file:
 
 ```ts title="summa.config.ts"
-import { defineSummaConfig } from "summa/config";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation } from "summa/plugins";
+import { defineSummaConfig } from "@summa-ledger/summa/config";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);

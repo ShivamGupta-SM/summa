@@ -11,8 +11,8 @@ The accrual accounting plugin recognizes revenue and expenses over time through 
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { accrualAccounting } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { accrualAccounting } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -34,7 +34,7 @@ const summa = createSumma({
 ## Creating a Schedule
 
 ```ts
-import { createAccrualSchedule } from "summa/plugins";
+import { createAccrualSchedule } from "@summa-ledger/summa/plugins";
 
 const schedule = await createAccrualSchedule(summa.$context, {
   type: "expense",                    // "revenue" | "expense" | "prepaid" | "unearned"
@@ -65,7 +65,7 @@ Per-period amounts are calculated as `Math.floor(total / periods)`, with any rem
 Accruals are processed automatically by the background worker (if `autoProcess: true`), or manually:
 
 ```ts
-import { processAccruals } from "summa/plugins";
+import { processAccruals } from "@summa-ledger/summa/plugins";
 
 const result = await processAccruals(summa.$context, {
   periodDate: new Date("2026-02-01"),
@@ -95,7 +95,7 @@ active → completed (fully recognized)
 Stop future postings (already-posted amounts remain):
 
 ```ts
-import { cancelSchedule } from "summa/plugins";
+import { cancelSchedule } from "@summa-ledger/summa/plugins";
 
 await cancelSchedule(summa.$context, schedule.id);
 ```

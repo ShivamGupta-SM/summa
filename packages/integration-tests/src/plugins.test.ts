@@ -1,7 +1,7 @@
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { assertDoubleEntryBalance, getTestInstance } from "@summa/test-utils";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import type { Summa } from "@summa-ledger/summa";
+import { assertDoubleEntryBalance, getTestInstance } from "@summa-ledger/test-utils";
 import { drizzle } from "drizzle-orm/node-postgres";
-import type { Summa } from "summa";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTables, closePool, createTestSchema, getPool } from "./setup.js";
 
@@ -26,7 +26,7 @@ describe("Hold Expiry Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { holdExpiry } = await import("summa/plugins");
+		const { holdExpiry } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -97,7 +97,7 @@ describe("Velocity Limits Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { velocityLimits } = await import("summa/plugins");
+		const { velocityLimits } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -165,7 +165,7 @@ describe("Reconciliation Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { reconciliation } = await import("summa/plugins");
+		const { reconciliation } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -197,7 +197,7 @@ describe("Reconciliation Plugin", () => {
 	});
 
 	it("getReconciliationStatus returns watermark and empty results on fresh db", async () => {
-		const { getReconciliationStatus } = await import("summa/plugins");
+		const { getReconciliationStatus } = await import("@summa-ledger/summa/plugins");
 		const ctx = await summa.$context;
 
 		const status = await getReconciliationStatus(ctx);
@@ -221,7 +221,7 @@ describe("Snapshots Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { snapshots } = await import("summa/plugins");
+		const { snapshots } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -242,7 +242,7 @@ describe("Snapshots Plugin", () => {
 	});
 
 	it("getHistoricalBalance returns null when no snapshot exists", async () => {
-		const { getHistoricalBalance } = await import("summa/plugins");
+		const { getHistoricalBalance } = await import("@summa-ledger/summa/plugins");
 		const ctx = await summa.$context;
 
 		const result = await getHistoricalBalance(ctx, "nonexistent-id", "2024-01-01");
@@ -250,7 +250,7 @@ describe("Snapshots Plugin", () => {
 	});
 
 	it("getEndOfMonthBalance returns null on empty snapshot table", async () => {
-		const { getEndOfMonthBalance } = await import("summa/plugins");
+		const { getEndOfMonthBalance } = await import("@summa-ledger/summa/plugins");
 		const ctx = await summa.$context;
 
 		const result = await getEndOfMonthBalance(ctx, "nonexistent-id", 2024, 6);
@@ -274,7 +274,7 @@ describe("Outbox Plugin", () => {
 	beforeEach(async () => {
 		await cleanupTables();
 		published.length = 0;
-		const { outbox } = await import("summa/plugins");
+		const { outbox } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -303,7 +303,7 @@ describe("Outbox Plugin", () => {
 	});
 
 	it("getOutboxStats returns counts on fresh database", async () => {
-		const { getOutboxStats } = await import("summa/plugins");
+		const { getOutboxStats } = await import("@summa-ledger/summa/plugins");
 		const ctx = await summa.$context;
 
 		const stats = await getOutboxStats(ctx);
@@ -347,7 +347,7 @@ describe("Hot Accounts Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { hotAccounts } = await import("summa/plugins");
+		const { hotAccounts } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({
@@ -368,7 +368,7 @@ describe("Hot Accounts Plugin", () => {
 	});
 
 	it("getHotAccountStats returns zero counts on fresh database", async () => {
-		const { getHotAccountStats } = await import("summa/plugins");
+		const { getHotAccountStats } = await import("@summa-ledger/summa/plugins");
 		const ctx = await summa.$context;
 
 		const stats = await getHotAccountStats(ctx);
@@ -411,7 +411,7 @@ describe("Maintenance Plugin", () => {
 
 	beforeEach(async () => {
 		await cleanupTables();
-		const { maintenance } = await import("summa/plugins");
+		const { maintenance } = await import("@summa-ledger/summa/plugins");
 		const db = drizzle(getPool());
 		const adapter = drizzleAdapter(db);
 		const instance = await getTestInstance({

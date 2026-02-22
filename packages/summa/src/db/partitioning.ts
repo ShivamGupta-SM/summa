@@ -8,8 +8,8 @@
 // The maintenance plugin creates future partitions ahead of time and optionally
 // detaches old ones.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaPlugin } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES
@@ -27,7 +27,7 @@ export interface PartitionTableConfig {
 }
 
 export interface PartitionDDLOptions {
-	/** PostgreSQL schema name. Default: "summa" */
+	/** PostgreSQL schema name. Default: "@summa-ledger/summa" */
 	schema?: string;
 	/** Table configurations. Key = SQL table name (snake_case). */
 	tables: Record<string, PartitionTableConfig>;
@@ -42,7 +42,7 @@ export interface PartitionMaintenanceOptions {
 	retainPartitions?: number | null;
 	/** How often the maintenance worker runs. Default: "1d" */
 	workerInterval?: string;
-	/** PostgreSQL schema. Default: "summa" */
+	/** PostgreSQL schema. Default: "@summa-ledger/summa" */
 	schema?: string;
 	/**
 	 * When true, partition detachment is blocked unless all events in the
@@ -148,7 +148,7 @@ export async function canSafelyDetachPartition(
  * Returns an array of SQL statements to execute in order.
  */
 export function generatePartitionDDL(options: PartitionDDLOptions): string[] {
-	const schema = options.schema ?? "summa";
+	const schema = options.schema ?? "@summa-ledger/summa";
 	const statements: string[] = [];
 
 	statements.push(`-- Summa Table Partitioning DDL`);
@@ -208,7 +208,7 @@ export function partitionMaintenance(options: PartitionMaintenanceOptions): Summ
 	const createAhead = options.createAhead ?? 3;
 	const retainPartitions = options.retainPartitions ?? null;
 	const workerInterval = options.workerInterval ?? "1d";
-	const schema = options.schema ?? "summa";
+	const schema = options.schema ?? "@summa-ledger/summa";
 	const requireSealedBlocks = options.requireSealedBlocks ?? true;
 	const archiveSchema = options.archiveSchema ?? null;
 

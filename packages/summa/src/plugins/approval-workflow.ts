@@ -13,9 +13,9 @@ import type {
 	SummaContext,
 	SummaOperation,
 	SummaPlugin,
-} from "@summa/core";
-import { computeHash, SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { computeHash, SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	getEntityStatus,
 	initializeEntityStatus,

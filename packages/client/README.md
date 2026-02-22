@@ -1,17 +1,17 @@
-# @summa/client
+# @summa-ledger/client
 
 Type-safe HTTP client SDK for the Summa ledger API.
 
 ## Installation
 
 ```bash
-npm install @summa/client
+npm install @summa-ledger/client
 ```
 
 ## Usage
 
 ```ts
-import { createSummaClient } from "@summa/client";
+import { createSummaClient } from "@summa-ledger/client";
 
 const client = createSummaClient({
   baseURL: "http://localhost:3000/api/ledger",
@@ -30,19 +30,19 @@ const balance = await client.accounts.getBalance("user_123");
 
 ```ts
 // React
-import { createSummaClient } from "@summa/client/react";
+import { createSummaClient } from "@summa-ledger/client/react";
 
 // Vue
-import { createSummaClient } from "@summa/client/vue";
+import { createSummaClient } from "@summa-ledger/client/vue";
 
 // Svelte
-import { createSummaClient } from "@summa/client/svelte";
+import { createSummaClient } from "@summa-ledger/client/svelte";
 ```
 
 ### Proxy Client
 
 ```ts
-import { createSummaProxyClient } from "@summa/client/proxy";
+import { createSummaProxyClient } from "@summa-ledger/client/proxy";
 ```
 
 ## Documentation

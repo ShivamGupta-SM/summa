@@ -22,7 +22,7 @@ import type {
 	SummaPlugin,
 	TransactionStatus,
 	TransactionType,
-} from "@summa/core";
+} from "@summa-ledger/core";
 import { buildContext } from "../context/context.js";
 import * as events from "../infrastructure/event-store.js";
 import * as hashChain from "../infrastructure/hash-chain.js";
@@ -117,7 +117,19 @@ export interface Summa<TInfer = Record<string, never>> {
 			category?: string;
 			metadata?: Record<string, unknown>;
 			destinationSystemAccount?: string;
-			allowOverdraft?: boolean;
+			idempotencyKey?: string;
+			effectiveDate?: Date | string;
+		}) => Promise<LedgerTransaction>;
+		/** Privileged debit that bypasses balance & overdraft checks. Use for chargebacks, network adjustments, regulatory debits. */
+		forceDebit: (params: {
+			holderId: string;
+			amount: number;
+			reference: string;
+			reason: string;
+			description?: string;
+			category?: string;
+			metadata?: Record<string, unknown>;
+			destinationSystemAccount?: string;
 			idempotencyKey?: string;
 			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
@@ -418,6 +430,10 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 			debit: async (params) => {
 				const ctx = await getCtx();
 				return transactions.debitAccount(ctx, params);
+			},
+			forceDebit: async (params) => {
+				const ctx = await getCtx();
+				return transactions.forceDebit(ctx, params);
 			},
 			transfer: async (params) => {
 				const ctx = await getCtx();

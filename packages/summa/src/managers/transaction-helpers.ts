@@ -4,9 +4,9 @@
 // Extracted from transaction-manager.ts to reduce duplication across
 // credit, debit, transfer, and refund operations.
 
-import type { SummaContext, SummaTransactionAdapter } from "@summa/core";
-import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaTransactionAdapter } from "@summa-ledger/core";
+import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { appendEvent } from "../infrastructure/event-store.js";
 import { saveIdempotencyKeyInTx } from "./idempotency.js";
 import { logTransactionInTx } from "./limit-manager.js";

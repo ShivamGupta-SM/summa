@@ -12,9 +12,14 @@
 // status column on statement_job.
 
 import { randomUUID } from "node:crypto";
-import type { PluginApiResponse, PluginEndpoint, SummaContext, SummaPlugin } from "@summa/core";
-import { minorToDecimal } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiResponse,
+	PluginEndpoint,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { minorToDecimal } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import PDFDocument from "pdfkit";
 import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 import { getLedgerId } from "../managers/ledger-helpers.js";

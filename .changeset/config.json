@@ -3,9 +3,9 @@
 	"changelog": ["@changesets/changelog-github", { "repo": "summa-ledger/summa" }],
 	"commit": false,
 	"fixed": [],
-	"linked": [["summa", "@summa/core", "@summa/cli"]],
+	"linked": [["@summa-ledger/summa", "@summa-ledger/core", "@summa-ledger/cli"]],
 	"access": "public",
 	"baseBranch": "main",
 	"updateInternalDependencies": "patch",
-	"ignore": ["@summa/test-utils"]
+	"ignore": ["@summa-ledger/test-utils"]
 }

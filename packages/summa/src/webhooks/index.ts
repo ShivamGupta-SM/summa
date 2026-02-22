@@ -43,7 +43,7 @@ export interface WebhookHandler {
  *
  * @example
  * ```ts
- * import { createWebhookHandler } from "summa/webhooks";
+ * import { createWebhookHandler } from "@summa-ledger/summa/webhooks";
  *
  * const webhook = createWebhookHandler({ secret: process.env.WEBHOOK_SECRET! });
  *

@@ -21,7 +21,7 @@ const storage = new AsyncLocalStorage<TransactionStore>();
  *
  * @example
  * ```ts
- * import { queueAfterTransactionHook } from "@summa/core/db";
+ * import { queueAfterTransactionHook } from "@summa-ledger/core/db";
  *
  * // Inside a plugin hook or adapter operation:
  * queueAfterTransactionHook(() => {

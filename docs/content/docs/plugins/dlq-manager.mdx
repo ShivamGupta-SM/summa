@@ -11,8 +11,8 @@ The DLQ (Dead Letter Queue) manager plugin captures events that fail processing 
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { dlqManager } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { dlqManager } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -44,7 +44,7 @@ dlqManager({
 Returns aggregate statistics about the dead letter queue:
 
 ```ts
-import { getDlqStats } from "summa/plugins";
+import { getDlqStats } from "@summa-ledger/summa/plugins";
 
 const stats = await getDlqStats(summa.$context);
 console.log(stats.totalUnresolved);   // Events awaiting resolution
@@ -58,7 +58,7 @@ console.log(stats.oldestUnresolved);  // ISO timestamp or null
 Returns a paginated list of unresolved failed events:
 
 ```ts
-import { listUnresolvedEvents } from "summa/plugins";
+import { listUnresolvedEvents } from "@summa-ledger/summa/plugins";
 
 const result = await listUnresolvedEvents(summa.$context, {
   page: 1,        // Page number (default: 1)
@@ -85,7 +85,7 @@ console.log(result.hasMore);  // More pages available
 Requeues a failed event into the outbox for another delivery attempt. Increments the `retry_count`.
 
 ```ts
-import { retryEvent } from "summa/plugins";
+import { retryEvent } from "@summa-ledger/summa/plugins";
 
 await retryEvent(summa.$context, "evt_failed_123");
 ```
@@ -99,7 +99,7 @@ Throws `NOT_FOUND` if the event doesn't exist or is already resolved.
 Marks a failed event as resolved — it won't be retried again:
 
 ```ts
-import { resolveEvent } from "summa/plugins";
+import { resolveEvent } from "@summa-ledger/summa/plugins";
 
 await resolveEvent(summa.$context, {
   eventId: "evt_failed_123",
@@ -112,7 +112,7 @@ Throws `NOT_FOUND` if the event doesn't exist or is already resolved.
 ## Type Inference
 
 ```ts
-import type { FailedEvent, DlqStats } from "summa/plugins";
+import type { FailedEvent, DlqStats } from "@summa-ledger/summa/plugins";
 
 type Failed = typeof summa.$Infer.FailedEvent;
 type Stats = typeof summa.$Infer.DlqStats;

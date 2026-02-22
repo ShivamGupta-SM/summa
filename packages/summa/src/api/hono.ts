@@ -18,7 +18,7 @@ import {
  * @example
  * ```ts
  * import { Hono } from "hono";
- * import { createSummaHono } from "summa/api/hono";
+ * import { createSummaHono } from "@summa-ledger/summa/api/hono";
  *
  * const app = new Hono();
  * app.all("/api/ledger/*", createSummaHono(summa, { basePath: "/api/ledger" }));

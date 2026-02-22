@@ -6,12 +6,12 @@ icon: Beaker
 
 ## Overview
 
-Summa provides first-class testing support through the **memory adapter** (no database required) and the **`@summa/test-utils`** package with assertion helpers for balance verification, double-entry integrity, and hash chain validation.
+Summa provides first-class testing support through the **memory adapter** (no database required) and the **`@summa-ledger/test-utils`** package with assertion helpers for balance verification, double-entry integrity, and hash chain validation.
 
 ## Setup
 
 ```bash
-pnpm add -D @summa/memory-adapter @summa/test-utils vitest
+pnpm add -D @summa-ledger/memory-adapter @summa-ledger/test-utils vitest
 ```
 
 ## Unit Testing
@@ -20,8 +20,8 @@ Use the memory adapter for fast, isolated unit tests:
 
 ```ts title="tests/transactions.test.ts"
 import { describe, it, expect } from "vitest";
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 describe("Transactions", () => {
   it("transfers funds between accounts", async () => {
@@ -59,10 +59,10 @@ describe("Transactions", () => {
 
 ## Test Utilities
 
-The `@summa/test-utils` package provides assertion helpers:
+The `@summa-ledger/test-utils` package provides assertion helpers:
 
 ```ts
-import { getTestInstance } from "@summa/test-utils";
+import { getTestInstance } from "@summa-ledger/test-utils";
 
 const summa = getTestInstance(); // Memory adapter + default config
 ```
@@ -70,7 +70,7 @@ const summa = getTestInstance(); // Memory adapter + default config
 ### Balance Assertions
 
 ```ts
-import { assertAccountBalance } from "@summa/test-utils";
+import { assertAccountBalance } from "@summa-ledger/test-utils";
 
 // Assert exact balance
 await assertAccountBalance(summa, "user_123", {
@@ -83,7 +83,7 @@ await assertAccountBalance(summa, "user_123", {
 ### Double-Entry Verification
 
 ```ts
-import { assertDoubleEntry } from "@summa/test-utils";
+import { assertDoubleEntry } from "@summa-ledger/test-utils";
 
 // Verify that all entries in a transaction sum to zero
 await assertDoubleEntry(summa, transactionId);
@@ -92,7 +92,7 @@ await assertDoubleEntry(summa, transactionId);
 ### Hash Chain Verification
 
 ```ts
-import { assertHashChain } from "@summa/test-utils";
+import { assertHashChain } from "@summa-ledger/test-utils";
 
 // Verify event chain integrity for an aggregate
 await assertHashChain(summa, "account", accountId);
@@ -103,9 +103,9 @@ await assertHashChain(summa, "account", accountId);
 Include plugins in your test instance to verify hook behavior:
 
 ```ts
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
-import { velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
+import { velocityLimits } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: memoryAdapter(),
@@ -133,7 +133,7 @@ await expect(
 ## Testing Error Scenarios
 
 ```ts
-import { SummaError } from "@summa/core";
+import { SummaError } from "@summa-ledger/core";
 
 it("rejects overdraft when not allowed", async () => {
   try {

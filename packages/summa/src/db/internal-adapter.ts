@@ -4,8 +4,8 @@
 // Wraps the raw SummaAdapter with plugin hooks (operationHooks) and optional
 // secondary storage read-through caching.
 
-import type { SecondaryStorage, SummaAdapter, SummaLogger, SummaPlugin } from "@summa/core";
-import { SummaError } from "@summa/core";
+import type { SecondaryStorage, SummaAdapter, SummaLogger, SummaPlugin } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 
 // Tables that MUST NOT be updated or deleted — financial data integrity.
 // Any attempt to call update() or delete() on these models throws immediately.

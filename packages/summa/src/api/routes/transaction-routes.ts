@@ -2,7 +2,7 @@
 // TRANSACTION ROUTES
 // =============================================================================
 
-import type { TransactionStatus, TransactionType } from "@summa/core";
+import type { TransactionStatus, TransactionType } from "@summa-ledger/core";
 import type { Summa } from "../../summa/base.js";
 import type { Route } from "../handler.js";
 import { defineRoute, json } from "../handler.js";
@@ -55,6 +55,17 @@ export const transactionRoutes: Route[] = [
 		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
 		const result = await summa.transactions.debit(
 			req.body as Parameters<Summa["transactions"]["debit"]>[0],
+		);
+		return json(201, result);
+	}),
+
+	defineRoute("POST", "/transactions/force-debit", async (req, summa) => {
+		const err = validateBody(req.body, VALIDATION_SCHEMAS.forceDebit);
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
+		const result = await summa.transactions.forceDebit(
+			req.body as Parameters<Summa["transactions"]["forceDebit"]>[0],
 		);
 		return json(201, result);
 	}),

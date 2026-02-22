@@ -1,18 +1,18 @@
-# @summa/test-utils
+# @summa-ledger/test-utils
 
 Testing utilities and assertions for the Summa ledger.
 
 ## Installation
 
 ```bash
-npm install -D @summa/test-utils @summa/memory-adapter
+npm install -D @summa-ledger/test-utils @summa-ledger/memory-adapter
 ```
 
 ## Usage
 
 ```ts
-import { getTestInstance, assertDoubleEntryBalance } from "@summa/test-utils";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { getTestInstance, assertDoubleEntryBalance } from "@summa-ledger/test-utils";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 const { summa, cleanup } = await getTestInstance({
   adapter: memoryAdapter(),

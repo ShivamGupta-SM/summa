@@ -17,7 +17,7 @@ import type {
 	SummaOperation,
 	SummaPlugin,
 	TransactionHookParams,
-} from "@summa/core";
+} from "@summa-ledger/core";
 
 // =============================================================================
 // HOOK CACHE — Pre-computed at context creation

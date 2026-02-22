@@ -11,8 +11,8 @@ The period close plugin manages accounting period lifecycle — create, close, r
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { periodClose } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { periodClose } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -71,7 +71,7 @@ await summa.transactions.credit({
 Check if a specific date falls within a closed period:
 
 ```ts
-import { isPeriodClosed } from "summa/plugins";
+import { isPeriodClosed } from "@summa-ledger/summa/plugins";
 
 const closed = await isPeriodClosed(summa.$context, new Date("2025-03-15"));
 if (closed) {

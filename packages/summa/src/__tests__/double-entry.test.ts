@@ -1,4 +1,4 @@
-import type { SummaAdapter } from "@summa/core";
+import type { SummaAdapter } from "@summa-ledger/core";
 import { describe, expect, it, vi } from "vitest";
 import { createSumma, type Summa } from "../index.js";
 

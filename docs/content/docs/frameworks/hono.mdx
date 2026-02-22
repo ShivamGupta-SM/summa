@@ -7,16 +7,16 @@ icon: Hono
 ## Installation
 
 ```bash
-pnpm add summa hono
+pnpm add @summa-ledger/summa hono
 ```
 
 ## Quick Start
 
 ```ts
 import { Hono } from "hono";
-import { createSumma } from "summa";
-import { createSummaHono } from "summa/api/hono";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaHono } from "@summa-ledger/summa/api/hono";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -101,8 +101,8 @@ const handler = createSummaHono(summa, {
 ## Rate Limiting
 
 ```ts
-import { createSummaHono } from "summa/api/hono";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaHono } from "@summa-ledger/summa/api/hono";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const handler = createSummaHono(summa, {
   rateLimiter: createRateLimiter(standardRateLimit),
@@ -144,11 +144,11 @@ app.route("/api/ledger", createSummaHono(summa));
 
 ```ts
 import { Hono } from "hono";
-import { createSumma } from "summa";
-import { createSummaHono } from "summa/api/hono";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaHono } from "@summa-ledger/summa/api/hono";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
@@ -208,7 +208,7 @@ Combine with the OpenAPI plugin and `@hono/swagger-ui`:
 
 ```ts
 import { swaggerUI } from "@hono/swagger-ui";
-import { openApi } from "summa/plugins";
+import { openApi } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,

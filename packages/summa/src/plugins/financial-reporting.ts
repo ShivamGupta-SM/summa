@@ -4,8 +4,13 @@
 // Depends on Feature 1 (Chart of Accounts) for account type grouping.
 // Read-only: no schema, no hooks, no workers.
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================

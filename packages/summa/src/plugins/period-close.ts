@@ -7,9 +7,14 @@
 // Status is tracked via entity_status_log (append-only), NOT a status column
 // on the accounting_period table. The entity type is "accounting_period".
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 
 // =============================================================================

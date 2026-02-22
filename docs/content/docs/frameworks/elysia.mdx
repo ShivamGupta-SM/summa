@@ -7,16 +7,16 @@ icon: Elysia
 ## Installation
 
 ```bash
-pnpm add summa elysia
+pnpm add @summa-ledger/summa elysia
 ```
 
 ## Quick Start
 
 ```ts
 import { Elysia } from "elysia";
-import { createSumma } from "summa";
-import { createSummaElysia } from "summa/api/elysia";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaElysia } from "@summa-ledger/summa/api/elysia";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -102,8 +102,8 @@ const app = new Elysia()
 ## Rate Limiting
 
 ```ts
-import { createSummaElysia } from "summa/api/elysia";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaElysia } from "@summa-ledger/summa/api/elysia";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const app = new Elysia().use(
   createSummaElysia(summa, {
@@ -136,11 +136,11 @@ const app = new Elysia().use(
 
 ```ts
 import { Elysia } from "elysia";
-import { createSumma } from "summa";
-import { createSummaElysia } from "summa/api/elysia";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaElysia } from "@summa-ledger/summa/api/elysia";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 

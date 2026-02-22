@@ -8,15 +8,15 @@
 // O(new events) per checkpoint, not O(all aggregates). Scales forever.
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import type { SummaContext } from "@summa/core";
+import type { SummaContext } from "@summa-ledger/core";
 import {
 	buildMerkleTree,
 	computeHash,
 	generateMerkleProof,
 	type MerkleProof,
 	verifyMerkleProof,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 /** Constant-time string comparison to prevent timing attacks on hash verification. */
 function safeEqual(a: string, b: string): boolean {

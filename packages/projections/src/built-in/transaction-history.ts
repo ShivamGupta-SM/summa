@@ -5,9 +5,9 @@
 // TransactionInitiated and TransactionPosted events. Provides fast
 // transaction queries without joining events + entries.
 
-import type { StoredEvent, SummaContext, TableDefinition } from "@summa/core";
-import type { SummaTransactionAdapter } from "@summa/core/db";
-import { createTableResolver } from "@summa/core/db";
+import type { StoredEvent, SummaContext, TableDefinition } from "@summa-ledger/core";
+import type { SummaTransactionAdapter } from "@summa-ledger/core/db";
+import { createTableResolver } from "@summa-ledger/core/db";
 import type { Projection } from "../types.js";
 
 // =============================================================================

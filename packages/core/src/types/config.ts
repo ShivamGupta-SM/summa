@@ -42,7 +42,7 @@ export interface SummaOptions {
 	/** Secondary storage (Redis, Memcached) for rate limiting, caching, etc. */
 	secondaryStorage?: SecondaryStorage;
 
-	/** PostgreSQL schema name for all Summa tables. Default: "summa" */
+	/** PostgreSQL schema name for all Summa tables. Default: "@summa-ledger/summa" */
 	schema?: string;
 
 	/** Default ledger ID. Used when requestContext.ledgerId is not set. */

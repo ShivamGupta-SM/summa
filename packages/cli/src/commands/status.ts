@@ -122,7 +122,7 @@ export const statusCommand = new Command("status")
 			typeof loaded.options.schema === "string" &&
 			loaded.options.schema.length > 0
 				? loaded.options.schema
-				: "summa";
+				: "@summa-ledger/summa";
 		const t = (table: string) => (schema === "public" ? `"${table}"` : `"${schema}"."${table}"`);
 
 		const client = new pg.default.Client({ connectionString: dbUrl });

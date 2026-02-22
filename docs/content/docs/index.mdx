@@ -170,13 +170,13 @@ Financial systems are high-value targets. Summa doesn't bolt security on as an a
 ## Quick Example
 
 ```bash
-pnpm add summa @summa/core @summa/drizzle-adapter drizzle-orm
+pnpm add @summa-ledger/summa @summa-ledger/core @summa-ledger/drizzle-adapter drizzle-orm
 ```
 
 ```ts title="src/summa.ts"
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -220,32 +220,32 @@ const balance = await summa.accounts.getBalance("user_123");
 ## Packages
 
 <Files>
-  <File name="summa" />
-  <File name="@summa/core" />
-  <File name="@summa/cli" />
-  <File name="@summa/drizzle-adapter" />
-  <File name="@summa/prisma-adapter" />
-  <File name="@summa/kysely-adapter" />
-  <File name="@summa/memory-adapter" />
-  <File name="@summa/client" />
-  <File name="@summa/redis-storage" />
-  <File name="@summa/telemetry" />
-  <File name="@summa/test-utils" />
+  <File name="@summa-ledger/summa" />
+  <File name="@summa-ledger/core" />
+  <File name="@summa-ledger/cli" />
+  <File name="@summa-ledger/drizzle-adapter" />
+  <File name="@summa-ledger/prisma-adapter" />
+  <File name="@summa-ledger/kysely-adapter" />
+  <File name="@summa-ledger/memory-adapter" />
+  <File name="@summa-ledger/client" />
+  <File name="@summa-ledger/redis-storage" />
+  <File name="@summa-ledger/telemetry" />
+  <File name="@summa-ledger/test-utils" />
 </Files>
 
 | Package | Description |
 |---------|-------------|
 | `summa` | Main ledger library with all managers and plugins |
-| `@summa/core` | Core types, adapter interface, plugin interface, SQL dialects (PostgreSQL, MySQL, SQLite) |
-| `@summa/cli` | CLI for migrations, integrity checks, diagnostics, auto-install, and client codegen |
-| `@summa/drizzle-adapter` | Drizzle ORM adapter |
-| `@summa/prisma-adapter` | Prisma adapter |
-| `@summa/kysely-adapter` | Kysely adapter |
-| `@summa/memory-adapter` | In-memory adapter for testing |
-| `@summa/client` | Type-safe HTTP client SDK with React, Vue, and Svelte bindings |
-| `@summa/redis-storage` | Redis-backed secondary storage for rate limiting and caching |
-| `@summa/telemetry` | CLI usage analytics + optional OpenTelemetry tracing integration |
-| `@summa/test-utils` | Test assertions, structured test suite runner, balance and hash chain verification |
+| `@summa-ledger/core` | Core types, adapter interface, plugin interface, SQL dialects (PostgreSQL, MySQL, SQLite) |
+| `@summa-ledger/cli` | CLI for migrations, integrity checks, diagnostics, auto-install, and client codegen |
+| `@summa-ledger/drizzle-adapter` | Drizzle ORM adapter |
+| `@summa-ledger/prisma-adapter` | Prisma adapter |
+| `@summa-ledger/kysely-adapter` | Kysely adapter |
+| `@summa-ledger/memory-adapter` | In-memory adapter for testing |
+| `@summa-ledger/client` | Type-safe HTTP client SDK with React, Vue, and Svelte bindings |
+| `@summa-ledger/redis-storage` | Redis-backed secondary storage for rate limiting and caching |
+| `@summa-ledger/telemetry` | CLI usage analytics + optional OpenTelemetry tracing integration |
+| `@summa-ledger/test-utils` | Test assertions, structured test suite runner, balance and hash chain verification |
 
 ## Next Steps
 

@@ -1,5 +1,5 @@
 {
-  "name": "@summa/test-utils",
+  "name": "@summa-ledger/test-utils",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -26,8 +26,8 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*",
-    "summa": "workspace:*"
+    "@summa-ledger/core": "workspace:*",
+    "@summa-ledger/summa": "workspace:*"
   },
   "peerDependencies": {
     "vitest": ">=2.0.0"

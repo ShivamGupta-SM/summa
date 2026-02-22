@@ -16,9 +16,9 @@ import type {
 	SummaContext,
 	SummaPlugin,
 	TableDefinition,
-} from "@summa/core";
-import { AGGREGATE_TYPES, SCHEDULED_EVENTS, SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { AGGREGATE_TYPES, SCHEDULED_EVENTS, SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	getEntityStatus,
 	initializeEntityStatus,

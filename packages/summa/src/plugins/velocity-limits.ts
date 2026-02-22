@@ -4,7 +4,7 @@
 // Wraps the limit-manager enforcement and cleanup logic into a composable
 // plugin with lifecycle hooks and a background worker.
 
-import type { SummaPlugin } from "@summa/core";
+import type { SummaPlugin } from "@summa-ledger/core";
 
 // =============================================================================
 // OPTIONS

@@ -13,7 +13,7 @@ import { parseWebHeaders, stripBasePath } from "./request-helpers.js";
  * @example
  * ```ts
  * import { Elysia } from "elysia";
- * import { createSummaElysia } from "summa/api/elysia";
+ * import { createSummaElysia } from "@summa-ledger/summa/api/elysia";
  *
  * const app = new Elysia()
  *   .use(createSummaElysia(summa, { basePath: "/api/ledger" }))

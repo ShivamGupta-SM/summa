@@ -1,5 +1,5 @@
 {
-  "name": "@summa/message-queue",
+  "name": "@summa-ledger/message-queue",
   "version": "0.1.0",
   "description": "Redis Streams message bus for Summa event delivery",
   "type": "module",
@@ -32,7 +32,7 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*"
+    "@summa-ledger/core": "workspace:*"
   },
   "peerDependencies": {
     "ioredis": ">=5.0.0"

@@ -6,7 +6,7 @@
 
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { SummaOptions } from "@summa/core";
+import type { SummaOptions } from "@summa-ledger/core";
 import { loadConfig } from "c12";
 import { createJiti } from "jiti";
 import { possibleConfigPaths } from "./config-paths.js";
@@ -141,7 +141,7 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
  */
 function extractOptions(config: Record<string, unknown>): SummaOptions | null {
 	// Shape 1/2: named export `summa`
-	if ("summa" in config && config.summa && typeof config.summa === "object") {
+	if ("@summa-ledger/summa" in config && config.summa && typeof config.summa === "object") {
 		const summaExport = config.summa as Record<string, unknown>;
 		// Summa instance — has $options
 		if ("$options" in summaExport) {

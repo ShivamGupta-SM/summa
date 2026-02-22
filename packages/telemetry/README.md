@@ -1,17 +1,17 @@
-# @summa/telemetry
+# @summa-ledger/telemetry
 
 Anonymous usage analytics for the Summa CLI.
 
 ## Installation
 
 ```bash
-npm install @summa/telemetry
+npm install @summa-ledger/telemetry
 ```
 
 ## Usage
 
 ```ts
-import { createTelemetry } from "@summa/telemetry";
+import { createTelemetry } from "@summa-ledger/telemetry";
 
 const telemetry = createTelemetry({ version: "0.1.0" });
 
@@ -23,7 +23,7 @@ telemetry.track("cli.command", { command: "migrate" });
 Telemetry is opt-in and disabled by default. Users can enable it via `summa telemetry on`.
 
 ```ts
-import { isTelemetryEnabled, readTelemetryState, writeTelemetryState } from "@summa/telemetry";
+import { isTelemetryEnabled, readTelemetryState, writeTelemetryState } from "@summa-ledger/telemetry";
 
 if (isTelemetryEnabled()) {
   // telemetry is active

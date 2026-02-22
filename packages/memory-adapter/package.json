@@ -1,7 +1,7 @@
 {
-  "name": "@summa/memory-adapter",
+  "name": "@summa-ledger/memory-adapter",
   "version": "0.1.0",
-  "deprecated": "The memory adapter does not support raw SQL queries used by Summa managers. Use @summa/drizzle-adapter with a real PostgreSQL instance for testing.",
+  "deprecated": "The memory adapter does not support raw SQL queries used by Summa managers. Use @summa-ledger/drizzle-adapter with a real PostgreSQL instance for testing.",
   "type": "module",
   "license": "MIT",
   "sideEffects": false,
@@ -32,7 +32,7 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*"
+    "@summa-ledger/core": "workspace:*"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",

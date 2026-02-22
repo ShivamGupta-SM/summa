@@ -8,11 +8,11 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@summa/core/logger": path.resolve(__dirname, "../core/src/logger/index.ts"),
-      "@summa/core/db": path.resolve(__dirname, "../core/src/db/index.ts"),
-      "@summa/core/error": path.resolve(__dirname, "../core/src/error/index.ts"),
-      "@summa/core/utils": path.resolve(__dirname, "../core/src/utils/index.ts"),
-      "@summa/core": path.resolve(__dirname, "../core/src/index.ts"),
+      "@summa-ledger/core/logger": path.resolve(__dirname, "../core/src/logger/index.ts"),
+      "@summa-ledger/core/db": path.resolve(__dirname, "../core/src/db/index.ts"),
+      "@summa-ledger/core/error": path.resolve(__dirname, "../core/src/error/index.ts"),
+      "@summa-ledger/core/utils": path.resolve(__dirname, "../core/src/utils/index.ts"),
+      "@summa-ledger/core": path.resolve(__dirname, "../core/src/index.ts"),
     },
   },
 });

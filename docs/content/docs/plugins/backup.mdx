@@ -11,8 +11,8 @@ The backup plugin provides automated PostgreSQL database backups with **local di
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { backup } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { backup } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -115,7 +115,7 @@ curl http://localhost:3000/api/ledger/backups \
 ## Querying Backup History
 
 ```ts
-import { listBackupRecords } from "summa/plugins";
+import { listBackupRecords } from "@summa-ledger/summa/plugins";
 
 const backups = await listBackupRecords(summa.$context, {
   limit: 20,
@@ -134,7 +134,7 @@ for (const b of backups) {
 ## Type Inference
 
 ```ts
-import type { BackupRecord } from "summa/plugins";
+import type { BackupRecord } from "@summa-ledger/summa/plugins";
 
 type Backup = typeof summa.$Infer.BackupRecord;
 // { id, status, storage, file_path, file_size, error, started_at, completed_at, created_at }

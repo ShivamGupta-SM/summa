@@ -56,14 +56,14 @@ DATABASE_URL=postgres://summa:summa@localhost:5432/summa_test pnpm test
 ```
 summa/
 ├── packages/
-│   ├── core/              # @summa/core — types, adapter interface, errors, utils
+│   ├── core/              # @summa-ledger/core — types, adapter interface, errors, utils
 │   ├── summa/             # summa — main library with managers + plugins
-│   ├── drizzle-adapter/   # @summa/drizzle-adapter — PostgreSQL via Drizzle
-│   ├── prisma-adapter/    # @summa/prisma-adapter — PostgreSQL via Prisma
-│   ├── kysely-adapter/    # @summa/kysely-adapter — PostgreSQL via Kysely
-│   ├── memory-adapter/    # @summa/memory-adapter — In-memory for testing
-│   ├── cli/               # @summa/cli — CLI tool
-│   └── test-utils/        # @summa/test-utils — Test helpers
+│   ├── drizzle-adapter/   # @summa-ledger/drizzle-adapter — PostgreSQL via Drizzle
+│   ├── prisma-adapter/    # @summa-ledger/prisma-adapter — PostgreSQL via Prisma
+│   ├── kysely-adapter/    # @summa-ledger/kysely-adapter — PostgreSQL via Kysely
+│   ├── memory-adapter/    # @summa-ledger/memory-adapter — In-memory for testing
+│   ├── cli/               # @summa-ledger/cli — CLI tool
+│   └── test-utils/        # @summa-ledger/test-utils — Test helpers
 ├── turbo.json
 ├── pnpm-workspace.yaml
 └── tsconfig.base.json

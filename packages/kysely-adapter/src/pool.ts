@@ -2,9 +2,13 @@
 // CONNECTION POOL CONFIGURATION
 // =============================================================================
 // Production-ready pool configuration guidance for the Kysely adapter.
-// Pool types, constants, and helpers are shared from @summa/core/db.
+// Pool types, constants, and helpers are shared from @summa-ledger/core/db.
 
-import { createPooledAdapterResult, type PooledAdapterResult, type PoolLike } from "@summa/core/db";
+import {
+	createPooledAdapterResult,
+	type PooledAdapterResult,
+	type PoolLike,
+} from "@summa-ledger/core/db";
 import type { Kysely } from "kysely";
 import { kyselyAdapter } from "./adapter.js";
 
@@ -14,7 +18,7 @@ export {
 	type PoolLike,
 	type PoolStats,
 	RECOMMENDED_POOL_CONFIG,
-} from "@summa/core/db";
+} from "@summa-ledger/core/db";
 
 export interface KyselyPooledAdapterConfig {
 	/** A pg.Pool instance (or compatible pool) */
@@ -31,7 +35,7 @@ export interface KyselyPooledAdapterConfig {
  * ```ts
  * import { Pool } from "pg";
  * import { Kysely, PostgresDialect } from "kysely";
- * import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/kysely-adapter";
+ * import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/kysely-adapter";
  *
  * const pool = new Pool({
  *   ...RECOMMENDED_POOL_CONFIG,

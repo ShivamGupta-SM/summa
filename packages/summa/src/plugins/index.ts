@@ -1,7 +1,7 @@
 // =============================================================================
 // SUMMA PLUGINS
 // =============================================================================
-// Plugin exports for the "summa/plugins" entry point.
+// Plugin exports for the "@summa-ledger/summa/plugins" entry point.
 //
 // Plugins are organized by category:
 //   CORE — Performance-critical plugins recommended for all deployments

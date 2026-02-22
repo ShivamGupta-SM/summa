@@ -1,4 +1,4 @@
-// Re-export all types from @summa/core
+// Re-export all types from @summa-ledger/core
 export type {
 	Account,
 	AccountBalance,
@@ -63,7 +63,7 @@ export type {
 	TransactionType,
 	Where,
 	WhereOperator,
-} from "@summa/core";
+} from "@summa-ledger/core";
 
 export {
 	ACCOUNT_EVENTS,
@@ -71,7 +71,7 @@ export {
 	HOLD_EVENTS,
 	SCHEDULED_EVENTS,
 	TRANSACTION_EVENTS,
-} from "@summa/core";
+} from "@summa-ledger/core";
 
-// Re-export types from managers that aren't in @summa/core
+// Re-export types from managers that aren't in @summa-ledger/core
 export type { LimitCheckResult } from "../managers/limit-manager.js";

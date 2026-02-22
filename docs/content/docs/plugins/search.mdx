@@ -15,8 +15,8 @@ The search plugin adds full-text search across accounts, transactions, and ident
 Zero-dependency — uses PostgreSQL's built-in `tsvector` + GIN indexes. No external services required.
 
 ```ts
-import { createSumma } from "summa";
-import { search, pgSearchBackend } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { search, pgSearchBackend } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -49,8 +49,8 @@ pgSearchBackend({
 For sub-millisecond latency at scale with dedicated search infrastructure:
 
 ```ts
-import { createSumma } from "summa";
-import { search, typesenseBackend } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { search, typesenseBackend } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -71,7 +71,7 @@ const summa = createSumma({
 ### With Meilisearch
 
 ```ts
-import { search, meilisearchBackend } from "summa/plugins";
+import { search, meilisearchBackend } from "@summa-ledger/summa/plugins";
 
 search({
   backend: meilisearchBackend({
@@ -248,7 +248,7 @@ interface SearchBackend {
 ## Type Inference
 
 ```ts
-import type { SearchResult, ReindexStatus } from "summa/plugins";
+import type { SearchResult, ReindexStatus } from "@summa-ledger/summa/plugins";
 
 type Result = typeof summa.$Infer.SearchResult;
 // { hits, found, page, totalPages, facetCounts? }

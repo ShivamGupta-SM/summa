@@ -4,8 +4,8 @@
 // Translates error messages in API responses based on the client's locale.
 // Inspired by better-auth's i18n plugin.
 
-import type { PluginApiRequest, PluginApiResponse, SummaPlugin } from "@summa/core";
-import { BASE_ERROR_CODES } from "@summa/core";
+import type { PluginApiRequest, PluginApiResponse, SummaPlugin } from "@summa-ledger/core";
+import { BASE_ERROR_CODES } from "@summa-ledger/core";
 
 // =============================================================================
 // TYPES

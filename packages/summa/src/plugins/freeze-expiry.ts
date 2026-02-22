@@ -5,8 +5,8 @@
 // and automatically unfreezes them by inserting a new account_balance_version
 // row with active status.
 
-import { computeBalanceChecksum, type SummaPlugin } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import { computeBalanceChecksum, type SummaPlugin } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // OPTIONS

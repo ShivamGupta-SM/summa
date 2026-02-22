@@ -25,6 +25,7 @@ interface Account {
   pendingCredit: number;         // Inflight credits
   pendingDebit: number;          // Held amounts (reduces available balance)
   allowOverdraft: boolean;
+  overdraftLimit: number;              // Max negative balance allowed (0 = unlimited when overdraft enabled)
   accountType: AccountType | null;     // "asset" | "liability" | "equity" | "revenue" | "expense"
   accountCode: string | null;          // Unique chart-of-accounts code (e.g., "1000")
   parentAccountId: string | null;      // FK to parent account for hierarchy
@@ -65,6 +66,7 @@ const account = await summa.accounts.create({
     holderType: { type: '"individual" | "organization" | "system"', description: "The type of account holder.", required: true },
     currency: { type: "string", description: "ISO 4217 code. Defaults to the instance currency.", default: "Instance currency" },
     allowOverdraft: { type: "boolean", description: "Allow balance to go negative.", default: "false" },
+    overdraftLimit: { type: "number", description: "Maximum negative balance allowed (in smallest currency units). Only enforced when allowOverdraft is true. 0 = unlimited.", default: "0" },
     indicator: { type: "string", description: "Unique human-readable identifier (e.g., ACC-001)." },
     accountType: { type: '"asset" | "liability" | "equity" | "revenue" | "expense"', description: "Accounting classification. Determines the normal balance direction." },
     accountCode: { type: "string", description: "Unique account code (e.g., 1000, 2100). Used for chart of accounts ordering." },
@@ -75,10 +77,7 @@ const account = await summa.accounts.create({
 
 ### Overdrafts
 
-By default, transactions that would result in a negative balance are rejected with `INSUFFICIENT_BALANCE`. You can enable overdrafts at two levels:
-
-<Tabs items={["Account-level", "Per-transaction"]}>
-<Tab value="Account-level">
+By default, transactions that would result in a negative balance are rejected with `INSUFFICIENT_BALANCE`. Enable overdrafts at the account level when creating the account:
 
 ```ts
 const account = await summa.accounts.create({
@@ -89,20 +88,42 @@ const account = await summa.accounts.create({
 });
 ```
 
-</Tab>
-<Tab value="Per-transaction">
+<Callout type="info" title="Account-level only">
+  Overdraft is controlled exclusively at the account level. All balance-reducing operations (debits, transfers, multi-destination transfers, and holds) respect the account's `allowOverdraft` and `overdraftLimit` settings uniformly.
+</Callout>
+
+### Overdraft Limits
+
+When overdraft is enabled, you can set an `overdraftLimit` to cap how far the balance can go negative. The limit is specified in the smallest currency unit (cents/paise).
 
 ```ts
-await summa.transactions.debit({
+const account = await summa.accounts.create({
   holderId: "merchant_1",
-  amount: 500_00,
-  reference: "chargeback-001",
-  allowOverdraft: true,  // Override for this transaction only
+  holderType: "organization",
+  currency: "USD",
+  allowOverdraft: true,
+  overdraftLimit: 500_00,  // Balance can go down to -$500.00
 });
 ```
 
-</Tab>
-</Tabs>
+<Callout type="info" title="Limit enforcement">
+  The overdraft limit is enforced on all operations that reduce balance — debits, transfers, multi-destination transfers, and holds. If a transaction would push the balance below `-overdraftLimit`, it is rejected with `INSUFFICIENT_BALANCE`.
+</Callout>
+
+| `overdraftLimit` | `allowOverdraft` | Behavior |
+|:-:|:-:|:--|
+| `0` (default) | `false` | Balance cannot go below 0 |
+| `0` | `true` | Unlimited overdraft — balance can go arbitrarily negative |
+| `500_00` | `true` | Balance can go down to -50000 (e.g., -$500.00) |
+| `500_00` | `false` | Limit is ignored — overdraft not allowed |
+
+<Callout type="warn" title="Unlimited by default">
+  When `allowOverdraft` is `true` and `overdraftLimit` is `0` (the default), the account has **no cap** on negative balance. Always set an explicit `overdraftLimit` in production to prevent unbounded exposure.
+</Callout>
+
+<Callout type="info" title="Need to bypass limits?">
+  For chargebacks, network-initiated adjustments, or regulatory debits that must succeed regardless of balance, use [`forceDebit`](/docs/transactions#force-debit) instead. It skips all balance and overdraft checks.
+</Callout>
 
 ### Account Indicators
 

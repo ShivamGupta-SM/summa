@@ -10,7 +10,7 @@ import type {
 	PluginEndpoint,
 	SummaContext,
 	SummaPlugin,
-} from "@summa/core";
+} from "@summa-ledger/core";
 
 // =============================================================================
 // TYPES

@@ -11,8 +11,8 @@ The scheduled transactions plugin allows you to schedule transactions for future
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { scheduledTransactions } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { scheduledTransactions } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -40,7 +40,7 @@ scheduledTransactions({
 ## Creating Scheduled Transactions
 
 ```ts
-import { createScheduledTransaction } from "summa/plugins";
+import { createScheduledTransaction } from "@summa-ledger/summa/plugins";
 
 const ctx = await summa.$context;
 
@@ -108,7 +108,7 @@ System accounts are prefixed with `@`. Everything else is treated as a holder ID
 ## Querying
 
 ```ts
-import { getScheduledTransaction, listScheduledTransactions } from "summa/plugins";
+import { getScheduledTransaction, listScheduledTransactions } from "@summa-ledger/summa/plugins";
 
 // Get by ID
 const tx = await getScheduledTransaction(ctx, scheduled.id);
@@ -140,7 +140,7 @@ curl "http://localhost:3000/api/ledger/scheduled-transactions?status=scheduled&l
 Only transactions in `scheduled` status can be cancelled:
 
 ```ts
-import { cancelScheduledTransaction } from "summa/plugins";
+import { cancelScheduledTransaction } from "@summa-ledger/summa/plugins";
 
 const cancelled = await cancelScheduledTransaction(ctx, scheduled.id, "No longer needed");
 console.log(cancelled.status); // "cancelled"

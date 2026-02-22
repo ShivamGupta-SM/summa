@@ -1,5 +1,5 @@
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { getTestInstance, type TestInstance } from "@summa/test-utils";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { getTestInstance, type TestInstance } from "@summa-ledger/test-utils";
 import { drizzle } from "drizzle-orm/node-postgres";
 import pg from "pg";
 

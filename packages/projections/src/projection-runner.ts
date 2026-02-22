@@ -14,9 +14,9 @@ import type {
 	SummaPlugin,
 	SummaWorkerDefinition,
 	TableDefinition,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
-import type { MessageBus } from "@summa/message-queue";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
+import type { MessageBus } from "@summa-ledger/message-queue";
 import type { Projection, ProjectionRunnerOptions } from "./types.js";
 
 // =============================================================================

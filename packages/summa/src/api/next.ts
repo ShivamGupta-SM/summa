@@ -12,7 +12,7 @@ import type { ApiHandlerOptions } from "./handler.js";
  * @example
  * ```ts
  * // app/api/ledger/[...path]/route.ts
- * import { createSummaNextHandler } from "summa/api/next";
+ * import { createSummaNextHandler } from "@summa-ledger/summa/api/next";
  *
  * const { GET, POST, PUT, PATCH, DELETE } = createSummaNextHandler(summa, {
  *   basePath: "/api/ledger",

@@ -1,5 +1,5 @@
 {
-	"name": "@summa/client",
+	"name": "@summa-ledger/client",
 	"version": "0.1.0",
 	"description": "Type-safe client SDK for the Summa ledger API",
 	"type": "module",
@@ -52,7 +52,7 @@
 		"prepublishOnly": "tsdown"
 	},
 	"dependencies": {
-		"@summa/core": "workspace:*"
+		"@summa-ledger/core": "workspace:*"
 	},
 	"peerDependencies": {
 		"react": ">=18.0.0",

@@ -11,8 +11,8 @@ The approval workflow plugin provides enterprise-grade dual authorization (maker
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { approvalWorkflow } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { approvalWorkflow } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -64,7 +64,7 @@ Rules can also be created at runtime via the API.
 ### Create a Rule
 
 ```ts
-import { createRule } from "summa/plugins";
+import { createRule } from "@summa-ledger/summa/plugins";
 
 const rule = await createRule(summa.$context, {
   name: "High-value transfers",
@@ -78,7 +78,7 @@ const rule = await createRule(summa.$context, {
 ### Approve a Request
 
 ```ts
-import { approveRequest } from "summa/plugins";
+import { approveRequest } from "@summa-ledger/summa/plugins";
 
 const result = await approveRequest(summa.$context, {
   requestId: "approval-uuid",
@@ -90,7 +90,7 @@ const result = await approveRequest(summa.$context, {
 ### Reject a Request
 
 ```ts
-import { rejectRequest } from "summa/plugins";
+import { rejectRequest } from "@summa-ledger/summa/plugins";
 
 await rejectRequest(summa.$context, {
   requestId: "approval-uuid",

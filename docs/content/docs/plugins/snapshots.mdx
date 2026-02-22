@@ -11,8 +11,8 @@ The snapshots plugin periodically captures the balance state of all accounts, en
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { snapshots } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { snapshots } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -32,7 +32,7 @@ Snapshot queries use **standalone functions** exported from `summa/plugins`, not
 Returns the snapshot for a specific date. Returns `null` if no snapshot exists for that date.
 
 ```ts
-import { getHistoricalBalance } from "summa/plugins";
+import { getHistoricalBalance } from "@summa-ledger/summa/plugins";
 
 const snapshot = await getHistoricalBalance(
   summa.$context,   // SummaContext
@@ -69,7 +69,7 @@ if (snapshot) {
 Returns the last snapshot in a given calendar month — useful for month-end reporting.
 
 ```ts
-import { getEndOfMonthBalance } from "summa/plugins";
+import { getEndOfMonthBalance } from "@summa-ledger/summa/plugins";
 
 const eom = await getEndOfMonthBalance(
   summa.$context,  // SummaContext

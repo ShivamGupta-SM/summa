@@ -1,5 +1,5 @@
-import type { SummaOptions } from "@summa/core";
-import { SummaError } from "@summa/core";
+import type { SummaOptions } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 
 const VALID_CURRENCIES = new Set([
 	"USD",
@@ -148,7 +148,7 @@ export function validateConfig(options: SummaOptions): void {
  *
  * @example
  * ```ts
- * import { defineSummaConfig } from "summa/config";
+ * import { defineSummaConfig } from "@summa-ledger/summa/config";
  *
  * export default defineSummaConfig({
  *   database: drizzleAdapter(db),

@@ -1,5 +1,5 @@
 {
-  "name": "@summa/cli",
+  "name": "@summa-ledger/cli",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -10,7 +10,7 @@
     "access": "public"
   },
   "bin": {
-    "summa": "./dist/index.mjs"
+    "@summa-ledger/summa": "./dist/index.mjs"
   },
   "exports": {
     ".": {
@@ -32,8 +32,8 @@
   },
   "dependencies": {
     "@clack/prompts": "^1.0.1",
-    "@summa/core": "workspace:*",
-    "@summa/telemetry": "workspace:*",
+    "@summa-ledger/core": "workspace:*",
+    "@summa-ledger/telemetry": "workspace:*",
     "c12": "^3.3.3",
     "commander": "^12.1.0",
     "dotenv": "^17.3.1",

@@ -17,7 +17,7 @@ import type {
 	StoredEvent,
 	TransactionStatus,
 	TransactionType,
-} from "@summa/core";
+} from "@summa-ledger/core";
 import { createFetchClient } from "./fetch.js";
 import type { SummaClientOptions } from "./types.js";
 

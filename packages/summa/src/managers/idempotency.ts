@@ -4,9 +4,9 @@
 // Ensures duplicate requests produce the same result.
 // Keys have a configurable TTL (default: 24h via advanced.idempotencyTTL). Reference check is permanent.
 
-import type { SummaContext, SummaTransactionAdapter } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaTransactionAdapter } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // CHECK IDEMPOTENCY KEY (Transaction-scoped)
@@ -31,7 +31,7 @@ export async function checkIdempotencyKeyInTx(
 		reference: string;
 	},
 ): Promise<{ alreadyProcessed: boolean; cachedResult?: unknown }> {
-	const t = createTableResolver(tx.options?.schema ?? "summa");
+	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
 
 	if (params.idempotencyKey) {
 		// Combined CTE: check idempotency key + reference in a single round-trip
@@ -132,7 +132,7 @@ export async function saveIdempotencyKeyInTx(
 		ttlMs?: number;
 	},
 ): Promise<void> {
-	const t = createTableResolver(tx.options?.schema ?? "summa");
+	const t = createTableResolver(tx.options?.schema ?? "@summa-ledger/summa");
 	const ttlSeconds = Math.ceil((params.ttlMs ?? 86_400_000) / 1000);
 	await tx.raw(
 		`INSERT INTO ${t("idempotency_key")} (ledger_id, key, reference, result_event_id, result_data, expires_at)

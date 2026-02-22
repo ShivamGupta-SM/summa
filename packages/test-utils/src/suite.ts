@@ -4,8 +4,8 @@
 // Provides a structured way to group and run Summa tests with automatic
 // setup/teardown, timing statistics, and assertion helpers.
 
-import type { SummaPlugin } from "@summa/core";
-import type { SummaOptions } from "summa";
+import type { SummaPlugin } from "@summa-ledger/core";
+import type { SummaOptions } from "@summa-ledger/summa";
 import { getTestInstance, type TestInstance } from "./get-test-instance.js";
 
 // =============================================================================

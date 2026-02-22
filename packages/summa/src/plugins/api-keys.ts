@@ -12,9 +12,9 @@ import type {
 	SummaContext,
 	SummaPlugin,
 	TableDefinition,
-} from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================

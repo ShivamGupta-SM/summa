@@ -11,8 +11,8 @@ The i18n plugin translates error messages in API responses based on the client's
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { i18n } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { i18n } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -96,7 +96,7 @@ i18n({
 Use the `defineTranslations` helper for autocompletion:
 
 ```ts
-import { defineTranslations } from "summa/plugins";
+import { defineTranslations } from "@summa-ledger/summa/plugins";
 
 const hindi = defineTranslations({
   INSUFFICIENT_BALANCE: "अपर्याप्त शेष राशि",

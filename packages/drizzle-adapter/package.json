@@ -1,5 +1,5 @@
 {
-  "name": "@summa/drizzle-adapter",
+  "name": "@summa-ledger/drizzle-adapter",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,7 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*"
+    "@summa-ledger/core": "workspace:*"
   },
   "peerDependencies": {
     "drizzle-orm": ">=0.41.0",

@@ -26,28 +26,28 @@ const adapters: AdapterChoice[] = [
 		value: "drizzle",
 		label: "Drizzle ORM",
 		hint: "recommended",
-		pkg: "@summa/drizzle-adapter",
+		pkg: "@summa-ledger/drizzle-adapter",
 		peerDeps: ["drizzle-orm"],
 	},
 	{
 		value: "prisma",
 		label: "Prisma",
 		hint: "prisma client",
-		pkg: "@summa/prisma-adapter",
+		pkg: "@summa-ledger/prisma-adapter",
 		peerDeps: ["@prisma/client"],
 	},
 	{
 		value: "kysely",
 		label: "Kysely",
 		hint: "type-safe SQL",
-		pkg: "@summa/kysely-adapter",
+		pkg: "@summa-ledger/kysely-adapter",
 		peerDeps: ["kysely"],
 	},
 	{
 		value: "memory",
 		label: "In-Memory",
 		hint: "testing only",
-		pkg: "@summa/memory-adapter",
+		pkg: "@summa-ledger/memory-adapter",
 		peerDeps: [],
 	},
 ];
@@ -282,7 +282,7 @@ const frameworks: FrameworkChoice[] = [
 		value: "next",
 		label: "Next.js",
 		hint: "App Router catch-all route",
-		handlerImport: 'import { createSummaNextHandler } from "summa/api/next";',
+		handlerImport: 'import { createSummaNextHandler } from "@summa-ledger/summa/api/next";',
 		handlerFactory: "createSummaNextHandler",
 		routeFile: "app/api/ledger/[...path]/route.ts",
 	},
@@ -290,7 +290,7 @@ const frameworks: FrameworkChoice[] = [
 		value: "hono",
 		label: "Hono",
 		hint: "lightweight web framework",
-		handlerImport: 'import { createSummaHono } from "summa/api/hono";',
+		handlerImport: 'import { createSummaHono } from "@summa-ledger/summa/api/hono";',
 		handlerFactory: "createSummaHono",
 		routeFile: "src/routes/ledger.ts",
 	},
@@ -298,7 +298,7 @@ const frameworks: FrameworkChoice[] = [
 		value: "express",
 		label: "Express",
 		hint: "classic Node.js framework",
-		handlerImport: 'import { createSummaExpress } from "summa/api/express";',
+		handlerImport: 'import { createSummaExpress } from "@summa-ledger/summa/api/express";',
 		handlerFactory: "createSummaExpress",
 		routeFile: "src/routes/ledger.ts",
 	},
@@ -306,7 +306,7 @@ const frameworks: FrameworkChoice[] = [
 		value: "fastify",
 		label: "Fastify",
 		hint: "high-performance framework",
-		handlerImport: 'import { createSummaFastify } from "summa/api/fastify";',
+		handlerImport: 'import { createSummaFastify } from "@summa-ledger/summa/api/fastify";',
 		handlerFactory: "createSummaFastify",
 		routeFile: "src/routes/ledger.ts",
 	},
@@ -354,24 +354,24 @@ function generateConfigTemplate(opts: {
 	const lines: string[] = [];
 
 	// Imports
-	lines.push('import { createSumma } from "summa";');
+	lines.push('import { createSumma } from "@summa-ledger/summa";');
 
 	switch (opts.adapterKey) {
 		case "drizzle":
-			lines.push('import { drizzleAdapter } from "@summa/drizzle-adapter";');
+			lines.push('import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";');
 			lines.push('import { drizzle } from "drizzle-orm/node-postgres";');
 			break;
 		case "prisma":
-			lines.push('import { prismaAdapter } from "@summa/prisma-adapter";');
+			lines.push('import { prismaAdapter } from "@summa-ledger/prisma-adapter";');
 			lines.push('import { PrismaClient } from "@prisma/client";');
 			break;
 		case "kysely":
-			lines.push('import { kyselyAdapter } from "@summa/kysely-adapter";');
+			lines.push('import { kyselyAdapter } from "@summa-ledger/kysely-adapter";');
 			lines.push('import { Kysely, PostgresDialect } from "kysely";');
 			lines.push('import { Pool } from "pg";');
 			break;
 		case "memory":
-			lines.push('import { memoryAdapter } from "@summa/memory-adapter";');
+			lines.push('import { memoryAdapter } from "@summa-ledger/memory-adapter";');
 			break;
 	}
 
@@ -383,7 +383,7 @@ function generateConfigTemplate(opts: {
 		if (opts.plugins.includes("search") && !names.includes("pgSearchBackend")) {
 			names.push("pgSearchBackend");
 		}
-		lines.push(`import { ${names.join(", ")} } from "summa/plugins";`);
+		lines.push(`import { ${names.join(", ")} } from "@summa-ledger/summa/plugins";`);
 	}
 
 	lines.push("");
@@ -522,8 +522,8 @@ function generateRouteFile(framework: FrameworkChoice): string {
 function generateClientTemplate(opts: { configPath: string; framework?: string }): string {
 	const lines: string[] = [];
 
-	lines.push('import { createSummaClient } from "@summa/client";');
-	lines.push(`import type { InferSummaClient } from "@summa/client";`);
+	lines.push('import { createSummaClient } from "@summa-ledger/client";');
+	lines.push(`import type { InferSummaClient } from "@summa-ledger/client";`);
 	lines.push(`import type { summa } from "./${opts.configPath.replace(/\.ts$/, "")}";`);
 	lines.push("");
 	lines.push("// Infer the full client type from your server-side Summa instance.");
@@ -537,7 +537,7 @@ function generateClientTemplate(opts: { configPath: string; framework?: string }
 
 	if (opts.framework === "next") {
 		lines.push("// React hooks (Next.js / React)");
-		lines.push('// import { createSummaReact } from "@summa/client/react";');
+		lines.push('// import { createSummaReact } from "@summa-ledger/client/react";');
 		lines.push("// export const { useSumma, SummaProvider } = createSummaReact(client);");
 	}
 
@@ -773,7 +773,7 @@ export const initCommand = new Command("init")
 		}
 
 		// Auto-install dependencies
-		const deps = ["summa", adapter.pkg, ...adapter.peerDeps];
+		const deps = ["@summa-ledger/summa", adapter.pkg, ...adapter.peerDeps];
 		const installCmd = getInstallCommand(pm, deps);
 		let installed = false;
 
@@ -817,19 +817,19 @@ export const initCommand = new Command("init")
 					writeFileSync(clientPath, clientContent, "utf-8");
 					p.log.success(`Created ${pc.bold("src/summa.client.ts")}`);
 
-					// Add @summa/client to install if not already installed
+					// Add @summa-ledger/client to install if not already installed
 					if (!installed) {
 						p.log.info(
-							`Don't forget to install the client: ${pc.cyan(getInstallCommand(pm, ["@summa/client"]))}`,
+							`Don't forget to install the client: ${pc.cyan(getInstallCommand(pm, ["@summa-ledger/client"]))}`,
 						);
 					} else {
 						// Install client package too
 						try {
-							execSync(getInstallCommand(pm, ["@summa/client"]), { cwd, stdio: "pipe" });
-							p.log.success(`Installed ${pc.bold("@summa/client")}`);
+							execSync(getInstallCommand(pm, ["@summa-ledger/client"]), { cwd, stdio: "pipe" });
+							p.log.success(`Installed ${pc.bold("@summa-ledger/client")}`);
 						} catch {
 							p.log.info(
-								`Install client manually: ${pc.cyan(getInstallCommand(pm, ["@summa/client"]))}`,
+								`Install client manually: ${pc.cyan(getInstallCommand(pm, ["@summa-ledger/client"]))}`,
 							);
 						}
 					}

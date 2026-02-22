@@ -5,8 +5,13 @@
 // and FX quotes. Core-owned tables (idempotency_key, processed_event,
 // worker_lease) are now cleaned by core workers and the outbox plugin.
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES

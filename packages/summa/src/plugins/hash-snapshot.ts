@@ -8,8 +8,8 @@
 // NOTE: These are *cryptographic verification* snapshots (hash chain optimization),
 // NOT balance snapshots. For point-in-time balance snapshots, see the `snapshots` plugin.
 
-import type { SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaPlugin, TableDefinition } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { createHashSnapshot } from "../infrastructure/hash-snapshot.js";
 
 // =============================================================================

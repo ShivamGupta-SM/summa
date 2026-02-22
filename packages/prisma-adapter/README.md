@@ -1,18 +1,18 @@
-# @summa/prisma-adapter
+# @summa-ledger/prisma-adapter
 
 Prisma Client database adapter for the Summa ledger.
 
 ## Installation
 
 ```bash
-npm install @summa/prisma-adapter @prisma/client
+npm install @summa-ledger/prisma-adapter @prisma/client
 ```
 
 ## Usage
 
 ```ts
-import { createSumma } from "summa";
-import { prismaAdapter } from "@summa/prisma-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { prismaAdapter } from "@summa-ledger/prisma-adapter";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();

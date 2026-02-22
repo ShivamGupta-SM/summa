@@ -5,9 +5,9 @@
 // Example: payroll with salary expense, PF, TDS — 5 legs in one entry.
 
 import { randomUUID } from "node:crypto";
-import type { JournalEntryLeg, LedgerTransaction, SummaContext } from "@summa/core";
-import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { JournalEntryLeg, LedgerTransaction, SummaContext } from "@summa-ledger/core";
+import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { runAfterOperationHooks } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import {

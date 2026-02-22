@@ -7,7 +7,7 @@
 //
 // Supports both standalone Redis and Redis Cluster via ioredis's unified API.
 
-import type { SecondaryStorage } from "@summa/core/db";
+import type { SecondaryStorage } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES
@@ -58,7 +58,7 @@ export interface RedisStorageResult {
  * @example
  * ```ts
  * import Redis from "ioredis";
- * import { createRedisStorage } from "@summa/redis-storage";
+ * import { createRedisStorage } from "@summa-ledger/redis-storage";
  *
  * const redis = new Redis(process.env.REDIS_URL);
  * const { storage, disconnect } = createRedisStorage({ client: redis });

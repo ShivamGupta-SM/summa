@@ -856,7 +856,7 @@ Month 5─7:  Multi-Region Support
 |-------|:---:|-----------|
 | Hot Account Dedicated Buffer | 3 weeks | Redis-backed buffer, Lua scripts, real-time balance reads |
 | Dedicated Event Store | 3.5 weeks | EventStoreAdapter interface, PostgreSQL separation, optional EventStoreDB |
-| Database Sharding | 5 weeks | @summa/sharding package, shard router, cross-shard 2PC, CLI tools |
+| Database Sharding | 5 weeks | @summa-ledger/sharding package, shard router, cross-shard 2PC, CLI tools |
 | Multi-Region | 7 weeks | Region routing, write forwarding, replication monitoring, failover |
 | Integration testing | 2 weeks | Cross-region tests, shard migration tests, chaos testing |
 | **Total** | **~20.5 weeks** | **200K–1M+ TPS capability** |

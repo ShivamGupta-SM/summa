@@ -12,9 +12,9 @@
 //
 // For hot/system accounts: INSERT entry only (hot_account_entry batching is separate)
 
-import type { SummaTransactionAdapter } from "@summa/core";
-import { computeBalanceChecksum } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaTransactionAdapter } from "@summa-ledger/core";
+import { computeBalanceChecksum } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { readLatestVersion } from "./sql-helpers.js";
 
 // =============================================================================
@@ -123,7 +123,7 @@ export async function insertEntryAndUpdateBalance(
 	params: InsertEntryParams,
 ): Promise<InsertEntryResult> {
 	const { tx, transactionId, entryType, amount, currency, isHotAccount } = params;
-	const t = createTableResolver(params.tx.options?.schema ?? "summa");
+	const t = createTableResolver(params.tx.options?.schema ?? "@summa-ledger/summa");
 
 	// --- HOT ACCOUNT PATH: just insert the entry, no balance logic ---
 	if (isHotAccount) {

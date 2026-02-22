@@ -3,8 +3,8 @@
 // =============================================================================
 // Utility for extracting ledgerId from context.
 
-import type { SummaContext } from "@summa/core";
-import { SummaError } from "@summa/core";
+import type { SummaContext } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 
 /**
  * Extract the ledger ID from context. Tries:

@@ -11,8 +11,8 @@ The audit log plugin records every account creation, transaction, hold, and admi
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { auditLog } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { auditLog } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -73,7 +73,7 @@ For programmatic SDK usage (not via HTTP), `actor` will be `null` unless you man
 Use the standalone `queryAuditLog` function to search the audit trail:
 
 ```ts
-import { queryAuditLog } from "summa/plugins";
+import { queryAuditLog } from "@summa-ledger/summa/plugins";
 
 const logs = await queryAuditLog(summa.$context, {
   operation: "transaction.credit",  // Filter by operation type
@@ -107,7 +107,7 @@ for (const entry of logs) {
 ## Type Inference
 
 ```ts
-import type { AuditLogEntry } from "summa/plugins";
+import type { AuditLogEntry } from "@summa-ledger/summa/plugins";
 
 type AuditEntry = typeof summa.$Infer.AuditLogEntry;
 // { id, operation, params, actor, entryHash, timestamp }

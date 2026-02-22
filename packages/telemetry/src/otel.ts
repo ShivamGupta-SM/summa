@@ -4,7 +4,7 @@
 // Uses @opentelemetry/api as an optional peer dependency.
 // If not installed, all exports return no-op implementations.
 
-/** Minimal logger interface matching SummaLogger from @summa/core */
+/** Minimal logger interface matching SummaLogger from @summa-ledger/core */
 interface SummaLogger {
 	debug(message: string, data?: Record<string, unknown>): void;
 	info(message: string, data?: Record<string, unknown>): void;

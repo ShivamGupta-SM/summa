@@ -86,13 +86,42 @@ const txn = await summa.transactions.debit({
   reference: "fee_001",
   description: "Monthly platform fee",
   destinationSystemAccount: "@Fees",  // Optional — defaults to @World
-  allowOverdraft: false,
   idempotencyKey: "fee_001",
 });
 ```
 
 </Tab>
 </Tabs>
+
+### Force Debit
+
+A privileged debit that **bypasses all balance and overdraft checks**. Use for chargebacks, network-initiated adjustments, regulatory debits, or any case where the debit must succeed regardless of account balance.
+
+```ts
+const txn = await summa.transactions.forceDebit({
+  holderId: "merchant_1",
+  amount: 500_00,
+  reference: "chargeback-001",
+  reason: "Visa chargeback — dispute lost",
+  destinationSystemAccount: "@Chargebacks",
+  idempotencyKey: "cb_001",
+});
+```
+
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Holder ID of the account to debit.", required: true },
+    amount: { type: "number", description: "Amount in smallest currency units.", required: true },
+    reference: { type: "string", description: "Business reference.", required: true },
+    reason: { type: "string", description: "Mandatory reason for the forced debit (stored in metadata as _forceDebitReason).", required: true },
+    destinationSystemAccount: { type: "string", description: "System account to receive the funds.", default: "@World" },
+    idempotencyKey: { type: "string", description: "Idempotency key for safe retries." },
+  }}
+/>
+
+<Callout type="warn" title="Use with caution">
+  `forceDebit` can push an account balance arbitrarily negative. Restrict access to this operation in your application — it should only be used by trusted system processes, not exposed to end users.
+</Callout>
 
 ### Refunds
 

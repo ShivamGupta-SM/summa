@@ -4,8 +4,13 @@
 // Manages dead letter queue entries — retry, resolve, list, and stats.
 // Ported from the original Encore ledger's subscribers/dlq-handler.ts.
 
-import type { PaginatedResult, SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PaginatedResult,
+	SummaContext,
+	SummaPlugin,
+	TableDefinition,
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES

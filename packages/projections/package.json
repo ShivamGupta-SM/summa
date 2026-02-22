@@ -1,5 +1,5 @@
 {
-  "name": "@summa/projections",
+  "name": "@summa-ledger/projections",
   "version": "0.1.0",
   "description": "CQRS projection runner for Summa event streams",
   "type": "module",
@@ -32,8 +32,8 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*",
-    "@summa/message-queue": "workspace:*"
+    "@summa-ledger/core": "workspace:*",
+    "@summa-ledger/message-queue": "workspace:*"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "catalog:",

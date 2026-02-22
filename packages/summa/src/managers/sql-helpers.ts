@@ -11,9 +11,9 @@ import type {
 	SummaTransactionAdapter,
 	TransactionStatus,
 	TransactionType,
-} from "@summa/core";
-import { minorToDecimal, SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { minorToDecimal, SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { logTransactionInTx } from "./limit-manager.js";
 import type { LatestVersion, RawTransactionRow } from "./raw-types.js";

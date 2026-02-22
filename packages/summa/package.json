@@ -1,5 +1,5 @@
 {
-  "name": "summa",
+  "name": "@summa-ledger/summa",
   "version": "0.1.0",
   "description": "Event-sourced double-entry financial ledger for TypeScript",
   "type": "module",
@@ -102,7 +102,7 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*",
+    "@summa-ledger/core": "workspace:*",
     "pdfkit": "^0.17.2"
   },
   "devDependencies": {

@@ -10,15 +10,15 @@
 // - All status changes INSERT new transaction_status rows
 
 import { randomUUID } from "node:crypto";
-import type { Hold, HoldDestination, HoldStatus, SummaContext } from "@summa/core";
+import type { Hold, HoldDestination, HoldStatus, SummaContext } from "@summa-ledger/core";
 import {
 	AGGREGATE_TYPES,
 	computeBalanceChecksum,
 	HOLD_EVENTS,
 	minorToDecimal,
 	SummaError,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	runAfterHoldCommitHooks,
 	runAfterOperationHooks,
@@ -181,6 +181,14 @@ export async function createHold(
 			throw SummaError.insufficientBalance(
 				`Insufficient balance. Available: ${available}, Required: ${amount}`,
 			);
+		}
+		if (src.allow_overdraft) {
+			const overdraftLimit = Number(src.overdraft_limit ?? 0);
+			if (overdraftLimit > 0 && available - amount < -overdraftLimit) {
+				throw SummaError.insufficientBalance(
+					`Hold would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${available + overdraftLimit}, Required: ${amount}`,
+				);
+			}
 		}
 
 		// Resolve destination
@@ -407,6 +415,14 @@ export async function createMultiDestinationHold(
 			throw SummaError.insufficientBalance(
 				`Insufficient balance. Available: ${available}, Required: ${amount}`,
 			);
+		}
+		if (src.allow_overdraft) {
+			const overdraftLimit = Number(src.overdraft_limit ?? 0);
+			if (overdraftLimit > 0 && available - amount < -overdraftLimit) {
+				throw SummaError.insufficientBalance(
+					`Hold would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${available + overdraftLimit}, Required: ${amount}`,
+				);
+			}
 		}
 
 		const holdExpiresAt =

@@ -11,7 +11,7 @@ Summa's database layer uses a `SqlDialect` abstraction that handles differences 
 ## Available Dialects
 
 ```ts
-import { postgresDialect, mysqlDialect, sqliteDialect } from "@summa/core/db";
+import { postgresDialect, mysqlDialect, sqliteDialect } from "@summa-ledger/core/db";
 ```
 
 | Dialect | Min Version | Parameter Style | Advisory Locks | `RETURNING` |
@@ -25,7 +25,7 @@ import { postgresDialect, mysqlDialect, sqliteDialect } from "@summa/core/db";
 PostgreSQL is the recommended and most tested dialect. It supports all Summa features natively.
 
 ```ts
-import { postgresDialect } from "@summa/core/db";
+import { postgresDialect } from "@summa-ledger/core/db";
 
 // Used internally by all PostgreSQL-based adapters
 // You don't need to configure this explicitly — it's the default
@@ -44,7 +44,7 @@ import { postgresDialect } from "@summa/core/db";
 MySQL 8.0+ support with InnoDB engine.
 
 ```ts
-import { mysqlDialect } from "@summa/core/db";
+import { mysqlDialect } from "@summa-ledger/core/db";
 ```
 
 ### Key Differences from PostgreSQL
@@ -66,7 +66,7 @@ import { mysqlDialect } from "@summa/core/db";
 SQLite 3.35+ support for development, testing, and embedded use cases.
 
 ```ts
-import { sqliteDialect } from "@summa/core/db";
+import { sqliteDialect } from "@summa-ledger/core/db";
 ```
 
 ### Key Differences
@@ -87,7 +87,7 @@ import { sqliteDialect } from "@summa/core/db";
 If your database schema uses different table or column names than Summa's defaults, use the `ModelResolver`:
 
 ```ts
-import { createModelResolver } from "@summa/core/db";
+import { createModelResolver } from "@summa-ledger/core/db";
 
 const resolver = createModelResolver({
   modelNames: {

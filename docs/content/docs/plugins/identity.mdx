@@ -11,8 +11,8 @@ The identity plugin provides full customer identity management with **AES-256-GC
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { identity } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { identity } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -99,7 +99,7 @@ When `autoTokenize` is enabled, the plugin uses an `operationHooks.after` hook o
 ## Querying Identities
 
 ```ts
-import { getIdentity, listIdentities } from "summa/plugins";
+import { getIdentity, listIdentities } from "@summa-ledger/summa/plugins";
 
 // Get a single identity
 const identity = await getIdentity(summa.$context, { id: "ident_abc123" });
@@ -127,7 +127,7 @@ const identities = await listIdentities(summa.$context, {
 ## Type Inference
 
 ```ts
-import type { Identity, TokenizedFieldInfo } from "summa/plugins";
+import type { Identity, TokenizedFieldInfo } from "@summa-ledger/summa/plugins";
 
 type Ident = typeof summa.$Infer.Identity;
 // { id, type, first_name, last_name, email, phone, street, city, state, postal_code, country, metadata, created_at, updated_at }

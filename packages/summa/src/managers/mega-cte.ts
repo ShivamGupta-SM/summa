@@ -10,9 +10,9 @@
 // prior event lookup is needed.
 
 import { randomUUID } from "node:crypto";
-import type { SummaTransactionAdapter } from "@summa/core";
-import { computeBalanceChecksum, computeHash } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaTransactionAdapter } from "@summa-ledger/core";
+import { computeBalanceChecksum, computeHash } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES

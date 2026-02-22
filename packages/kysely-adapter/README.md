@@ -1,18 +1,18 @@
-# @summa/kysely-adapter
+# @summa-ledger/kysely-adapter
 
 Kysely database adapter for the Summa ledger.
 
 ## Installation
 
 ```bash
-npm install @summa/kysely-adapter kysely
+npm install @summa-ledger/kysely-adapter kysely
 ```
 
 ## Usage
 
 ```ts
-import { createSumma } from "summa";
-import { kyselyAdapter } from "@summa/kysely-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { kyselyAdapter } from "@summa-ledger/kysely-adapter";
 import { Kysely, PostgresDialect } from "kysely";
 import { Pool } from "pg";
 
@@ -35,7 +35,7 @@ The package exports `createPooledAdapter` and `RECOMMENDED_POOL_CONFIG` for prod
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/kysely-adapter";
+} from "@summa-ledger/kysely-adapter";
 ```
 
 ### Peer Dependencies

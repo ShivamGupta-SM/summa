@@ -6,14 +6,14 @@ Summa is an event-sourced double-entry financial ledger for TypeScript, structur
 
 ## Architecture
 
-- **@summa/core** — Types, adapter interface (SummaAdapter), errors (SummaError), utils (hash, id, lock, money)
+- **@summa-ledger/core** — Types, adapter interface (SummaAdapter), errors (SummaError), utils (hash, id, lock, money)
 - **summa** — Main package with managers (account, transaction, hold, limit, idempotency, system-accounts), infrastructure (event-store, hash-chain, worker-runner), and 6 plugins
-- **@summa/drizzle-adapter** — PostgreSQL adapter via Drizzle ORM (20 tables)
-- **@summa/prisma-adapter** — PostgreSQL adapter via Prisma
-- **@summa/kysely-adapter** — PostgreSQL adapter via Kysely
-- **@summa/memory-adapter** — In-memory adapter for testing (no raw SQL support)
-- **@summa/cli** — CLI tool (init, migrate, verify, status)
-- **@summa/test-utils** — Test helpers (getTestInstance, assertions)
+- **@summa-ledger/drizzle-adapter** — PostgreSQL adapter via Drizzle ORM (20 tables)
+- **@summa-ledger/prisma-adapter** — PostgreSQL adapter via Prisma
+- **@summa-ledger/kysely-adapter** — PostgreSQL adapter via Kysely
+- **@summa-ledger/memory-adapter** — In-memory adapter for testing (no raw SQL support)
+- **@summa-ledger/cli** — CLI tool (init, migrate, verify, status)
+- **@summa-ledger/test-utils** — Test helpers (getTestInstance, assertions)
 
 ## Key Patterns
 

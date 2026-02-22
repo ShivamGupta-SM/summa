@@ -7,16 +7,16 @@ icon: Fastify
 ## Installation
 
 ```bash
-pnpm add summa fastify
+pnpm add @summa-ledger/summa fastify
 ```
 
 ## Quick Start
 
 ```ts
 import Fastify from "fastify";
-import { createSumma } from "summa";
-import { createSummaFastify } from "summa/api/fastify";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaFastify } from "@summa-ledger/summa/api/fastify";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -107,8 +107,8 @@ app.addHook("onRequest", async (request, reply) => {
 ## Rate Limiting
 
 ```ts
-import { createSummaFastify } from "summa/api/fastify";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaFastify } from "@summa-ledger/summa/api/fastify";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 app.register(
   createSummaFastify(summa, {
@@ -151,11 +151,11 @@ const app = Fastify({
 
 ```ts
 import Fastify from "fastify";
-import { createSumma } from "summa";
-import { createSummaFastify } from "summa/api/fastify";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaFastify } from "@summa-ledger/summa/api/fastify";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 

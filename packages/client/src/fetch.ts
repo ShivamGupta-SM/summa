@@ -2,7 +2,7 @@
 // FETCH WRAPPER — Internal fetch with interceptors, timeout, error parsing
 // =============================================================================
 
-import type { SummaErrorCode } from "@summa/core";
+import type { SummaErrorCode } from "@summa-ledger/core";
 import { SummaClientError } from "./error.js";
 import type { RequestInterceptor, ResponseInterceptor, SummaClientOptions } from "./types.js";
 

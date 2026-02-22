@@ -15,6 +15,7 @@ export interface Account {
 	pendingCredit: number;
 	pendingDebit: number;
 	allowOverdraft: boolean;
+	overdraftLimit: number;
 	accountType: AccountType | null;
 	accountCode: string | null;
 	parentAccountId: string | null;

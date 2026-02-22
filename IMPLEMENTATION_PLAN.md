@@ -306,7 +306,7 @@ organization({
   4. **Choose plugins** — multi-select checklist of all 23 plugins
   5. **Generate config** — `summa.config.ts` with selected plugins
   6. **Generate schema** — run `summa generate` automatically
-  7. **Install packages** — auto-run `pnpm add @summa/summa @summa/drizzle-adapter ...`
+  7. **Install packages** — auto-run `pnpm add @summa-ledger/summa @summa-ledger/drizzle-adapter ...`
   8. **Generate client** — create client setup file for detected framework
   9. **Print next steps** — clear instructions
 

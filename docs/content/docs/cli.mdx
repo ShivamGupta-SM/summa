@@ -7,7 +7,7 @@ icon: CommandLine
 ## Installation
 
 ```bash
-pnpm add -D @summa/cli
+pnpm add -D @summa-ledger/cli
 ```
 
 Or run directly:
@@ -102,7 +102,7 @@ npx summa migrate push --yes
 | `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
 | `-y, --yes` | Skip confirmation prompt |
 
-If your config uses a non-public schema (default: `"summa"`), the command automatically runs `CREATE SCHEMA IF NOT EXISTS` before applying migrations. All tables are created in the configured schema namespace.
+If your config uses a non-public schema (default: `"@summa-ledger/summa"`), the command automatically runs `CREATE SCHEMA IF NOT EXISTS` before applying migrations. All tables are created in the configured schema namespace.
 
 Shows a migration preview before applying:
 - Schema creation (if needed)

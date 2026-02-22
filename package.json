@@ -1,5 +1,5 @@
 {
-	"name": "@summa/root",
+	"name": "@summa-ledger/root",
 	"description": "Event-sourced double-entry financial ledger for TypeScript",
 	"private": true,
 	"type": "module",
@@ -14,9 +14,9 @@
 	"scripts": {
 		"build": "turbo build",
 		"dev": "turbo dev",
-		"test": "turbo test --filter=!@summa/integration-tests",
+		"test": "turbo test --filter=!@summa-ledger/integration-tests",
 		"test:unit": "vitest run packages/core",
-		"test:integration": "turbo test --filter=@summa/integration-tests",
+		"test:integration": "turbo test --filter=@summa-ledger/integration-tests",
 		"test:coverage": "turbo test -- --coverage",
 		"typecheck": "turbo typecheck",
 		"clean": "turbo clean",

@@ -5,14 +5,19 @@
 // ledger. This plugin hooks into onRequest/onResponse to create spans and
 // record HTTP metrics.
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
 
 // =============================================================================
 // TYPES
 // =============================================================================
 
 export interface ObservabilityOptions {
-	/** Service name for tracing and metrics. Default: "summa" */
+	/** Service name for tracing and metrics. Default: "@summa-ledger/summa" */
 	serviceName?: string;
 	/** Enable request tracing via onRequest/onResponse hooks. Default: true */
 	tracing?: boolean;
@@ -108,7 +113,7 @@ function sanitizeMetricName(name: string): string {
 // =============================================================================
 
 export function observability(options?: ObservabilityOptions): SummaPlugin {
-	const serviceName = sanitizeMetricName(options?.serviceName ?? "summa");
+	const serviceName = sanitizeMetricName(options?.serviceName ?? "@summa-ledger/summa");
 	const tracingEnabled = options?.tracing !== false;
 	const metricsEnabled = options?.metrics !== false;
 	const traceHeader = options?.traceHeader ?? "traceparent";

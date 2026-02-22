@@ -3,9 +3,9 @@
 // =============================================================================
 // Shared by hold-manager (commit) and transaction-manager (multiTransfer).
 
-import type { HoldDestination, SummaContext, SummaTransactionAdapter } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { HoldDestination, SummaContext, SummaTransactionAdapter } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { getLedgerId } from "./ledger-helpers.js";
 import { getSystemAccount } from "./system-accounts.js";

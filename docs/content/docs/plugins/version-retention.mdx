@@ -13,8 +13,8 @@ The version retention plugin periodically archives old version rows and deletes 
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { versionRetention } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { versionRetention } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -128,8 +128,8 @@ versionRetention({
 For maximum performance, combine version retention with table partitioning on `account_balance_version`:
 
 ```ts
-import { generatePartitionDDL, partitionMaintenance } from "summa/db";
-import { versionRetention } from "summa/plugins";
+import { generatePartitionDDL, partitionMaintenance } from "@summa-ledger/summa/db";
+import { versionRetention } from "@summa-ledger/summa/plugins";
 
 // Partition the version table by month
 const ddl = generatePartitionDDL({

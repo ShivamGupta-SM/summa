@@ -2,7 +2,7 @@
 // CLIENT ERROR — Typed error from API responses
 // =============================================================================
 
-import type { SummaErrorCode } from "@summa/core";
+import type { SummaErrorCode } from "@summa-ledger/core";
 
 export class SummaClientError extends Error {
 	readonly code: SummaErrorCode;

@@ -8,8 +8,8 @@ import type {
 	PluginApiResponse,
 	PluginEndpoint,
 	SummaContext,
-} from "@summa/core";
-import { SummaError } from "@summa/core";
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 import type { Summa } from "../summa/base.js";
 import type { RateLimiter, RateLimitResult } from "./rate-limiter.js";
 import { routes } from "./routes/index.js";

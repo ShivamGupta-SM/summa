@@ -4,8 +4,8 @@
 // Token bucket / sliding window rate limiter with pluggable storage backends.
 // Ported from the original Encore ledger's middleware/rate-limiter.ts.
 
-import type { SecondaryStorage, SummaAdapter } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SecondaryStorage, SummaAdapter } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES
@@ -161,7 +161,7 @@ function createDatabaseRateLimiter(
 	adapter: SummaAdapter,
 	schema?: string,
 ): RateLimiter {
-	const t = createTableResolver(schema ?? "summa");
+	const t = createTableResolver(schema ?? "@summa-ledger/summa");
 
 	async function getCount(key: string): Promise<{ count: number; windowStart: Date }> {
 		const windowStart = new Date(Date.now() - config.window * 1000);

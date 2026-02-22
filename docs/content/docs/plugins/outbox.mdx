@@ -22,8 +22,8 @@ This matches the architecture used by Stripe and Convoy: a single transactional 
 ### Publisher only (internal event bus)
 
 ```ts
-import { createSumma } from "summa";
-import { outbox } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { outbox } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -182,7 +182,7 @@ When `webhooks` is configured, the following endpoints are added:
 Returns aggregate statistics about the outbox:
 
 ```ts
-import { getOutboxStats } from "summa/plugins";
+import { getOutboxStats } from "@summa-ledger/summa/plugins";
 
 const stats = await getOutboxStats(summa.$context);
 console.log(stats.pending);    // Events awaiting delivery
@@ -210,7 +210,7 @@ The `outbox-cleanup` worker also handles cleanup of the `processed_event` dedupl
 ## Type Inference
 
 ```ts
-import type { OutboxStats, WebhookEndpoint, WebhookDelivery } from "summa/plugins";
+import type { OutboxStats, WebhookEndpoint, WebhookDelivery } from "@summa-ledger/summa/plugins";
 
 type Stats = typeof summa.$Infer.OutboxStats;
 // { pending: number, processed: number, failed: number }

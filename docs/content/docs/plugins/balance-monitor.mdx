@@ -11,8 +11,8 @@ The balance monitor plugin watches account balances in real-time and triggers al
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { balanceMonitor } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { balanceMonitor } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -114,7 +114,7 @@ Combine with the **webhook delivery** or **outbox** plugin to forward these aler
 ## Querying Monitors
 
 ```ts
-import { listMonitors } from "summa/plugins";
+import { listMonitors } from "@summa-ledger/summa/plugins";
 
 const monitors = await listMonitors(summa.$context, {
   holderId: "user_123",  // Optional filter
@@ -126,7 +126,7 @@ const monitors = await listMonitors(summa.$context, {
 ## Type Inference
 
 ```ts
-import type { BalanceMonitorRecord } from "summa/plugins";
+import type { BalanceMonitorRecord } from "@summa-ledger/summa/plugins";
 
 type Monitor = typeof summa.$Infer.BalanceMonitorRecord;
 // { id, holder_id, field, operator, threshold, description, active, created_at }

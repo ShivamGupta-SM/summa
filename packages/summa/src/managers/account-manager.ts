@@ -19,7 +19,7 @@ import type {
 	NormalBalance,
 	SummaContext,
 	SummaTransactionAdapter,
-} from "@summa/core";
+} from "@summa-ledger/core";
 import {
 	ACCOUNT_EVENTS,
 	AGGREGATE_TYPES,
@@ -29,8 +29,8 @@ import {
 	hashLockKey,
 	SummaError,
 	TRANSACTION_EVENTS,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	runAfterAccountCreateHooks,
 	runAfterOperationHooks,
@@ -95,6 +95,7 @@ export async function createAccount(
 		holderType: HolderType;
 		currency?: string;
 		allowOverdraft?: boolean;
+		overdraftLimit?: number;
 		indicator?: string;
 		accountType?: AccountType;
 		accountCode?: string;
@@ -107,6 +108,7 @@ export async function createAccount(
 		holderType,
 		currency = ctx.options.currency,
 		allowOverdraft = false,
+		overdraftLimit = 0,
 		indicator,
 		accountType,
 		accountCode,
@@ -207,7 +209,7 @@ export async function createAccount(
 			holderType,
 			currency,
 			allowOverdraft,
-			0,
+			overdraftLimit,
 			indicator ?? null,
 			accountType ?? null,
 			accountCode ?? null,
@@ -1271,6 +1273,7 @@ function rawRowToAccount(row: RawAccountRow): Account {
 		pendingCredit: Number(row.pending_credit),
 		pendingDebit: Number(row.pending_debit),
 		allowOverdraft: row.allow_overdraft,
+		overdraftLimit: Number(row.overdraft_limit ?? 0),
 		accountType: (row.account_type as Account["accountType"]) ?? null,
 		accountCode: row.account_code ?? null,
 		parentAccountId: row.parent_account_id ?? null,

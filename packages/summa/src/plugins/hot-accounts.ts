@@ -5,8 +5,8 @@
 // in hot_account_entry and periodically batch-aggregated into the system_account
 // balance. This avoids row-level lock contention on high-throughput accounts.
 
-import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================

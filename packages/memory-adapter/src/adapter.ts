@@ -5,7 +5,7 @@
 // Data is stored in nested Maps: model name -> record id -> record data.
 // Supports all Where operators via in-memory filtering.
 
-import type { SortBy, SummaAdapter, SummaTransactionAdapter, Where } from "@summa/core/db";
+import type { SortBy, SummaAdapter, SummaTransactionAdapter, Where } from "@summa-ledger/core/db";
 
 // =============================================================================
 // INTERNAL HELPERS
@@ -280,7 +280,7 @@ function buildAdapterMethods(
  *
  * @example
  * ```ts
- * import { memoryAdapter } from "@summa/memory-adapter";
+ * import { memoryAdapter } from "@summa-ledger/memory-adapter";
  *
  * const adapter = memoryAdapter();
  *

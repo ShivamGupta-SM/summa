@@ -3,8 +3,13 @@
 // =============================================================================
 // Sub-ledger detail auto-summarizes into GL. Depends on Feature 1 for hierarchy.
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================

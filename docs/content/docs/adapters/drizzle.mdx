@@ -7,14 +7,14 @@ icon: Drizzle
 ## Installation
 
 ```bash
-pnpm add @summa/drizzle-adapter drizzle-orm pg
+pnpm add @summa-ledger/drizzle-adapter drizzle-orm pg
 ```
 
 ## Setup
 
 ```ts
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { createSumma } from "summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -37,12 +37,12 @@ npx summa generate --adapter drizzle --out src/db/summa-schema.ts
 
 This outputs schema-aware table definitions you can import alongside your own Drizzle schema. If you have plugins configured in your `summa.config.ts`, the generated schema will include their tables too.
 
-When `schema` is set to a non-public value (default: `"summa"`), the generated file uses `pgSchema()` to namespace all tables:
+When `schema` is set to a non-public value (default: `"@summa-ledger/summa"`), the generated file uses `pgSchema()` to namespace all tables:
 
 ```ts title="src/db/summa-schema.ts (generated)"
 import { pgSchema, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 
-export const summaSchema = pgSchema("summa");
+export const summaSchema = pgSchema("@summa-ledger/summa");
 
 export const accountBalance = summaSchema.table("account_balance", {
   id: uuid("id").primaryKey(),
@@ -97,7 +97,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/drizzle-adapter";
+} from "@summa-ledger/drizzle-adapter";
 
 const pool = new Pool({
   ...RECOMMENDED_POOL_CONFIG,
@@ -154,7 +154,7 @@ You can also configure the pool manually without `createPooledAdapter`:
 ```ts
 import { Pool } from "pg";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -176,8 +176,8 @@ export const summa = createSumma({
 For read-heavy workloads, use `createReadReplicaAdapter()` to route reads to replica(s) and writes to the primary:
 
 ```ts
-import { createReadReplicaAdapter } from "@summa/core/db";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 
 const primary = drizzleAdapter(drizzle(primaryPool));
 const replica = drizzleAdapter(drizzle(replicaPool));
@@ -249,14 +249,14 @@ await summa.transactions.transfer({
 ## Full Example
 
 ```ts
-import { createSumma } from "summa";
+import { createSumma } from "@summa-ledger/summa";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/drizzle-adapter";
-import { createReadReplicaAdapter } from "@summa/core/db";
-import { createRedisStorage } from "@summa/redis-storage";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+} from "@summa-ledger/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import Redis from "ioredis";

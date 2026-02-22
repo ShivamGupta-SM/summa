@@ -1,5 +1,5 @@
 {
-	"name": "@summa/docs",
+	"name": "@summa-ledger/docs",
 	"version": "0.0.0",
 	"private": true,
 	"type": "module",

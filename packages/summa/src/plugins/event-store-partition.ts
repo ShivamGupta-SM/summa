@@ -8,7 +8,7 @@
 // Users must run the initial partition migration DDL separately (one-time).
 // Use the CLI command: npx summa partition generate
 
-import type { SummaPlugin } from "@summa/core";
+import type { SummaPlugin } from "@summa-ledger/core";
 import { type PartitionInterval, partitionMaintenance } from "../db/partitioning.js";
 
 // =============================================================================
@@ -25,7 +25,7 @@ export interface EventStorePartitionOptions {
 	/** Detach partitions older than this many intervals. Null = never detach. Default: null */
 	retainPartitions?: number | null;
 
-	/** PostgreSQL schema. Default: "summa" */
+	/** PostgreSQL schema. Default: "@summa-ledger/summa" */
 	schema?: string;
 }
 
@@ -39,7 +39,7 @@ export interface EventStorePartitionOptions {
  *
  * @example
  * ```ts
- * import { eventStorePartition } from "summa/plugins";
+ * import { eventStorePartition } from "@summa-ledger/summa/plugins";
  *
  * const summa = createSumma({
  *   plugins: [eventStorePartition({ interval: "monthly", createAhead: 3 })],

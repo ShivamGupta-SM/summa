@@ -13,7 +13,7 @@ import { parseNodeHeaders, parseNodeQuery } from "./request-helpers.js";
  * @example
  * ```ts
  * import Fastify from "fastify";
- * import { createSummaFastify } from "summa/api/fastify";
+ * import { createSummaFastify } from "@summa-ledger/summa/api/fastify";
  *
  * const app = Fastify();
  * app.register(createSummaFastify(summa), { prefix: "/api/ledger" });

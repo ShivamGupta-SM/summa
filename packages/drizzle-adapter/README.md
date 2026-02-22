@@ -1,18 +1,18 @@
-# @summa/drizzle-adapter
+# @summa-ledger/drizzle-adapter
 
 Drizzle ORM database adapter for the Summa ledger.
 
 ## Installation
 
 ```bash
-npm install @summa/drizzle-adapter drizzle-orm
+npm install @summa-ledger/drizzle-adapter drizzle-orm
 ```
 
 ## Usage
 
 ```ts
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL);
@@ -29,7 +29,7 @@ const summa = createSumma({
 The package also exports the Drizzle table schema:
 
 ```ts
-import { schema } from "@summa/drizzle-adapter/schema";
+import { schema } from "@summa-ledger/drizzle-adapter/schema";
 ```
 
 ### Peer Dependencies

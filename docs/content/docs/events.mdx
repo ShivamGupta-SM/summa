@@ -151,7 +151,7 @@ Even with direct database access, any attempt to modify or delete these rows rai
 Use the reconciliation plugin's `onBlockCheckpoint` callback to anchor block hashes to an external store (S3, blockchain, separate database). This provides cryptographic proof that the ledger state at a given point was not altered retroactively.
 
 ```ts
-import { reconciliation } from "summa/plugins";
+import { reconciliation } from "@summa-ledger/summa/plugins";
 
 plugins: [
   reconciliation({
@@ -218,7 +218,7 @@ The verification re-computes every hash from the event data and checks that each
 `verifyHashChain()` scans every event from the beginning — O(all events). For ledgers with millions of events, use the checkpoint-aware variant that skips events already covered by sealed block checkpoints:
 
 ```ts
-import { verifyHashChainFromCheckpoint } from "summa/infrastructure";
+import { verifyHashChainFromCheckpoint } from "@summa-ledger/summa/infrastructure";
 
 const result = await verifyHashChainFromCheckpoint(
   ctx,
@@ -242,7 +242,7 @@ The reconciliation plugin uses this automatically for Step 5 (hash chain verific
 Get the highest event sequence number covered by a sealed block checkpoint:
 
 ```ts
-import { getLatestSealedSequence } from "summa/infrastructure";
+import { getLatestSealedSequence } from "@summa-ledger/summa/infrastructure";
 
 const seq = await getLatestSealedSequence(ctx, ledgerId);
 // Returns 0 if no checkpoints exist

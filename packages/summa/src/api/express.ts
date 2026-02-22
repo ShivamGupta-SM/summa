@@ -13,7 +13,7 @@ import { parseNodeHeaders, parseNodeQuery } from "./request-helpers.js";
  * @example
  * ```ts
  * import express from "express";
- * import { createSummaExpress } from "summa/api/express";
+ * import { createSummaExpress } from "@summa-ledger/summa/api/express";
  *
  * const app = express();
  * app.use(express.json());

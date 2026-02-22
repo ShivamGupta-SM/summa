@@ -1,6 +1,6 @@
-import { SummaError } from "@summa/core";
-import { assertDoubleEntryBalance } from "@summa/test-utils";
-import type { Summa } from "summa";
+import { SummaError } from "@summa-ledger/core";
+import type { Summa } from "@summa-ledger/summa";
+import { assertDoubleEntryBalance } from "@summa-ledger/test-utils";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTables, closePool, createIntegrationInstance, createTestSchema } from "./setup.js";
 

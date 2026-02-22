@@ -2,7 +2,7 @@
 // LEDGER & HEALTH ROUTES
 // =============================================================================
 
-import { createTableResolver } from "@summa/core/db";
+import { createTableResolver } from "@summa-ledger/core/db";
 import type { Summa } from "../../summa/base.js";
 import type { Route } from "../handler.js";
 import { defineRoute, json } from "../handler.js";

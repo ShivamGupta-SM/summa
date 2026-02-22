@@ -10,12 +10,17 @@ import type {
 	PluginApiResponse,
 	SummaContext,
 	SummaPlugin,
-} from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 import { getLedgerId } from "../managers/ledger-helpers.js";
-import { creditAccount, debitAccount, transfer } from "../managers/transaction-manager.js";
+import {
+	creditAccount,
+	debitAccount,
+	forceDebit,
+	transfer,
+} from "../managers/transaction-manager.js";
 
 // =============================================================================
 // TYPES
@@ -594,7 +599,18 @@ async function executeBatchItem(
 				category,
 				destinationSystemAccount:
 					data.destinationSystemAccount != null ? String(data.destinationSystemAccount) : undefined,
-				allowOverdraft: data.allowOverdraft === true || data.allowOverdraft === "true",
+				idempotencyKey,
+			});
+		case "force_debit":
+			return forceDebit(ctx, {
+				holderId: String(data.holderId),
+				amount,
+				reference,
+				reason: String(data.reason ?? "batch force debit"),
+				description,
+				category,
+				destinationSystemAccount:
+					data.destinationSystemAccount != null ? String(data.destinationSystemAccount) : undefined,
 				idempotencyKey,
 			});
 		case "transfer":

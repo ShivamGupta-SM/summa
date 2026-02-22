@@ -11,14 +11,14 @@ icon: CpuChip
 ## Installation
 
 ```bash
-pnpm add @summa/memory-adapter
+pnpm add @summa-ledger/memory-adapter
 ```
 
 ## Setup
 
 ```ts
-import { memoryAdapter } from "@summa/memory-adapter";
-import { createSumma } from "summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
+import { createSumma } from "@summa-ledger/summa";
 
 export const summa = createSumma({
   database: memoryAdapter(),
@@ -43,8 +43,8 @@ Do **not** use the memory adapter in production. It has no durability, no concur
 
 ```ts title="tests/ledger.test.ts"
 import { describe, it, expect, beforeEach } from "vitest";
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 describe("ledger", () => {
   let summa: ReturnType<typeof createSumma>;
@@ -92,9 +92,9 @@ describe("ledger", () => {
 ## Testing with Plugins
 
 ```ts
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
-import { velocityLimits, auditLog } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
+import { velocityLimits, auditLog } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: memoryAdapter(),

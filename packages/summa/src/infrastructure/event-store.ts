@@ -10,9 +10,9 @@ import type {
 	StoredEvent,
 	SummaContext,
 	SummaTransactionAdapter,
-} from "@summa/core";
-import { computeHash, SummaError } from "@summa/core";
-import { createTableResolver, runWithTransactionContext } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { computeHash, SummaError } from "@summa-ledger/core";
+import { createTableResolver, runWithTransactionContext } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TRANSACTION TIMEOUT WRAPPER

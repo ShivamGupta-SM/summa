@@ -14,8 +14,8 @@
 //
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
 
-import type { SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaPlugin, TableDefinition } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { createBlockCheckpoint, verifyRecentBlocks } from "../infrastructure/hash-chain.js";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 

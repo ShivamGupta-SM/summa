@@ -143,15 +143,15 @@ Cross-currency transfers with exchange rates, FX rate caching and quotes, gain/l
 ## Quick Start
 
 ```bash
-npm i summa @summa/core @summa/drizzle-adapter drizzle-orm
+npm i @summa-ledger/summa @summa-ledger/core @summa-ledger/drizzle-adapter drizzle-orm
 ```
 
 **1. Configure**
 
 ```ts
-import { createSumma } from "summa";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -284,10 +284,10 @@ console.log(result.valid); // true — no events tampered
 Swap adapters without touching business logic. Same API, same types, any database.
 
 ```bash
-npm i @summa/drizzle-adapter    # Drizzle ORM
-npm i @summa/prisma-adapter     # Prisma
-npm i @summa/kysely-adapter     # Kysely
-npm i @summa/memory-adapter     # In-memory (testing)
+npm i @summa-ledger/drizzle-adapter    # Drizzle ORM
+npm i @summa-ledger/prisma-adapter     # Prisma
+npm i @summa-ledger/kysely-adapter     # Kysely
+npm i @summa-ledger/memory-adapter     # In-memory (testing)
 ```
 
 All adapters target **PostgreSQL** in production. The memory adapter is provided for unit tests and local development.
@@ -352,20 +352,20 @@ Every layer is hardened — from parameterized queries to cryptographic audit tr
 | Package | Description |
 |---|---|
 | [`summa`](packages/summa) | Main ledger library with all managers and plugins |
-| [`@summa/core`](packages/core) | Core types, adapter interface, plugin interface |
-| [`@summa/cli`](packages/cli) | CLI for migrations, integrity checks, diagnostics |
-| [`@summa/drizzle-adapter`](packages/drizzle-adapter) | Drizzle ORM adapter |
-| [`@summa/prisma-adapter`](packages/prisma-adapter) | Prisma adapter |
-| [`@summa/kysely-adapter`](packages/kysely-adapter) | Kysely adapter |
-| [`@summa/memory-adapter`](packages/memory-adapter) | In-memory adapter for testing |
-| [`@summa/client`](packages/client) | Type-safe HTTP client SDK |
+| [`@summa-ledger/core`](packages/core) | Core types, adapter interface, plugin interface |
+| [`@summa-ledger/cli`](packages/cli) | CLI for migrations, integrity checks, diagnostics |
+| [`@summa-ledger/drizzle-adapter`](packages/drizzle-adapter) | Drizzle ORM adapter |
+| [`@summa-ledger/prisma-adapter`](packages/prisma-adapter) | Prisma adapter |
+| [`@summa-ledger/kysely-adapter`](packages/kysely-adapter) | Kysely adapter |
+| [`@summa-ledger/memory-adapter`](packages/memory-adapter) | In-memory adapter for testing |
+| [`@summa-ledger/client`](packages/client) | Type-safe HTTP client SDK |
 
 <br/>
 
 ## CLI
 
 ```bash
-npm i -D @summa/cli
+npm i -D @summa-ledger/cli
 ```
 
 ```bash
@@ -387,7 +387,7 @@ summa secret --env      # Generate secrets in .env format
 When Summa runs as a standalone service, use the type-safe HTTP client:
 
 ```ts
-import { createSummaClient } from "@summa/client";
+import { createSummaClient } from "@summa-ledger/client";
 
 const client = createSummaClient({
   baseURL: "http://localhost:3000/api/ledger",

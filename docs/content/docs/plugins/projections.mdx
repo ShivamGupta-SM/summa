@@ -6,7 +6,7 @@ icon: ChartBarSquare
 
 ## Overview
 
-The `@summa/projections` package provides a **CQRS projection runner** that maintains denormalized read models from the event stream. Projections consume events from Redis Streams and update separate tables optimized for reads — separating the read path from the write path.
+The `@summa-ledger/projections` package provides a **CQRS projection runner** that maintains denormalized read models from the event stream. Projections consume events from Redis Streams and update separate tables optimized for reads — separating the read path from the write path.
 
 This enables:
 - **Read replicas** serving projection tables (no contention with writes)
@@ -16,19 +16,19 @@ This enables:
 ## Installation
 
 ```bash
-pnpm add @summa/projections @summa/message-queue
+pnpm add @summa-ledger/projections @summa-ledger/message-queue
 ```
 
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { createRedisStreamsBus } from "@summa/message-queue";
+import { createSumma } from "@summa-ledger/summa";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import {
   projectionRunner,
   AccountBalanceProjection,
   TransactionHistoryProjection,
-} from "@summa/projections";
+} from "@summa-ledger/projections";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -122,7 +122,7 @@ Maintains a `projection_transaction_history` table from `TransactionInitiated` a
 Define your own projections by implementing the `Projection` interface:
 
 ```ts
-import type { Projection } from "@summa/projections";
+import type { Projection } from "@summa-ledger/projections";
 
 const MyProjection: Projection = {
   id: "daily-volume",
@@ -163,7 +163,7 @@ projectionRunner(bus, [
 For full read/write separation, use the CQRS adapter to route reads to a replica:
 
 ```ts
-import { createCQRSAdapter } from "@summa/projections";
+import { createCQRSAdapter } from "@summa-ledger/projections";
 
 const cqrs = createCQRSAdapter({
   readAdapter: replicaAdapter,   // Connected to read replica

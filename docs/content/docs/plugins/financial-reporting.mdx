@@ -11,8 +11,8 @@ The financial reporting plugin provides read-only endpoints for generating stand
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { financialReporting } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { financialReporting } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -57,7 +57,7 @@ If `convertTo` is not provided but `functionalCurrency` differs from `currency` 
 Lists all accounts with their debit and credit balances. Verifies that total debits equal total credits.
 
 ```ts
-import { getTrialBalance } from "summa/plugins";
+import { getTrialBalance } from "@summa-ledger/summa/plugins";
 
 const tb = await getTrialBalance(summa.$context, {
   asOfDate: "2026-02-28",
@@ -83,7 +83,7 @@ console.log(tb.balanced);      // true if debits === credits
 Groups accounts into assets, liabilities, and equity. Verifies the accounting equation: Assets = Liabilities + Equity.
 
 ```ts
-import { getBalanceSheet } from "summa/plugins";
+import { getBalanceSheet } from "@summa-ledger/summa/plugins";
 
 const bs = await getBalanceSheet(summa.$context, {
   asOfDate: "2026-02-28",
@@ -100,7 +100,7 @@ console.log(bs.balanced);          // assets === liabilities + equity
 Summarizes revenue and expenses over a date range to compute net income.
 
 ```ts
-import { getIncomeStatement } from "summa/plugins";
+import { getIncomeStatement } from "@summa-ledger/summa/plugins";
 
 const is = await getIncomeStatement(summa.$context, {
   dateFrom: "2026-01-01",

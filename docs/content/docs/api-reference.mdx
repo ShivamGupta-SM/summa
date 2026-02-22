@@ -285,7 +285,7 @@ Plugins can register additional endpoints via their `endpoints` array. These are
 Summa includes built-in rate limiting with configurable presets:
 
 ```ts
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const rateLimiter = createRateLimiter(standardRateLimit);
 
@@ -454,7 +454,7 @@ See [Error Codes](/docs/error-codes) for the full list.
 For programmatic access from other services, use the type-safe client SDK:
 
 ```ts
-import { createSummaClient } from "@summa/client";
+import { createSummaClient } from "@summa-ledger/client";
 
 const client = createSummaClient({
   baseURL: "http://ledger-service:3000/api/ledger",

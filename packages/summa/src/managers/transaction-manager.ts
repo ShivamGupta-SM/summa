@@ -16,15 +16,15 @@ import type {
 	SummaContext,
 	TransactionStatus,
 	TransactionType,
-} from "@summa/core";
+} from "@summa-ledger/core";
 import {
 	computeBalanceChecksum,
 	decodeCursor,
 	encodeCursor,
 	SummaError,
 	TRANSACTION_EVENTS,
-} from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+} from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	runAfterOperationHooks,
 	runAfterTransactionHooks,
@@ -306,10 +306,11 @@ export async function debitAccount(
 		category?: string;
 		metadata?: Record<string, unknown>;
 		destinationSystemAccount?: string;
-		allowOverdraft?: boolean;
 		idempotencyKey?: string;
 		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
+		/** @internal Skip balance & overdraft checks (used by forceDebit). */
+		_skipBalanceCheck?: boolean;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -320,15 +321,15 @@ export async function debitAccount(
 		category = "debit",
 		metadata = {},
 		destinationSystemAccount = ctx.options.systemAccounts.world ?? "@World",
-		allowOverdraft = false,
 	} = params;
 
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
 	const ledgerId = getLedgerId(ctx);
 
 	// --- Batching fast path: delegate to batch engine if enabled ---
+	// forceDebit (_skipBalanceCheck) bypasses batching — privileged ops go through direct path
 	const batchEngine = (ctx as SummaContext & { batchEngine?: TransactionBatchEngine }).batchEngine;
-	if (ctx.options.advanced.enableBatching && batchEngine) {
+	if (ctx.options.advanced.enableBatching && batchEngine && !params._skipBalanceCheck) {
 		return batchEngine.submit({
 			type: "debit",
 			holderId,
@@ -338,7 +339,7 @@ export async function debitAccount(
 			category,
 			metadata,
 			systemAccount: destinationSystemAccount,
-			allowOverdraft,
+			allowOverdraft: false,
 			idempotencyKey: params.idempotencyKey,
 		});
 	}
@@ -376,10 +377,20 @@ export async function debitAccount(
 			category,
 		});
 
-		// Check sufficient balance
-		const availableBalance = Number(sourceAccount.balance) - Number(sourceAccount.pending_debit);
-		if (!allowOverdraft && !sourceAccount.allow_overdraft && availableBalance < amount) {
-			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+		// Check sufficient balance (skipped for forceDebit — chargebacks, network adjustments)
+		if (!params._skipBalanceCheck) {
+			const availableBalance = Number(sourceAccount.balance) - Number(sourceAccount.pending_debit);
+			if (!sourceAccount.allow_overdraft && availableBalance < amount) {
+				throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+			}
+			if (sourceAccount.allow_overdraft) {
+				const overdraftLimit = Number(sourceAccount.overdraft_limit ?? 0);
+				if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
+					throw SummaError.insufficientBalance(
+						`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
+					);
+				}
+			}
 		}
 
 		// Get destination system account (cached — no DB hit after first call)
@@ -543,6 +554,35 @@ export async function debitAccount(
 }
 
 // =============================================================================
+// FORCE DEBIT — Privileged debit that bypasses balance & overdraft checks
+// =============================================================================
+// Use for chargebacks, network-initiated adjustments, regulatory debits, and
+// other cases where the debit MUST succeed regardless of account balance.
+
+export async function forceDebit(
+	ctx: SummaContext,
+	params: {
+		holderId: string;
+		amount: number;
+		reference: string;
+		reason: string;
+		description?: string;
+		category?: string;
+		metadata?: Record<string, unknown>;
+		destinationSystemAccount?: string;
+		idempotencyKey?: string;
+		effectiveDate?: Date | string;
+	},
+): Promise<LedgerTransaction> {
+	const { reason, ...debitParams } = params;
+	return debitAccount(ctx, {
+		...debitParams,
+		metadata: { ...debitParams.metadata, _forceDebitReason: reason },
+		_skipBalanceCheck: true,
+	});
+}
+
+// =============================================================================
 // TRANSFER (account to account)
 // =============================================================================
 
@@ -663,6 +703,14 @@ export async function transfer(
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
 		if (!source.allow_overdraft && availableBalance < amount) {
 			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+		}
+		if (source.allow_overdraft) {
+			const overdraftLimit = Number(source.overdraft_limit ?? 0);
+			if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
+				throw SummaError.insufficientBalance(
+					`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
+				);
+			}
 		}
 
 		// Enforce velocity limits inside tx
@@ -926,6 +974,14 @@ export async function multiTransfer(
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
 		if (!source.allow_overdraft && availableBalance < amount) {
 			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+		}
+		if (source.allow_overdraft) {
+			const overdraftLimit = Number(source.overdraft_limit ?? 0);
+			if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
+				throw SummaError.insufficientBalance(
+					`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
+				);
+			}
 		}
 
 		// Enforce velocity limits on source

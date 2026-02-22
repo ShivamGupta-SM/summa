@@ -2,9 +2,14 @@
 // FX ENGINE PLUGIN -- Foreign exchange rates, quotes, and gain/loss tracking
 // =============================================================================
 
-import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 
 // =============================================================================

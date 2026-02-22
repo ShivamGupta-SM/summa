@@ -1,4 +1,4 @@
-import type { SummaAdapter, SummaLogger, SummaPlugin } from "@summa/core";
+import type { SummaAdapter, SummaLogger, SummaPlugin } from "@summa-ledger/core";
 import { describe, expect, it, vi } from "vitest";
 import { buildContext } from "../context/context.js";
 

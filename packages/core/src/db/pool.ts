@@ -50,7 +50,7 @@ export interface PooledAdapterResult {
  * @example
  * ```ts
  * import { Pool } from "pg";
- * import { RECOMMENDED_POOL_CONFIG } from "@summa/core/db";
+ * import { RECOMMENDED_POOL_CONFIG } from "@summa-ledger/core/db";
  *
  * const pool = new Pool({
  *   ...RECOMMENDED_POOL_CONFIG,

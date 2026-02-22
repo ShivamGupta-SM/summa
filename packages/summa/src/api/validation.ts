@@ -2,7 +2,7 @@
 // API VALIDATION — Shared validation helpers and schemas for route handlers
 // =============================================================================
 
-import type { PluginApiResponse } from "@summa/core";
+import type { PluginApiResponse } from "@summa-ledger/core";
 
 // =============================================================================
 // FIELD SPEC VALIDATION
@@ -143,7 +143,12 @@ export const VALIDATION_SCHEMAS = {
 		holderId: "string" as const,
 		...TX_BASE_FIELDS,
 		destinationSystemAccount: "string?" as const,
-		allowOverdraft: "boolean?" as const,
+	},
+	forceDebit: {
+		holderId: "string" as const,
+		...TX_BASE_FIELDS,
+		reason: "string" as const,
+		destinationSystemAccount: "string?" as const,
 	},
 	transfer: {
 		sourceHolderId: "string" as const,

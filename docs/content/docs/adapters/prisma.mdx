@@ -7,14 +7,14 @@ icon: Prisma
 ## Installation
 
 ```bash
-pnpm add @summa/prisma-adapter @prisma/client
+pnpm add @summa-ledger/prisma-adapter @prisma/client
 ```
 
 ## Setup
 
 ```ts
-import { prismaAdapter } from "@summa/prisma-adapter";
-import { createSumma } from "summa";
+import { prismaAdapter } from "@summa-ledger/prisma-adapter";
+import { createSumma } from "@summa-ledger/summa";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
@@ -54,14 +54,14 @@ model AccountBalance {
   // ... more fields
 
   @@map("account_balance")
-  @@schema("summa")
+  @@schema("@summa-ledger/summa")
   @@index([holderId], name: "account_balance_holder_id_idx")
 }
 
 // ... all other models
 ```
 
-When using a non-public schema (default: `"summa"`), the generated Prisma models include `@@schema("summa")` and the datasource block includes `schemas = ["summa"]`.
+When using a non-public schema (default: `"@summa-ledger/summa"`), the generated Prisma models include `@@schema("@summa-ledger/summa")` and the datasource block includes `schemas = ["@summa-ledger/summa"]`.
 
 ## Migrations
 
@@ -153,9 +153,9 @@ await summa.transactions.transfer({
 ## Full Example
 
 ```ts
-import { createSumma } from "summa";
-import { prismaAdapter } from "@summa/prisma-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { prismaAdapter } from "@summa-ledger/prisma-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient({

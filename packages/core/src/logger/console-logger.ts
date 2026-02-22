@@ -38,7 +38,7 @@ export interface ConsoleLoggerOptions {
  *
  * @example
  * ```ts
- * import { createConsoleLogger } from "@summa/core/logger";
+ * import { createConsoleLogger } from "@summa-ledger/core/logger";
  *
  * const logger = createConsoleLogger({ level: "debug" });
  * ```

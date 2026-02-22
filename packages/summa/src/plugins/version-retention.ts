@@ -14,8 +14,8 @@
 // Archive table (account_balance_version_archive) has the same schema as
 // account_balance_version with an added archived_at timestamp.
 
-import type { SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext, SummaPlugin, TableDefinition } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
-import type { ColumnDefinition, TableDefinition } from "@summa/core";
+import type { ColumnDefinition, TableDefinition } from "@summa-ledger/core";
 import { Command } from "commander";
 import pc from "picocolors";
 import { getConfig } from "../utils/get-config.js";
@@ -389,7 +389,7 @@ async function loadContext(command: Command, urlOption?: string): Promise<Loaded
 	const configFlag: string | undefined = parent?.opts().config;
 
 	let configDbUrl: string | undefined;
-	let schema = "summa";
+	let schema = "@summa-ledger/summa";
 	const config = await getConfig({ cwd, configPath: configFlag });
 	if (config?.options) {
 		const db = config.options.database;
@@ -419,7 +419,7 @@ async function loadContext(command: Command, urlOption?: string): Promise<Loaded
 
 	let tables: Record<string, TableDefinition>;
 	try {
-		const mod = await import("summa/db" as string);
+		const mod = await import("@summa-ledger/summa/db" as string);
 		const getSummaTables = mod.getSummaTables as (opts?: {
 			plugins?: unknown[];
 		}) => Record<string, TableDefinition>;

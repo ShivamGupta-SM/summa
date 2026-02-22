@@ -1,5 +1,5 @@
 {
-  "name": "@summa/kysely-adapter",
+  "name": "@summa-ledger/kysely-adapter",
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "prepublishOnly": "tsdown"
   },
   "dependencies": {
-    "@summa/core": "workspace:*"
+    "@summa-ledger/core": "workspace:*"
   },
   "peerDependencies": {
     "kysely": "^0.27.0 || ^0.28.0"

@@ -3,7 +3,7 @@
 // =============================================================================
 // Merges core tables with plugin-contributed tables into a single schema map.
 
-import type { SummaOptions, TableDefinition } from "@summa/core";
+import type { SummaOptions, TableDefinition } from "@summa-ledger/core";
 
 // Core tables that are always present
 const CORE_TABLES: Record<string, TableDefinition> = {

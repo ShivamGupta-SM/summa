@@ -2,7 +2,7 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { createTelemetry } from "@summa/telemetry";
+import { createTelemetry } from "@summa-ledger/telemetry";
 import { Command } from "commander";
 import pc from "picocolors";
 import { doctorCommand } from "./commands/doctor.js";
@@ -29,12 +29,12 @@ try {
 }
 
 const BANNER = `
-  ${pc.bold(pc.cyan("summa"))} ${pc.dim(`v${cliVersion}`)}
+  ${pc.bold(pc.cyan("@summa-ledger/summa"))} ${pc.dim(`v${cliVersion}`)}
   ${pc.dim("Event-sourced double-entry ledger")}
 `;
 
 const program = new Command()
-	.name("summa")
+	.name("@summa-ledger/summa")
 	.description("CLI for summa — event-sourced double-entry ledger")
 	.version(cliVersion, "-v, --version")
 	.option("--cwd <dir>", "Working directory", process.cwd())

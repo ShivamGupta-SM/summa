@@ -4,8 +4,8 @@
 // Creates/ensures system accounts exist on service startup.
 // System accounts are platform-owned sinks/sources (prefixed with @).
 
-import type { SummaContext } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // INITIALIZE

@@ -7,7 +7,7 @@ icon: Express
 ## Installation
 
 ```bash
-pnpm add summa express
+pnpm add @summa-ledger/summa express
 pnpm add -D @types/express
 ```
 
@@ -15,9 +15,9 @@ pnpm add -D @types/express
 
 ```ts
 import express from "express";
-import { createSumma } from "summa";
-import { createSummaExpress } from "summa/api/express";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaExpress } from "@summa-ledger/summa/api/express";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -96,8 +96,8 @@ app.use("/api/ledger", authMiddleware, createSummaExpress(summa));
 ## Rate Limiting
 
 ```ts
-import { createSummaExpress } from "summa/api/express";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaExpress } from "@summa-ledger/summa/api/express";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 app.use(
   "/api/ledger",
@@ -136,11 +136,11 @@ app.use("/api/ledger", express.json({ limit: "1mb" }), createSummaExpress(summa)
 
 ```ts
 import express from "express";
-import { createSumma } from "summa";
-import { createSummaExpress } from "summa/api/express";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaExpress } from "@summa-ledger/summa/api/express";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 

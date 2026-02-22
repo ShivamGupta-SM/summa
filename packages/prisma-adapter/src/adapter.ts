@@ -2,7 +2,7 @@
 // PRISMA ADAPTER — SummaAdapter implementation backed by Prisma Client
 // =============================================================================
 // Uses raw SQL via Prisma's $queryRawUnsafe / $executeRawUnsafe for all operations.
-// CRUD logic is shared via buildSqlAdapterMethods from @summa/core/db.
+// CRUD logic is shared via buildSqlAdapterMethods from @summa-ledger/core/db.
 
 import {
 	buildSqlAdapterMethods,
@@ -11,7 +11,7 @@ import {
 	type SummaAdapter,
 	type SummaAdapterOptions,
 	type SummaTransactionAdapter,
-} from "@summa/core/db";
+} from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES
@@ -63,7 +63,7 @@ function createPrismaExecutor(client: PrismaClientLike | PrismaTransactionClient
  * @example
  * ```ts
  * import { PrismaClient } from "@prisma/client";
- * import { prismaAdapter } from "@summa/prisma-adapter";
+ * import { prismaAdapter } from "@summa-ledger/prisma-adapter";
  *
  * const prisma = new PrismaClient();
  * const adapter = prismaAdapter(prisma);
@@ -80,7 +80,10 @@ export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
 	};
 
 	const executor = createPrismaExecutor(prisma);
-	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
+	const methods = buildSqlAdapterMethods(
+		executor,
+		() => sharedOptions.schema ?? "@summa-ledger/summa",
+	);
 
 	return {
 		id: "prisma",
@@ -89,7 +92,10 @@ export function prismaAdapter(prisma: PrismaClientLike): SummaAdapter {
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return prisma.$transaction(async (tx) => {
 				const txExecutor = createPrismaExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
+				const txMethods = buildSqlAdapterMethods(
+					txExecutor,
+					() => sharedOptions.schema ?? "@summa-ledger/summa",
+				);
 				const txAdapter: SummaTransactionAdapter = {
 					id: "prisma",
 					...txMethods,

@@ -69,9 +69,9 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/drizzle-adapter";
-import { createReadReplicaAdapter } from "@summa/core/db";
-import { createRedisStorage } from "@summa/redis-storage";
+} from "@summa-ledger/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
 import Redis from "ioredis";
 
 // 1. Connection pools with production defaults
@@ -117,7 +117,7 @@ const summa = createSumma({
 Connection pooling prevents "too many connections" errors and improves throughput by reusing database connections.
 
 ```bash
-pnpm add @summa/drizzle-adapter
+pnpm add @summa-ledger/drizzle-adapter
 ```
 
 `RECOMMENDED_POOL_CONFIG` provides production-ready defaults:
@@ -153,7 +153,7 @@ All read-only operations (account listing, transaction lookups, search, statemen
 For advanced multi-replica setups with load balancing:
 
 ```ts
-import { createReadReplicaAdapter } from "@summa/core/db";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
 
 const adapter = createReadReplicaAdapter({
   primary: primaryAdapter,
@@ -178,12 +178,12 @@ const adapter = createReadReplicaAdapter({
 Redis enables distributed state for multi-instance deployments. Without it, rate limiting is per-process only and idempotency keys aren't shared.
 
 ```bash
-pnpm add @summa/redis-storage ioredis
+pnpm add @summa-ledger/redis-storage ioredis
 ```
 
 ```ts
 import Redis from "ioredis";
-import { createRedisStorage } from "@summa/redis-storage";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
 
 const { storage, disconnect, ping } = createRedisStorage({
   client: new Redis(process.env.REDIS_URL!),
@@ -205,7 +205,7 @@ High-throughput accounts (e.g., a platform fee account receiving thousands of cr
 The `hotAccounts()` plugin solves this by **deferring balance updates** into a `hot_account_entry` table, then flushing them in batches:
 
 ```ts
-import { hotAccounts } from "summa/plugins";
+import { hotAccounts } from "@summa-ledger/summa/plugins";
 
 plugins: [
   hotAccounts({
@@ -325,7 +325,7 @@ const page2 = await summa.accounts.list({
 The `account_balance_version` table grows linearly with transaction volume — at 100M transactions/year, it can reach 200M+ rows. The `versionRetention()` plugin bounds this table by archiving and pruning old versions:
 
 ```ts
-import { versionRetention } from "summa/plugins";
+import { versionRetention } from "@summa-ledger/summa/plugins";
 
 plugins: [
   versionRetention({
@@ -353,11 +353,11 @@ See [Version Retention Plugin](/docs/plugins/version-retention) for full configu
 For very large deployments, PostgreSQL range partitioning on time-series tables dramatically improves query performance and maintenance:
 
 ```ts
-import { generatePartitionDDL, partitionMaintenance } from "summa/db";
+import { generatePartitionDDL, partitionMaintenance } from "@summa-ledger/summa/db";
 
 // 1. Generate migration DDL (run once)
 const ddl = generatePartitionDDL({
-  schema: "summa",
+  schema: "@summa-ledger/summa",
   tables: {
     entry_record: { type: "range", column: "created_at", interval: "monthly" },
     transaction_record: { type: "range", column: "created_at", interval: "monthly" },
@@ -395,7 +395,7 @@ plugins: [
 **Hash chain safety:** When `requireSealedBlocks` is enabled (default), the maintenance worker calls `canSafelyDetachPartition()` before detaching `ledger_event`, `entry_record`, or `account_balance_version` partitions. If any events in the partition's date range aren't covered by a sealed block checkpoint, detachment is blocked and a warning is logged. Run `createBlockCheckpoint()` first.
 
 ```ts
-import { canSafelyDetachPartition } from "summa/db";
+import { canSafelyDetachPartition } from "@summa-ledger/summa/db";
 
 // Check if a partition can be safely detached
 const result = await canSafelyDetachPartition(ctx, "2025-01-01", "2025-02-01");
@@ -416,7 +416,7 @@ if (!result.safe) {
 For the highest throughput, enable the `batchEngine()` plugin. Inspired by [TigerBeetle's](https://tigerbeetle.com/) batching architecture, it buffers incoming transactions and processes them in a single database transaction using multi-row `UNNEST` INSERTs — amortizing per-transaction overhead across the entire batch.
 
 ```ts
-import { batchEngine } from "summa/plugins";
+import { batchEngine } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -471,7 +471,7 @@ This optimization is always active and requires no configuration. It reduces per
 For large statements (10K+ entries), the in-memory generators (`generateStatementPdf`, `generateStatementCsv`) buffer everything before returning. Use the streaming variants to pipe directly to an HTTP response with bounded memory:
 
 ```ts
-import { generateStatementPdfStream, generateStatementCsvStream } from "summa/plugins";
+import { generateStatementPdfStream, generateStatementCsvStream } from "@summa-ledger/summa/plugins";
 
 // PDF — returns a Readable stream (PDFDocument)
 const pdfStream = await generateStatementPdfStream(ctx, "user_123", {
@@ -574,8 +574,8 @@ The features above (Tier 1) get you to ~40K-60K TPS. Tier 2 removes secondary bo
 As `ledger_event` grows past 100M rows, sequential scans and index maintenance slow down. PostgreSQL range partitioning splits the table by `created_at` into monthly (or weekly) partitions — queries automatically prune irrelevant partitions.
 
 ```ts
-import { createSumma } from "summa";
-import { eventStorePartition } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { eventStorePartition } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -613,13 +613,13 @@ npx summa partition status
 The outbox polling pattern tops out at ~20 msg/s. Redis Streams pushes this to 50K-100K msg/s with sub-millisecond latency — using your existing Redis instance.
 
 ```bash
-pnpm add @summa/message-queue
+pnpm add @summa-ledger/message-queue
 ```
 
 ```ts
-import { createSumma } from "summa";
-import { outbox } from "summa/plugins";
-import { createRedisStreamsBus } from "@summa/message-queue";
+import { createSumma } from "@summa-ledger/summa";
+import { outbox } from "@summa-ledger/summa/plugins";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -643,18 +643,18 @@ See [Message Queue Plugin](/docs/plugins/message-queue) for standalone usage and
 Separate read and write paths. Writes go to the primary database, reads are served from denormalized projection tables on a read replica — eliminating read/write contention entirely.
 
 ```bash
-pnpm add @summa/projections @summa/message-queue
+pnpm add @summa-ledger/projections @summa-ledger/message-queue
 ```
 
 ```ts
-import { createSumma } from "summa";
-import { outbox } from "summa/plugins";
-import { createRedisStreamsBus } from "@summa/message-queue";
+import { createSumma } from "@summa-ledger/summa";
+import { outbox } from "@summa-ledger/summa/plugins";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import {
   projectionRunner,
   AccountBalanceProjection,
   TransactionHistoryProjection,
-} from "@summa/projections";
+} from "@summa-ledger/projections";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -676,7 +676,7 @@ const summa = createSumma({
 Projections are **eventually consistent** (typically under 5 seconds). For strict consistency, query the primary database directly. For full read/write separation with a dedicated replica:
 
 ```ts
-import { createCQRSAdapter } from "@summa/projections";
+import { createCQRSAdapter } from "@summa-ledger/projections";
 
 const cqrs = createCQRSAdapter({
   readAdapter: replicaAdapter,   // Connected to read replica
@@ -691,8 +691,8 @@ See [Projections Plugin](/docs/plugins/projections) for custom projections and a
 Daily reconciliation verifies the entire event hash chain — O(all events). With millions of events, this takes hours. Verification snapshots store the last verified hash per aggregate, reducing verification to O(events since last snapshot).
 
 ```ts
-import { createSumma } from "summa";
-import { verificationSnapshots } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { verificationSnapshots } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -721,16 +721,16 @@ See [Verification Snapshots Plugin](/docs/plugins/hash-snapshot) for schema deta
 Combining all Tier 2 features:
 
 ```ts
-import { createSumma, createDrizzleAdapter } from "summa";
+import { createSumma, createDrizzleAdapter } from "@summa-ledger/summa";
 import {
   outbox, eventStorePartition, verificationSnapshots,
-} from "summa/plugins";
-import { createRedisStreamsBus } from "@summa/message-queue";
+} from "@summa-ledger/summa/plugins";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import {
   projectionRunner,
   AccountBalanceProjection,
   TransactionHistoryProjection,
-} from "@summa/projections";
+} from "@summa-ledger/projections";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);

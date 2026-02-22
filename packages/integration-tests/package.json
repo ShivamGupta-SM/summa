@@ -1,15 +1,15 @@
 {
-	"name": "@summa/integration-tests",
+	"name": "@summa-ledger/integration-tests",
 	"private": true,
 	"type": "module",
 	"scripts": {
 		"test": "vitest run"
 	},
 	"devDependencies": {
-		"@summa/core": "workspace:*",
-		"@summa/drizzle-adapter": "workspace:*",
-		"@summa/test-utils": "workspace:*",
-		"summa": "workspace:*",
+		"@summa-ledger/core": "workspace:*",
+		"@summa-ledger/drizzle-adapter": "workspace:*",
+		"@summa-ledger/test-utils": "workspace:*",
+		"@summa-ledger/summa": "workspace:*",
 		"drizzle-orm": "^0.41.0",
 		"pg": "^8.16.0",
 		"typescript": "catalog:",

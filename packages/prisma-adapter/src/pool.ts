@@ -5,7 +5,7 @@
 // the recommended settings to pass via the DATABASE_URL or PrismaClient constructor.
 //
 // Usage:
-//   import { RECOMMENDED_PRISMA_CONFIG } from "@summa/prisma-adapter";
+//   import { RECOMMENDED_PRISMA_CONFIG } from "@summa-ledger/prisma-adapter";
 //
 //   const prisma = new PrismaClient({
 //     datasources: {
@@ -24,7 +24,7 @@
  * @example
  * ```ts
  * import { PrismaClient } from "@prisma/client";
- * import { RECOMMENDED_PRISMA_CONFIG } from "@summa/prisma-adapter";
+ * import { RECOMMENDED_PRISMA_CONFIG } from "@summa-ledger/prisma-adapter";
  *
  * const prisma = new PrismaClient({
  *   transactionOptions: RECOMMENDED_PRISMA_CONFIG.transactionOptions,

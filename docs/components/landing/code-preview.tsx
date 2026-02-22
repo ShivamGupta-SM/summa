@@ -9,10 +9,10 @@ import { tokenizeCode } from "@/lib/code-theme";
 const tabs = [
 	{
 		name: "summa.config.ts",
-		code: `import { createSumma } from "summa";
-import { drizzleAdapter } from "summa/adapters/drizzle";
-import { auditLog } from "summa/plugins/audit-log";
-import { velocityLimits } from "summa/plugins/velocity-limits";
+		code: `import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/summa/adapters/drizzle";
+import { auditLog } from "@summa-ledger/summa/plugins/audit-log";
+import { velocityLimits } from "@summa-ledger/summa/plugins/velocity-limits";
 
 export const summa = createSumma({
   adapter: drizzleAdapter(db),

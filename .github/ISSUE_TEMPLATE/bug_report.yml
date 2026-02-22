@@ -23,13 +23,13 @@ body:
       description: Which package is affected?
       options:
         - summa
-        - "@summa/core"
-        - "@summa/drizzle-adapter"
-        - "@summa/prisma-adapter"
-        - "@summa/kysely-adapter"
-        - "@summa/memory-adapter"
-        - "@summa/cli"
-        - "@summa/test-utils"
+        - "@summa-ledger/core"
+        - "@summa-ledger/drizzle-adapter"
+        - "@summa-ledger/prisma-adapter"
+        - "@summa-ledger/kysely-adapter"
+        - "@summa-ledger/memory-adapter"
+        - "@summa-ledger/cli"
+        - "@summa-ledger/test-utils"
     validations:
       required: true
 

@@ -4,9 +4,14 @@
 // Immutable audit trail for all ledger operations.
 // Records operation type, actor, parameters, and result with timestamps.
 
-import type { SummaContext, SummaOperation, SummaPlugin, TableDefinition } from "@summa/core";
-import { computeHash } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type {
+	SummaContext,
+	SummaOperation,
+	SummaPlugin,
+	TableDefinition,
+} from "@summa-ledger/core";
+import { computeHash } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // TYPES

@@ -5,8 +5,8 @@
 // to skip re-verifying the entire chain. Reduces daily reconciliation from
 // O(all events) to O(events since last snapshot).
 
-import type { SummaContext } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { verifyHashChainFrom } from "./hash-chain.js";
 
 // =============================================================================

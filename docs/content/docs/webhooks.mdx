@@ -16,7 +16,7 @@ Summa provides a webhook system for notifying external services about ledger eve
 ## Setup
 
 ```ts
-import { createWebhookHandler } from "summa/webhooks";
+import { createWebhookHandler } from "@summa-ledger/summa/webhooks";
 
 const webhooks = createWebhookHandler({
   secret: process.env.SUMMA_WEBHOOK_SECRET!,  // HMAC-SHA256 secret
@@ -42,7 +42,7 @@ import type {
   WebhookHandler,
   WebhookHandlerOptions,
   WebhookPayload,
-} from "summa/webhooks";
+} from "@summa-ledger/summa/webhooks";
 ```
 
 Generate a secret using the CLI:
@@ -86,7 +86,7 @@ const signature = webhooks.sign(payload);
 When receiving webhooks from Summa:
 
 ```ts
-import { WebhookError } from "summa/webhooks";
+import { WebhookError } from "@summa-ledger/summa/webhooks";
 
 // Express example
 app.post("/webhooks/summa", (req, res) => {
@@ -130,7 +130,7 @@ if (!isValid) {
 The outbox plugin has **built-in webhook delivery** — enable `webhooks` mode and users register endpoints via the API. Payloads are signed with HMAC-SHA256 automatically:
 
 ```ts
-import { outbox } from "summa/plugins";
+import { outbox } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,

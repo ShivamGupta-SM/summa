@@ -11,8 +11,8 @@ The GL / Sub-ledger plugin separates detail-level accounts (sub-ledger) from sum
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { glSubLedger } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { glSubLedger } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -38,7 +38,7 @@ glSubLedger({
 Register sub-ledger accounts under a GL account:
 
 ```ts
-import { registerSubLedger } from "summa/plugins";
+import { registerSubLedger } from "@summa-ledger/summa/plugins";
 
 await registerSubLedger(summa.$context, {
   glAccountId: glAccount.id,
@@ -51,7 +51,7 @@ await registerSubLedger(summa.$context, {
 Get the aggregated balance across all sub-ledger accounts:
 
 ```ts
-import { getGlSummary } from "summa/plugins";
+import { getGlSummary } from "@summa-ledger/summa/plugins";
 
 const summary = await getGlSummary(summa.$context, glAccount.id);
 // {
@@ -68,7 +68,7 @@ const summary = await getGlSummary(summa.$context, glAccount.id);
 Verify that GL balances match their sub-ledger sums:
 
 ```ts
-import { reconcile } from "summa/plugins";
+import { reconcile } from "@summa-ledger/summa/plugins";
 
 // Reconcile a specific GL account
 const results = await reconcile(summa.$context, glAccount.id);

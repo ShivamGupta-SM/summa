@@ -92,7 +92,7 @@ In a multi-instance deployment (Kubernetes, ECS, etc.), workers with `leaseRequi
 
 ```sql
 -- Lease acquisition (simplified)
-INSERT INTO "summa"."worker_lease" (worker_id, lease_holder, lease_until)
+INSERT INTO "@summa-ledger/summa"."worker_lease" (worker_id, lease_holder, lease_until)
 VALUES ('outbox-processor', 'uuid-of-this-instance', '2026-02-22T12:00:00Z')
 ON CONFLICT (worker_id) DO UPDATE
   SET lease_holder = EXCLUDED.lease_holder, lease_until = EXCLUDED.lease_until

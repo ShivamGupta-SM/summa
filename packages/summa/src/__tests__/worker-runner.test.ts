@@ -1,4 +1,4 @@
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import type { SummaContext, SummaPlugin } from "@summa-ledger/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseInterval, SummaWorkerRunner } from "../infrastructure/worker-runner.js";
 

@@ -9,14 +9,14 @@ icon: Cog
 Summa is configured through `createSumma()` which accepts a `SummaOptions` object:
 
 ```ts
-import { createSumma } from "summa";
+import { createSumma } from "@summa-ledger/summa";
 
 const summa = createSumma({
   database: adapter,          // Required — database adapter
   currency: "USD",            // Default currency (ISO 4217)
   ledgerId: "ledger-uuid",    // Ledger ID for multi-tenancy
   functionalCurrency: "USD",  // Reporting consolidation currency
-  schema: "summa",            // PostgreSQL schema (default: "summa")
+  schema: "@summa-ledger/summa",            // PostgreSQL schema (default: "@summa-ledger/summa")
   systemAccounts: { ... },    // System account definitions
   plugins: [ ... ],           // Plugin instances
   advanced: { ... },          // Performance and safety tuning
@@ -32,10 +32,10 @@ const summa = createSumma({
 The database adapter instance. Summa supports four adapters:
 
 ```ts
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { prismaAdapter } from "@summa/prisma-adapter";
-import { kyselyAdapter } from "@summa/kysely-adapter";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { prismaAdapter } from "@summa-ledger/prisma-adapter";
+import { kyselyAdapter } from "@summa-ledger/kysely-adapter";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 // Pass a constructed adapter
 database: drizzleAdapter(db)
@@ -82,18 +82,18 @@ functionalCurrency: "USD"  // All reports consolidate to USD
 
 ### `schema`
 
-PostgreSQL schema namespace for all Summa tables. Defaults to `"summa"`, which keeps all ledger tables isolated from your application's `public` schema.
+PostgreSQL schema namespace for all Summa tables. Defaults to `"@summa-ledger/summa"`, which keeps all ledger tables isolated from your application's `public` schema.
 
 ```ts
-schema: "summa"   // Default — tables in "summa"."account_balance", etc.
+schema: "@summa-ledger/summa"   // Default — tables in "@summa-ledger/summa"."account_balance", etc.
 schema: "ledger"  // Custom — tables in "ledger"."account_balance", etc.
 schema: "public"  // All tables in the public schema (not recommended)
 ```
 
-All table references are automatically qualified at runtime (e.g., `"summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
+All table references are automatically qualified at runtime (e.g., `"@summa-ledger/summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
 
 <Callout type="info" title="Schema naming">
-  The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"summa"`, `"ledger"`, `"fin_data"`.
+  The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"@summa-ledger/summa"`, `"ledger"`, `"fin_data"`.
 </Callout>
 
 <Callout type="warn" title="Changing the schema after deployment">
@@ -179,7 +179,7 @@ import {
   statements,
   velocityLimits,
   versionRetention,
-} from "summa/plugins";
+} from "@summa-ledger/summa/plugins";
 
 plugins: [
   auditLog(),
@@ -349,7 +349,7 @@ interface SummaLogger {
 Summa ships with a structured JSON logger for production environments:
 
 ```ts
-import { createJsonLogger } from "@summa/core/logger";
+import { createJsonLogger } from "@summa-ledger/core/logger";
 
 const summa = createSumma({
   database: adapter,
@@ -366,7 +366,7 @@ Each log line is emitted as single-line JSON, suitable for log aggregation (ELK,
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `level` | `"debug" \| "info" \| "warn" \| "error"` | `"info"` | Minimum log level to emit |
-| `service` | `string` | `"summa"` | Service name in structured output |
+| `service` | `string` | `"@summa-ledger/summa"` | Service name in structured output |
 | `redactKeys` | `string[]` | See below | Keys to redact from log data |
 
 #### PII Redaction
@@ -394,7 +394,7 @@ logger.info("User created", { name: "Alice", email: "alice@example.com" });
 The same `redactKeys` option is available on `createConsoleLogger()`:
 
 ```ts
-import { createConsoleLogger } from "@summa/core/logger";
+import { createConsoleLogger } from "@summa-ledger/core/logger";
 
 const logger = createConsoleLogger({
   level: "info",
@@ -433,17 +433,17 @@ const summa = createSumma({
 
 Optional key-value store for rate limiting, idempotency caching, and distributed state. **Recommended for multi-instance deployments** — without it, rate limiting is per-process only.
 
-#### Using `@summa/redis-storage` (Recommended)
+#### Using `@summa-ledger/redis-storage` (Recommended)
 
-The `@summa/redis-storage` package provides a production-ready `SecondaryStorage` implementation:
+The `@summa-ledger/redis-storage` package provides a production-ready `SecondaryStorage` implementation:
 
 ```bash
-pnpm add @summa/redis-storage ioredis
+pnpm add @summa-ledger/redis-storage ioredis
 ```
 
 ```ts
 import Redis from "ioredis";
-import { createRedisStorage } from "@summa/redis-storage";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
 
 const redis = new Redis(process.env.REDIS_URL!);
 const { storage, disconnect, ping } = createRedisStorage({
@@ -501,7 +501,7 @@ const summa = createSumma({
 For CLI commands, export your config from a file:
 
 ```ts title="summa.config.ts"
-import { defineSummaConfig } from "summa/config";
+import { defineSummaConfig } from "@summa-ledger/summa/config";
 
 export default defineSummaConfig({
   database: drizzleAdapter(db),

@@ -1,5 +1,5 @@
-import { assertAccountBalance, assertDoubleEntryBalance } from "@summa/test-utils";
-import type { Summa } from "summa";
+import type { Summa } from "@summa-ledger/summa";
+import { assertAccountBalance, assertDoubleEntryBalance } from "@summa-ledger/test-utils";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { cleanupTables, closePool, createIntegrationInstance, createTestSchema } from "./setup.js";
 
@@ -15,7 +15,7 @@ import { cleanupTables, closePool, createIntegrationInstance, createTestSchema }
  *
  * Requires PostgreSQL running via docker-compose:
  *   docker compose up -d
- *   pnpm --filter @summa/integration-tests test
+ *   pnpm --filter @summa-ledger/integration-tests test
  */
 describe("Concurrency Stress Tests", () => {
 	let summa: Summa;

@@ -11,6 +11,7 @@ concurrency:
 permissions:
   contents: write
   pull-requests: write
+  packages: write
 
 jobs:
   release:
@@ -23,7 +24,8 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Create Release PR or Publish
+      - name: Create Release PR or Publish to npm
+        id: changesets
         uses: changesets/action@v1
         with:
           version: pnpm changeset version
@@ -33,3 +35,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to GitHub Packages
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}" > .npmrc
+          echo "@summa:registry=https://npm.pkg.github.com" >> .npmrc
+
+          for pkg in packages/*/; do
+            if [ -f "$pkg/package.json" ] && [ -f "$pkg/dist/index.mjs" ]; then
+              name=$(node -p "require('./$pkg/package.json').name")
+              private=$(node -p "require('./$pkg/package.json').private || false")
+              if [ "$private" = "false" ]; then
+                echo "Publishing $name to GitHub Packages..."
+                cd "$pkg"
+                npm publish --registry=https://npm.pkg.github.com || true
+                cd ../..
+              fi
+            fi
+          done
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

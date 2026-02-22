@@ -11,7 +11,7 @@ The observability plugin adds **distributed tracing** and **Prometheus-style met
 ## Setup
 
 ```ts
-import { observability } from "summa/plugins";
+import { observability } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -23,7 +23,7 @@ const summa = createSumma({
 
 ```ts
 observability({
-  serviceName: "ledger",           // Metric prefix (default: "summa")
+  serviceName: "ledger",           // Metric prefix (default: "@summa-ledger/summa")
   tracing: true,                   // Enable request tracing (default: true)
   metrics: true,                   // Enable /metrics endpoint (default: true)
   traceHeader: "traceparent",      // Header for trace ID propagation (default: "traceparent")
@@ -32,7 +32,7 @@ observability({
 
 <TypeTable
   type={{
-    serviceName: { type: "string", description: "Service name for metric prefixes.", default: '"summa"' },
+    serviceName: { type: "string", description: "Service name for metric prefixes.", default: '"@summa-ledger/summa"' },
     tracing: { type: "boolean", description: "Enable request tracing via onRequest/onResponse hooks.", default: "true" },
     metrics: { type: "boolean", description: "Enable Prometheus-style /metrics endpoint.", default: "true" },
     traceHeader: { type: "string", description: "HTTP header for trace ID propagation.", default: '"traceparent"' },
@@ -120,10 +120,10 @@ No external tracing SDK is required — the plugin provides lightweight, zero-de
 
 ## OpenTelemetry
 
-For production-grade distributed tracing with OpenTelemetry, use the `@summa/telemetry` package alongside the observability plugin:
+For production-grade distributed tracing with OpenTelemetry, use the `@summa-ledger/telemetry` package alongside the observability plugin:
 
 ```bash
-pnpm add @summa/telemetry @opentelemetry/api
+pnpm add @summa-ledger/telemetry @opentelemetry/api
 ```
 
 ### OTEL Logger
@@ -131,8 +131,8 @@ pnpm add @summa/telemetry @opentelemetry/api
 Wraps any `SummaLogger` to create OTEL spans for `warn` and `error` log entries, correlating logs with traces:
 
 ```ts
-import { createOtelLogger } from "@summa/telemetry";
-import { createJsonLogger } from "@summa/core/logger";
+import { createOtelLogger } from "@summa-ledger/telemetry";
+import { createJsonLogger } from "@summa-ledger/core/logger";
 
 const innerLogger = createJsonLogger({ level: "info", service: "ledger" });
 const logger = createOtelLogger(innerLogger, {
@@ -156,7 +156,7 @@ When `enabled` is `true` and `@opentelemetry/api` is installed:
 Creates start/end span pairs for HTTP request tracing:
 
 ```ts
-import { createRequestTracer } from "@summa/telemetry";
+import { createRequestTracer } from "@summa-ledger/telemetry";
 
 const tracer = createRequestTracer({ serviceName: "summa-ledger" });
 
@@ -172,4 +172,4 @@ Orphaned spans (e.g., from dropped connections) are automatically cleaned up aft
 
 ### Optional Peer Dependency
 
-`@opentelemetry/api` is an **optional peer dependency**. If not installed, all OTEL functions return no-op implementations — your application runs without tracing overhead. This makes it safe to include `@summa/telemetry` in your dependency tree without requiring OpenTelemetry in development.
+`@opentelemetry/api` is an **optional peer dependency**. If not installed, all OTEL functions return no-op implementations — your application runs without tracing overhead. This makes it safe to include `@summa-ledger/telemetry` in your dependency tree without requiring OpenTelemetry in development.

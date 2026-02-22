@@ -2,7 +2,7 @@
 // KYSELY ADAPTER — SummaAdapter implementation backed by Kysely
 // =============================================================================
 // Uses raw SQL via Kysely's `sql` template for all operations.
-// CRUD logic is shared via buildSqlAdapterMethods from @summa/core/db.
+// CRUD logic is shared via buildSqlAdapterMethods from @summa-ledger/core/db.
 
 import {
 	buildSqlAdapterMethods,
@@ -11,7 +11,7 @@ import {
 	type SummaAdapter,
 	type SummaAdapterOptions,
 	type SummaTransactionAdapter,
-} from "@summa/core/db";
+} from "@summa-ledger/core/db";
 import type { Kysely, Transaction } from "kysely";
 import { sql } from "kysely";
 
@@ -90,7 +90,7 @@ function createKyselyExecutor(db: Kysely<any> | Transaction<any>): SqlExecutor {
  * ```ts
  * import { Kysely, PostgresDialect } from "kysely";
  * import { Pool } from "pg";
- * import { kyselyAdapter } from "@summa/kysely-adapter";
+ * import { kyselyAdapter } from "@summa-ledger/kysely-adapter";
  *
  * const db = new Kysely({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: process.env.DATABASE_URL }) }) });
  * const adapter = kyselyAdapter(db);
@@ -108,7 +108,10 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 	};
 
 	const executor = createKyselyExecutor(db);
-	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
+	const methods = buildSqlAdapterMethods(
+		executor,
+		() => sharedOptions.schema ?? "@summa-ledger/summa",
+	);
 
 	return {
 		id: "kysely",
@@ -117,7 +120,10 @@ export function kyselyAdapter(db: Kysely<any>): SummaAdapter {
 		transaction: async <T>(fn: (tx: SummaTransactionAdapter) => Promise<T>): Promise<T> => {
 			return db.transaction().execute(async (tx) => {
 				const txExecutor = createKyselyExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
+				const txMethods = buildSqlAdapterMethods(
+					txExecutor,
+					() => sharedOptions.schema ?? "@summa-ledger/summa",
+				);
 				const txAdapter: SummaTransactionAdapter = {
 					id: "kysely",
 					...txMethods,

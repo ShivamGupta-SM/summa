@@ -7,15 +7,15 @@ icon: ServerStack
 ## Installation
 
 ```bash
-pnpm add @summa/redis-storage ioredis
+pnpm add @summa-ledger/redis-storage ioredis
 ```
 
 ## Setup
 
 ```ts
 import Redis from "ioredis";
-import { createRedisStorage } from "@summa/redis-storage";
-import { createSumma } from "summa";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
+import { createSumma } from "@summa-ledger/summa";
 
 const redis = new Redis(process.env.REDIS_URL);
 const { storage, disconnect, ping } = createRedisStorage({ client: redis });

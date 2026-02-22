@@ -6,7 +6,7 @@ export const telemetryCommand = new Command("telemetry")
 	.description("Manage anonymous telemetry")
 	.argument("[action]", "on | off | status")
 	.action(async (action?: string) => {
-		const { isTelemetryEnabled, writeTelemetryState } = await import("@summa/telemetry");
+		const { isTelemetryEnabled, writeTelemetryState } = await import("@summa-ledger/telemetry");
 
 		p.intro(pc.bgCyan(pc.black(" summa telemetry ")));
 

@@ -2,7 +2,7 @@
 // DRIZZLE ADAPTER — SummaAdapter implementation backed by Drizzle ORM
 // =============================================================================
 // Uses raw SQL via drizzle-orm's `sql` template for all operations.
-// CRUD logic is shared via buildSqlAdapterMethods from @summa/core/db.
+// CRUD logic is shared via buildSqlAdapterMethods from @summa-ledger/core/db.
 
 import {
 	buildSqlAdapterMethods,
@@ -11,7 +11,7 @@ import {
 	type SummaAdapter,
 	type SummaAdapterOptions,
 	type SummaTransactionAdapter,
-} from "@summa/core/db";
+} from "@summa-ledger/core/db";
 import { type SQL, sql } from "drizzle-orm";
 
 /**
@@ -97,7 +97,7 @@ function createDrizzleExecutor(db: any): SqlExecutor {
  * ```ts
  * import { drizzle } from "drizzle-orm/node-postgres";
  * import { Pool } from "pg";
- * import { drizzleAdapter } from "@summa/drizzle-adapter";
+ * import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
  *
  * const pool = new Pool({ connectionString: process.env.DATABASE_URL });
  * const db = drizzle(pool);
@@ -116,7 +116,10 @@ export function drizzleAdapter(db: any): SummaAdapter {
 	};
 
 	const executor = createDrizzleExecutor(db);
-	const methods = buildSqlAdapterMethods(executor, () => sharedOptions.schema ?? "summa");
+	const methods = buildSqlAdapterMethods(
+		executor,
+		() => sharedOptions.schema ?? "@summa-ledger/summa",
+	);
 
 	return {
 		id: "drizzle",
@@ -126,7 +129,10 @@ export function drizzleAdapter(db: any): SummaAdapter {
 			// biome-ignore lint/suspicious/noExplicitAny: Drizzle transaction type varies by driver
 			return db.transaction(async (tx: any) => {
 				const txExecutor = createDrizzleExecutor(tx);
-				const txMethods = buildSqlAdapterMethods(txExecutor, () => sharedOptions.schema ?? "summa");
+				const txMethods = buildSqlAdapterMethods(
+					txExecutor,
+					() => sharedOptions.schema ?? "@summa-ledger/summa",
+				);
 				const txAdapter: SummaTransactionAdapter = {
 					id: "drizzle",
 					...txMethods,

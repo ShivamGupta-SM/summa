@@ -18,7 +18,7 @@ The Fetch API adapter uses standard Web `Request`/`Response` objects — making 
 ## Installation
 
 ```bash
-pnpm add summa
+pnpm add @summa-ledger/summa
 ```
 
 No framework package needed — just Summa and your runtime.
@@ -26,9 +26,9 @@ No framework package needed — just Summa and your runtime.
 ## Quick Start
 
 ```ts
-import { createSumma } from "summa";
-import { createSummaFetchHandler } from "summa/api/fetch";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -107,8 +107,8 @@ const handler = createSummaFetchHandler(summa, {
 ## Rate Limiting
 
 ```ts
-import { createSummaFetchHandler } from "summa/api/fetch";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const handler = createSummaFetchHandler(summa, {
   basePath: "/api/ledger",
@@ -136,11 +136,11 @@ const handler = createSummaFetchHandler(summa, {
 ## Full Production Example (Bun)
 
 ```ts
-import { createSumma } from "summa";
-import { createSummaFetchHandler } from "summa/api/fetch";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { createPooledAdapter, RECOMMENDED_POOL_CONFIG } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
@@ -194,7 +194,7 @@ process.on("SIGTERM", async () => {
 ## Full Production Example (Deno)
 
 ```ts
-import { createSummaFetchHandler } from "summa/api/fetch";
+import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
 import { summa, close } from "./summa.ts";
 
 const handler = createSummaFetchHandler(summa, {
@@ -215,8 +215,8 @@ Deno.addSignalListener("SIGTERM", async () => {
 ## Full Production Example (Cloudflare Workers)
 
 ```ts
-import { createSummaFetchHandler } from "summa/api/fetch";
-import { createSumma } from "summa";
+import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
+import { createSumma } from "@summa-ledger/summa";
 
 // Note: Use a Cloudflare-compatible PostgreSQL driver
 // (e.g., @neondatabase/serverless, Hyperdrive)

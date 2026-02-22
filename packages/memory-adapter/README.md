@@ -1,18 +1,18 @@
-# @summa/memory-adapter
+# @summa-ledger/memory-adapter
 
 In-memory database adapter for the Summa ledger. Designed for unit testing -- no external database required.
 
 ## Installation
 
 ```bash
-npm install @summa/memory-adapter
+npm install @summa-ledger/memory-adapter
 ```
 
 ## Usage
 
 ```ts
-import { createSumma } from "summa";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 const summa = createSumma({
   database: memoryAdapter(),
@@ -21,11 +21,11 @@ const summa = createSumma({
 });
 ```
 
-### With @summa/test-utils
+### With @summa-ledger/test-utils
 
 ```ts
-import { getTestInstance } from "@summa/test-utils";
-import { memoryAdapter } from "@summa/memory-adapter";
+import { getTestInstance } from "@summa-ledger/test-utils";
+import { memoryAdapter } from "@summa-ledger/memory-adapter";
 
 const { summa, cleanup } = await getTestInstance({
   adapter: memoryAdapter(),

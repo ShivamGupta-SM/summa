@@ -671,8 +671,8 @@ Week 5─8:  CQRS Pattern
 |-------|:---:|-----------|
 | Event Store Partitioning | 2 weeks | Partitioned ledger_event, auto-management worker, migration CLI |
 | Hash Snapshot Verification | 1.5 weeks | hash_snapshot table, snapshot-accelerated verify, CLI commands |
-| Message Queue | 2.5 weeks | @summa/message-queue package, Redis Streams + Kafka adapters |
-| CQRS | 3.5 weeks | @summa/projections package, built-in projections, CQRS adapter |
+| Message Queue | 2.5 weeks | @summa-ledger/message-queue package, Redis Streams + Kafka adapters |
+| CQRS | 3.5 weeks | @summa-ledger/projections package, built-in projections, CQRS adapter |
 | Integration testing | 1 week | End-to-end tests, performance benchmarks |
 | **Total** | **~10.5 weeks** | **50K–200K TPS capability** |
 

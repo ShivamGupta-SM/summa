@@ -11,7 +11,7 @@ import type { CQRSAdapter, CQRSAdapterOptions } from "./types.js";
  *
  * @example
  * ```ts
- * import { createCQRSAdapter } from "@summa/projections";
+ * import { createCQRSAdapter } from "@summa-ledger/projections";
  *
  * const cqrs = createCQRSAdapter({
  *   readAdapter: replicaAdapter,   // connected to read replica

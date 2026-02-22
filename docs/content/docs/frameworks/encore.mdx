@@ -7,7 +7,7 @@ icon: Encore
 ## Installation
 
 ```bash
-pnpm add summa
+pnpm add @summa-ledger/summa
 ```
 
 <Callout type="info" title="No extra dependency">
@@ -19,9 +19,9 @@ pnpm add summa
 ```ts
 // ledger/ledger.ts
 import { api } from "encore.dev/api";
-import { createSumma } from "summa";
-import { createSummaEncore } from "summa/api/encore";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaEncore } from "@summa-ledger/summa/api/encore";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 const db = drizzle(process.env.DATABASE_URL!);
@@ -118,8 +118,8 @@ const handler = createSummaEncore(summa, {
 ## Rate Limiting
 
 ```ts
-import { createSummaEncore } from "summa/api/encore";
-import { createRateLimiter, standardRateLimit } from "summa/api";
+import { createSummaEncore } from "@summa-ledger/summa/api/encore";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
 
 const handler = createSummaEncore(summa, {
   basePath: "/ledger",
@@ -157,11 +157,11 @@ const adapter = drizzleAdapter(orm);
 // ledger/ledger.ts
 import { api } from "encore.dev/api";
 import { SQLDatabase } from "encore.dev/storage/sqldb";
-import { createSumma } from "summa";
-import { createSummaEncore } from "summa/api/encore";
-import { createRateLimiter, standardRateLimit } from "summa/api";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
-import { auditLog, reconciliation, velocityLimits } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { createSummaEncore } from "@summa-ledger/summa/api/encore";
+import { createRateLimiter, standardRateLimit } from "@summa-ledger/summa/api";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
+import { auditLog, reconciliation, velocityLimits } from "@summa-ledger/summa/plugins";
 import { drizzle } from "drizzle-orm/node-postgres";
 
 // Encore-managed database

@@ -4,9 +4,9 @@
 // Provides hierarchy queries, type-based lookups, and accounting equation
 // validation for accounts with accountType set.
 
-import type { Account, AccountType, SummaContext } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { Account, AccountType, SummaContext } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import type { RawAccountRow } from "./raw-types.js";
 
 // =============================================================================
@@ -164,6 +164,7 @@ function rawRowToAccount(row: RawAccountRow): Account {
 		pendingCredit: Number(row.pending_credit),
 		pendingDebit: Number(row.pending_debit),
 		allowOverdraft: row.allow_overdraft,
+		overdraftLimit: Number(row.overdraft_limit ?? 0),
 		accountType: (row.account_type as Account["accountType"]) ?? null,
 		accountCode: row.account_code ?? null,
 		parentAccountId: row.parent_account_id ?? null,

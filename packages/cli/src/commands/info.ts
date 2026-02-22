@@ -13,10 +13,10 @@ import { findConfigFile, getConfig } from "../utils/get-config.js";
 // =============================================================================
 
 const ADAPTER_PACKAGES = [
-	"@summa/drizzle-adapter",
-	"@summa/prisma-adapter",
-	"@summa/kysely-adapter",
-	"@summa/memory-adapter",
+	"@summa-ledger/drizzle-adapter",
+	"@summa-ledger/prisma-adapter",
+	"@summa-ledger/kysely-adapter",
+	"@summa-ledger/memory-adapter",
 ] as const;
 
 function detectInstalledAdapters(cwd: string): string[] {

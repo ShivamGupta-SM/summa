@@ -11,8 +11,8 @@ The FX engine plugin provides exchange rate caching, rate quotes with expiry, an
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { fxEngine, type FxRateProvider } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { fxEngine, type FxRateProvider } from "@summa-ledger/summa/plugins";
 
 // Implement your rate provider (e.g., from an external API)
 const rateProvider: FxRateProvider = {
@@ -103,7 +103,7 @@ Without the FX Engine plugin, `exchangeRate` is required for cross-currency tran
 ### Get Current Rate
 
 ```ts
-import { getRate } from "summa/plugins";
+import { getRate } from "@summa-ledger/summa/plugins";
 
 const rate = await getRate(summa.$context, rateProvider, "USD", "EUR", 300_000);
 // { from: "USD", to: "EUR", rate: 920_000, inverse: 1_087_000, timestamp: "..." }
@@ -116,7 +116,7 @@ Rates are cached in the `fx_rate_cache` table. If a valid cached rate exists, th
 Lock in a rate for a specific amount with an expiry window:
 
 ```ts
-import { createRateQuote } from "summa/plugins";
+import { createRateQuote } from "@summa-ledger/summa/plugins";
 
 const quote = await createRateQuote(
   summa.$context,

@@ -4,8 +4,8 @@
 // Computes account balance as of a given effective date by summing entries
 // with effective_date <= the target date.
 
-import type { SummaContext } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { SummaContext } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "./ledger-helpers.js";
 
 export interface BalanceAsOf {

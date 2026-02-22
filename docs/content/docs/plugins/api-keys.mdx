@@ -11,8 +11,8 @@ The API keys plugin provides full API key lifecycle management — creation, val
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { apiKeys } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { apiKeys } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -88,7 +88,7 @@ The old key is immediately revoked and a new key is returned.
 ## Querying API Keys
 
 ```ts
-import { listApiKeyRecords } from "summa/plugins";
+import { listApiKeyRecords } from "@summa-ledger/summa/plugins";
 
 const keys = await listApiKeyRecords(summa.$context, {
   limit: 50,
@@ -113,7 +113,7 @@ for (const key of keys) {
 ## Type Inference
 
 ```ts
-import type { ApiKey } from "summa/plugins";
+import type { ApiKey } from "@summa-ledger/summa/plugins";
 
 type Key = typeof summa.$Infer.ApiKey;
 // { id, name, key_hash, scopes, expires_at, revoked_at, last_used_at, created_at }

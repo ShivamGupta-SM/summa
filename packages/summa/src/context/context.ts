@@ -12,10 +12,10 @@ import type {
 	SummaOptions,
 	SummaPlugin,
 	SystemAccountDefinition,
-} from "@summa/core";
-import { SummaError } from "@summa/core";
-import { postgresDialect } from "@summa/core/db";
-import { createConsoleLogger } from "@summa/core/logger";
+} from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { postgresDialect } from "@summa-ledger/core/db";
+import { createConsoleLogger } from "@summa-ledger/core/logger";
 import { validateConfig } from "../config/index.js";
 import { buildHookCache } from "./hooks.js";
 
@@ -89,7 +89,7 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 	};
 
 	const defaultCurrency = options.currency ?? "USD";
-	const schema = options.schema ?? "summa";
+	const schema = options.schema ?? "@summa-ledger/summa";
 	const resolvedOptions: ResolvedSummaOptions = {
 		currency: defaultCurrency,
 		functionalCurrency: options.functionalCurrency ?? defaultCurrency,

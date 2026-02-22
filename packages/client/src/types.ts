@@ -43,7 +43,7 @@ export type ResponseInterceptor = (
  * @example
  * ```ts
  * import type { summa } from "./summa.config";
- * import type { InferSummaClient } from "@summa/client";
+ * import type { InferSummaClient } from "@summa-ledger/client";
  *
  * type Client = InferSummaClient<typeof summa>;
  * // Client.$types.HotAccountStats is available

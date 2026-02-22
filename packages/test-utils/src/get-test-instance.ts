@@ -1,4 +1,4 @@
-import { createSumma, type Summa, type SummaOptions, type SummaPlugin } from "summa";
+import { createSumma, type Summa, type SummaOptions, type SummaPlugin } from "@summa-ledger/summa";
 
 export interface TestInstanceOptions {
 	/** Database adapter (use memoryAdapter for unit tests, drizzleAdapter for integration) */

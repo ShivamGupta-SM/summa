@@ -20,7 +20,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import {
   createPooledAdapter,
   RECOMMENDED_POOL_CONFIG,
-} from "@summa/drizzle-adapter";
+} from "@summa-ledger/drizzle-adapter";
 
 const pool = new Pool({
   ...RECOMMENDED_POOL_CONFIG,
@@ -55,8 +55,8 @@ See [Drizzle Adapter — Connection Pooling](/docs/adapters/drizzle#connection-p
 For read-heavy workloads, use `createReadReplicaAdapter()` to offload reads to PostgreSQL replicas:
 
 ```ts
-import { createReadReplicaAdapter } from "@summa/core/db";
-import { drizzleAdapter } from "@summa/drizzle-adapter";
+import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
 
 const primary = drizzleAdapter(drizzle(primaryPool));
 const replica = drizzleAdapter(drizzle(replicaPool));
@@ -72,15 +72,15 @@ Read operations (`findOne`, `findMany`, `count`, SELECT queries) go to replicas.
 
 ### Redis for Distributed State
 
-For multi-instance deployments, configure `@summa/redis-storage` as secondary storage. This enables distributed rate limiting, shared idempotency caching, and plugin state across instances:
+For multi-instance deployments, configure `@summa-ledger/redis-storage` as secondary storage. This enables distributed rate limiting, shared idempotency caching, and plugin state across instances:
 
 ```bash
-pnpm add @summa/redis-storage ioredis
+pnpm add @summa-ledger/redis-storage ioredis
 ```
 
 ```ts
 import Redis from "ioredis";
-import { createRedisStorage } from "@summa/redis-storage";
+import { createRedisStorage } from "@summa-ledger/redis-storage";
 
 const redis = new Redis(process.env.REDIS_URL!);
 const { storage, disconnect } = createRedisStorage({ client: redis });
@@ -97,7 +97,7 @@ See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) f
 
 #### Schema Namespace
 
-By default, Summa creates all tables in the `"summa"` PostgreSQL schema, keeping them isolated from your application's `public` schema. You can verify this after migration:
+By default, Summa creates all tables in the `"@summa-ledger/summa"` PostgreSQL schema, keeping them isolated from your application's `public` schema. You can verify this after migration:
 
 ```sql
 \dt summa.*          -- List all Summa tables
@@ -149,7 +149,7 @@ async function shutdown() {
   // 1. Stop background workers (awaits running workers up to 10s)
   await summa.workers.stop();
 
-  // 2. Disconnect Redis (if using @summa/redis-storage)
+  // 2. Disconnect Redis (if using @summa-ledger/redis-storage)
   await disconnect();
 
   // 3. Drain the connection pool
@@ -174,7 +174,7 @@ Workers use **distributed leases** via advisory locks. In a multi-instance deplo
 Use the built-in JSON logger for log aggregation:
 
 ```ts
-import { createJsonLogger } from "@summa/core/logger";
+import { createJsonLogger } from "@summa-ledger/core/logger";
 
 const summa = createSumma({
   database: adapter,
@@ -192,7 +192,7 @@ Output (one JSON line per log entry):
 Enable the observability plugin for request metrics:
 
 ```ts
-import { observability } from "summa/plugins";
+import { observability } from "@summa-ledger/summa/plugins";
 
 plugins: [
   observability({ serviceName: "ledger" }),
@@ -207,15 +207,15 @@ Every API response includes an `X-Request-Id` header. Forward the `x-request-id`
 
 ### OpenTelemetry Integration
 
-For production-grade distributed tracing, use the `@summa/telemetry` package which provides optional OpenTelemetry integration:
+For production-grade distributed tracing, use the `@summa-ledger/telemetry` package which provides optional OpenTelemetry integration:
 
 ```bash
-pnpm add @summa/telemetry @opentelemetry/api
+pnpm add @summa-ledger/telemetry @opentelemetry/api
 ```
 
 ```ts
-import { createOtelLogger, createRequestTracer } from "@summa/telemetry";
-import { createConsoleLogger } from "@summa/core/logger";
+import { createOtelLogger, createRequestTracer } from "@summa-ledger/telemetry";
+import { createConsoleLogger } from "@summa-ledger/core/logger";
 
 // Wrap the logger with OTEL span creation for warn/error entries
 const logger = createOtelLogger(createConsoleLogger(), {
@@ -282,7 +282,7 @@ Choose a rate limiter backend based on your deployment:
 | `secondary` (Redis) | Multi-instance, production (recommended) | Yes |
 
 ```ts
-import { createRateLimiter } from "summa/api";
+import { createRateLimiter } from "@summa-ledger/summa/api";
 
 // For multi-instance: use Redis-backed rate limiting
 const rateLimiter = createRateLimiter({

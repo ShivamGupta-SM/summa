@@ -11,8 +11,8 @@ The reconciliation plugin compares account balances against the sum of their ent
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { reconciliation } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { reconciliation } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -118,7 +118,7 @@ const result = await summa.events.verifyExternalAnchor(
 Use the standalone `getReconciliationStatus` function to query the current watermark and recent reconciliation results:
 
 ```ts
-import { getReconciliationStatus } from "summa/plugins";
+import { getReconciliationStatus } from "@summa-ledger/summa/plugins";
 
 const status = await getReconciliationStatus(summa.$context);
 

@@ -14,7 +14,7 @@ import { parseWebApiRequest } from "./request-helpers.js";
  *
  * @example
  * ```ts
- * import { createSummaFetchHandler } from "summa/api/fetch";
+ * import { createSummaFetchHandler } from "@summa-ledger/summa/api/fetch";
  *
  * const handler = createSummaFetchHandler(summa, { basePath: "/api/ledger" });
  *

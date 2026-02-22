@@ -6,14 +6,14 @@ icon: InboxStack
 
 ## Overview
 
-The `@summa/message-queue` package provides a **Redis Streams-backed message bus** for high-throughput event delivery. It replaces the outbox polling pattern (20 msg/s) with push-based streaming (50K-100K msg/s) using Redis Streams — no new infrastructure required.
+The `@summa-ledger/message-queue` package provides a **Redis Streams-backed message bus** for high-throughput event delivery. It replaces the outbox polling pattern (20 msg/s) with push-based streaming (50K-100K msg/s) using Redis Streams — no new infrastructure required.
 
 The package provides a generic `MessageBus` interface with a Redis Streams implementation. It integrates directly with the outbox plugin via the `messageQueue` option or the `createStreamPublisher()` helper.
 
 ## Installation
 
 ```bash
-pnpm add @summa/message-queue
+pnpm add @summa-ledger/message-queue
 ```
 
 <Callout type="info" title="Requires Redis 5.0+">
@@ -27,9 +27,9 @@ pnpm add @summa/message-queue
 Pass the bus directly to the outbox plugin via `messageQueue`:
 
 ```ts
-import { createSumma } from "summa";
-import { outbox } from "summa/plugins";
-import { createRedisStreamsBus } from "@summa/message-queue";
+import { createSumma } from "@summa-ledger/summa";
+import { outbox } from "@summa-ledger/summa/plugins";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -47,7 +47,7 @@ const summa = createSumma({
 You can also use `createStreamPublisher()` for more control over the stream publisher options:
 
 ```ts
-import { outbox, createStreamPublisher } from "summa/plugins";
+import { outbox, createStreamPublisher } from "@summa-ledger/summa/plugins";
 
 outbox({
   publisher: createStreamPublisher(bus, { maxLen: 200_000 }),
@@ -59,7 +59,7 @@ outbox({
 You can also use the message bus directly without the outbox plugin:
 
 ```ts
-import { createRedisStreamsBus } from "@summa/message-queue";
+import { createRedisStreamsBus } from "@summa-ledger/message-queue";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);

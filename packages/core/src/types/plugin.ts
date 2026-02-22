@@ -11,7 +11,7 @@ import type { SummaContext } from "./context.js";
  *
  * @example
  * ```ts
- * declare module "@summa/core" {
+ * declare module "@summa-ledger/core" {
  *   interface SummaPluginRegistry {
  *     "velocity-limits": {
  *       context: { limits: LimitManager };

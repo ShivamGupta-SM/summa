@@ -64,12 +64,12 @@ const tx = await summa.transactions.transfer({
 	{
 		name: "plugins.ts",
 		label: "Plugin Config",
-		code: `import { createSumma } from "summa";
-import { drizzleAdapter } from "summa/adapters/drizzle";
-import { auditLog } from "summa/plugins/audit-log";
-import { velocityLimits } from "summa/plugins/velocity-limits";
-import { reconciliation } from "summa/plugins/reconciliation";
-import { snapshots } from "summa/plugins/snapshots";
+		code: `import { createSumma } from "@summa-ledger/summa";
+import { drizzleAdapter } from "@summa-ledger/summa/adapters/drizzle";
+import { auditLog } from "@summa-ledger/summa/plugins/audit-log";
+import { velocityLimits } from "@summa-ledger/summa/plugins/velocity-limits";
+import { reconciliation } from "@summa-ledger/summa/plugins/reconciliation";
+import { snapshots } from "@summa-ledger/summa/plugins/snapshots";
 
 export const summa = createSumma({
   adapter: drizzleAdapter(db),

@@ -4,9 +4,9 @@
 // CRUD operations for ledger registry. Each ledger is an isolated tenant.
 
 import { randomUUID } from "node:crypto";
-import type { Ledger, SummaContext } from "@summa/core";
-import { SummaError } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { Ledger, SummaContext } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 import { initializeSystemAccounts } from "./system-accounts.js";
 
 // =============================================================================

@@ -28,7 +28,7 @@ function generateSubCommand(): Command {
 	return new Command("generate")
 		.description("Generate SQL for partitioning ledger_event table")
 		.option("--interval <interval>", "Partition interval (monthly|weekly)", "monthly")
-		.option("--schema <schema>", "PostgreSQL schema name", "summa")
+		.option("--schema <schema>", "PostgreSQL schema name", "@summa-ledger/summa")
 		.option("-o, --output <path>", "Output file path (default: auto-generated)")
 		.action(async (options: { interval: string; schema: string; output?: string }) => {
 			const parent = partitionCommand.parent;
@@ -98,7 +98,7 @@ function generateSubCommand(): Command {
 			// Phase 2-5: Use generatePartitionDDL for rename + create + migrate
 			let ddlStatements: string[];
 			try {
-				const summaDb = await import("summa/db" as string);
+				const summaDb = await import("@summa-ledger/summa/db" as string);
 				ddlStatements = summaDb.generatePartitionDDL({
 					schema,
 					tables: {
@@ -106,7 +106,9 @@ function generateSubCommand(): Command {
 					},
 				});
 			} catch {
-				p.log.error(`${pc.red("summa not installed")} ${pc.dim("run: pnpm add summa")}`);
+				p.log.error(
+					`${pc.red("summa not installed")} ${pc.dim("run: pnpm add @summa-ledger/summa")}`,
+				);
 				p.outro(pc.dim("Aborted."));
 				process.exitCode = 1;
 				return;
@@ -180,7 +182,7 @@ function statusSubCommand(): Command {
 	return new Command("status")
 		.description("Show current partition status for ledger_event")
 		.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
-		.option("--schema <schema>", "PostgreSQL schema name", "summa")
+		.option("--schema <schema>", "PostgreSQL schema name", "@summa-ledger/summa")
 		.action(async (options: { url?: string; schema?: string }) => {
 			const parent = partitionCommand.parent;
 			const cwd: string = parent?.opts().cwd ?? process.cwd();
@@ -189,7 +191,7 @@ function statusSubCommand(): Command {
 			p.intro(pc.bgCyan(pc.black(" summa partition status ")));
 
 			let configDbUrl: string | undefined;
-			let schema = options.schema ?? "summa";
+			let schema = options.schema ?? "@summa-ledger/summa";
 			const config = await getConfig({ cwd, configPath: configFlag });
 			if (config?.options) {
 				const db = config.options.database;

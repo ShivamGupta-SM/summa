@@ -13,7 +13,7 @@ For large statements, use the **async background generation** feature to avoid r
 ## Setup
 
 ```ts
-import { statements } from "summa/plugins";
+import { statements } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -225,7 +225,7 @@ import {
   generateStatementPdf,
   generateStatementPdfStream,
   generateStatementCsvStream,
-} from "summa/plugins";
+} from "@summa-ledger/summa/plugins";
 
 // Full statement with pagination
 const statement = await getAccountStatement(ctx, "user_123", {

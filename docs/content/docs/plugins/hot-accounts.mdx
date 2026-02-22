@@ -13,8 +13,8 @@ Instead of pessimistic row-level locks, hot accounts use a `lock_version` counte
 ## Setup
 
 ```ts
-import { createSumma } from "summa";
-import { hotAccounts } from "summa/plugins";
+import { createSumma } from "@summa-ledger/summa";
+import { hotAccounts } from "@summa-ledger/summa/plugins";
 
 const summa = createSumma({
   database: adapter,
@@ -59,7 +59,7 @@ No manual marking is needed — accounts transition to the hot path transparentl
 System account balances are updated every flush cycle (~30s). If you need the up-to-the-moment balance including unflushed hot entries, use `getRealtimeBalance()`:
 
 ```ts
-import { getRealtimeBalance } from "summa/plugins";
+import { getRealtimeBalance } from "@summa-ledger/summa/plugins";
 
 const balance = await getRealtimeBalance(summa.$context, "@Fees");
 console.log(balance.committedBalance);   // Last flushed balance
@@ -92,7 +92,7 @@ interface RealtimeBalance {
 ## Querying Hot Account Stats
 
 ```ts
-import { getHotAccountStats } from "summa/plugins";
+import { getHotAccountStats } from "@summa-ledger/summa/plugins";
 
 const stats = await getHotAccountStats(summa.$context);
 console.log(stats.pending);           // Entries awaiting aggregation
@@ -103,7 +103,7 @@ console.log(stats.failedSequences);   // Failed aggregation attempts
 ## Type Inference
 
 ```ts
-import type { HotAccountStats } from "summa/plugins";
+import type { HotAccountStats } from "@summa-ledger/summa/plugins";
 
 type Stats = typeof summa.$Infer.HotAccountStats;
 // { pending: number, processed: number, failedSequences: number }

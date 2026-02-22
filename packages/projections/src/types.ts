@@ -5,8 +5,8 @@
 // Projections consume events from a MessageBus and maintain denormalized
 // read models in separate tables.
 
-import type { StoredEvent, SummaContext } from "@summa/core";
-import type { SummaTransactionAdapter } from "@summa/core/db";
+import type { StoredEvent, SummaContext } from "@summa-ledger/core";
+import type { SummaTransactionAdapter } from "@summa-ledger/core/db";
 
 // =============================================================================
 // PROJECTION
@@ -54,12 +54,12 @@ export interface ProjectionRunnerOptions {
 
 export interface CQRSAdapterOptions {
 	/** Adapter for read operations (e.g., connected to read replica). */
-	readAdapter: import("@summa/core/db").SummaAdapter;
+	readAdapter: import("@summa-ledger/core/db").SummaAdapter;
 	/** Adapter for write operations (e.g., connected to primary). */
-	writeAdapter: import("@summa/core/db").SummaAdapter;
+	writeAdapter: import("@summa-ledger/core/db").SummaAdapter;
 }
 
 export interface CQRSAdapter {
-	read: import("@summa/core/db").SummaAdapter;
-	write: import("@summa/core/db").SummaAdapter;
+	read: import("@summa-ledger/core/db").SummaAdapter;
+	write: import("@summa-ledger/core/db").SummaAdapter;
 }

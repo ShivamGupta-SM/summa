@@ -6,8 +6,8 @@
 // so that only one process in a cluster executes lease-required workers.
 
 import { randomUUID } from "node:crypto";
-import type { CoreWorkerOptions, SummaContext, SummaWorkerDefinition } from "@summa/core";
-import { createTableResolver } from "@summa/core/db";
+import type { CoreWorkerOptions, SummaContext, SummaWorkerDefinition } from "@summa-ledger/core";
+import { createTableResolver } from "@summa-ledger/core/db";
 
 // =============================================================================
 // INTERVAL PARSING

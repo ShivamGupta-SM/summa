@@ -2,7 +2,7 @@
 // OPENAPI PLUGIN — Generates and serves OpenAPI 3.1 spec
 // =============================================================================
 
-import type { PluginEndpoint, SummaContext, SummaPlugin } from "@summa/core";
+import type { PluginEndpoint, SummaContext, SummaPlugin } from "@summa-ledger/core";
 
 // =============================================================================
 // TYPES

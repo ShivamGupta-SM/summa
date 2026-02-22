@@ -39,8 +39,8 @@ export interface ReadReplicaOptions {
  *
  * @example
  * ```ts
- * import { createReadReplicaAdapter } from "@summa/core/db";
- * import { drizzleAdapter } from "@summa/drizzle-adapter";
+ * import { createReadReplicaAdapter } from "@summa-ledger/core/db";
+ * import { drizzleAdapter } from "@summa-ledger/drizzle-adapter";
  *
  * const primary = drizzleAdapter(drizzle(primaryPool));
  * const replica = drizzleAdapter(drizzle(replicaPool));
