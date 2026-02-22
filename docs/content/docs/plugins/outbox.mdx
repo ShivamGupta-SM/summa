@@ -1,6 +1,6 @@
 ---
 title: Outbox
-description: Transactional outbox pattern for reliable event publishing.
+description: Transactional outbox pattern with built-in webhook delivery.
 icon: PaperAirplane
 ---
 
@@ -8,9 +8,18 @@ icon: PaperAirplane
 
 The outbox plugin implements the **transactional outbox pattern**, ensuring that domain events are reliably published to external systems (message queues, webhooks, etc.) without dual-write problems.
 
-Events are written to the `outbox_event` table **inside the same database transaction** as the ledger operation. A background worker then delivers them to your publisher function. This guarantees **at-least-once delivery** — events are never lost, even if the application crashes.
+Events are written to the `outbox_event` table **inside the same database transaction** as the ledger operation. A background worker then delivers them to your publisher function and/or to registered webhook endpoints. This guarantees **at-least-once delivery** — events are never lost, even if the application crashes.
+
+The plugin supports two delivery modes that can be used independently or together:
+
+- **Publisher** — your own function that receives events (Kafka, SQS, RabbitMQ, etc.)
+- **Webhooks** — managed HTTP POST delivery with HMAC-SHA256 signing, retry logic, and delivery tracking
+
+This matches the architecture used by Stripe and Convoy: a single transactional outbox feeds both internal consumers and external webhook endpoints.
 
 ## Setup
+
+### Publisher only (internal event bus)
 
 ```ts
 import { createSumma } from "summa";
@@ -22,8 +31,43 @@ const summa = createSumma({
   plugins: [
     outbox({
       publisher: async (topic, payload) => {
-        // Deliver to your message queue, webhook, etc.
         await myQueue.publish(topic, payload);
+      },
+    }),
+  ],
+});
+```
+
+### Webhooks only (HTTP push to external systems)
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({
+      webhooks: {
+        signingSecret: process.env.WEBHOOK_SIGNING_SECRET!,
+      },
+    }),
+  ],
+});
+```
+
+### Both (publisher + webhooks)
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({
+      publisher: async (topic, payload) => {
+        await kafka.produce(topic, payload);
+      },
+      webhooks: {
+        signingSecret: process.env.WEBHOOK_SIGNING_SECRET!,
+        maxRetries: 5,
       },
     }),
   ],
@@ -32,29 +76,104 @@ const summa = createSumma({
 
 ## Configuration
 
-```ts
-outbox({
-  publisher: myPublisher,    // Required — delivery function
-  batchSize: 100,            // Events processed per batch (default: 100)
-  maxRetries: 3,             // Max delivery attempts (default: 3)
-  retentionHours: 48,        // Keep processed events for 48 hours (default)
-})
-```
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `publisher` | `function` | — | `(topic, payload) => Promise<void>` — delivery function |
+| `webhooks` | `WebhookOptions` | — | Managed webhook delivery config (see below) |
+| `batchSize` | `number` | `100` | Events processed per publisher worker batch |
+| `maxRetries` | `number` | `3` | Maximum publisher delivery attempts before DLQ |
+| `retentionHours` | `number` | `48` | Hours to retain processed outbox entries |
+| `concurrency` | `number` | `1` | Number of parallel outbox consumer workers. Each uses `FOR UPDATE SKIP LOCKED` for natural partitioning — no duplicates |
+
+At least one of `publisher` or `webhooks` must be provided.
+
+With `concurrency: 4`, four workers poll the outbox in parallel. Each grabs its own slice via `SKIP LOCKED`, so events are naturally partitioned without coordination. Useful for catching up large backlogs quickly.
+
+### Webhook Options
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `publisher` | `function` | Required | `(topic, payload) => Promise<void>` — delivery function |
-| `batchSize` | `number` | `100` | Events processed per worker batch |
-| `maxRetries` | `number` | `3` | Maximum delivery attempts before moving to DLQ |
-| `retentionHours` | `number` | `48` | Hours to retain successfully delivered events |
+| `signingSecret` | `string` | — | Global HMAC-SHA256 signing secret. If omitted, per-endpoint secrets are used |
+| `maxRetries` | `number` | `5` | Maximum delivery attempts per webhook |
+| `retentionDays` | `number` | `30` | Days to retain delivery logs |
+| `defaultHeaders` | `Record<string, string>` | — | Custom HTTP headers for all deliveries |
+| `timeoutMs` | `number` | `10000` | HTTP request timeout in ms |
+| `concurrency` | `number` | `10` | Max parallel HTTP deliveries per worker cycle. Prevents one slow endpoint from blocking all others |
 
 ## How It Works
+
+### Publisher Mode
 
 1. When a transaction completes, events are written to the `outbox_event` table inside the same database transaction
 2. A background worker polls the outbox table for unprocessed events
 3. Events are delivered to your `publisher` function
 4. Successfully processed events are marked as delivered
 5. Failed events are retried up to `maxRetries` times, then moved to the DLQ (if [dlqManager](/docs/plugins/dlq-manager) is enabled)
+
+### Webhook Mode
+
+When `webhooks` is configured, the plugin adds webhook management endpoints and a delivery engine:
+
+1. Register webhook endpoints via the API with event patterns
+2. When ledger operations complete, matching events are queued for delivery
+3. A background worker delivers payloads via HTTP POST with HMAC-SHA256 signatures
+4. Failed deliveries are retried with exponential backoff (5s, 30s, 2m, 15m, 1h)
+5. After all retries are exhausted, the delivery is marked as `failed`
+
+### Event Pattern Matching
+
+Register endpoints with event patterns using wildcards:
+
+```ts
+POST /webhooks
+{
+  "url": "https://your-app.com/webhooks",
+  "events": ["transaction.*", "account.freeze"]
+}
+```
+
+Pattern matching examples:
+- `transaction.*` matches `transaction.credit`, `transaction.debit`, `transaction.transfer`
+- `account.freeze` matches only `account.freeze`
+- `*` matches all events
+
+### Payload Signing
+
+Every webhook payload includes an HMAC-SHA256 signature:
+
+```
+X-Summa-Signature: <hex-digest>
+X-Summa-Timestamp: 2024-01-31T12:00:00.000Z
+X-Summa-Event: transaction.credit
+X-Summa-Delivery-Id: <uuid>
+```
+
+Need to **verify** incoming webhook signatures on the receiving end? See the [`summa/webhooks` utility](/docs/webhooks) for HMAC-SHA256 sign/verify helpers.
+
+### Retry Logic
+
+Failed deliveries are retried with exponential backoff:
+
+| Attempt | Delay | Total Wait |
+|---------|-------|------------|
+| 1 | Immediate | 0s |
+| 2 | 5 seconds | 5s |
+| 3 | 30 seconds | 35s |
+| 4 | 2 minutes | ~2.5m |
+| 5 | 15 minutes | ~17.5m |
+| 6 | 1 hour | ~1h 17m |
+
+## HTTP Endpoints
+
+When `webhooks` is configured, the following endpoints are added:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks` | Register a new webhook endpoint |
+| `GET` | `/webhooks` | List all registered endpoints |
+| `PUT` | `/webhooks/:id` | Update a webhook endpoint |
+| `DELETE` | `/webhooks/:id` | Remove a webhook endpoint |
+| `GET` | `/webhooks/:id/deliveries` | List delivery log for an endpoint |
 
 ## Querying Outbox Stats
 
@@ -71,11 +190,34 @@ console.log(stats.processed);  // Successfully delivered events
 console.log(stats.failed);     // Events that exhausted all retries
 ```
 
+## Background Workers
+
+| Worker | Interval | Condition | Description |
+|--------|----------|-----------|-------------|
+| `outbox-processor-{0..N}` | `5s` | `publisher` set | Polls outbox via `SKIP LOCKED`, delivers via publisher. N = `concurrency` (default: 1) |
+| `outbox-cleanup` | `6h` | Always | Deletes processed outbox entries and dedup records beyond retention |
+| `webhook-delivery-processor` | `5s` | `webhooks` set | Delivers pending webhook payloads (up to `webhookConcurrency` in parallel) |
+| `webhook-delivery-cleanup` | `1d` | `webhooks` set | Purges old delivery logs |
+
+### Processed Event Cleanup
+
+The `outbox-cleanup` worker also handles cleanup of the `processed_event` deduplication table. When the outbox processes events, it records their IDs in `processed_event` to prevent duplicate delivery. These dedup records are automatically cleaned up alongside processed outbox entries, using the same `retentionHours` setting.
+
+<Callout type="info">
+  Previously, `processed_event` cleanup was handled by a separate maintenance plugin. It is now part of the outbox plugin since the outbox owns the event processing pipeline that populates this table.
+</Callout>
+
 ## Type Inference
 
 ```ts
-import type { OutboxStats } from "summa/plugins";
+import type { OutboxStats, WebhookEndpoint, WebhookDelivery } from "summa/plugins";
 
 type Stats = typeof summa.$Infer.OutboxStats;
 // { pending: number, processed: number, failed: number }
+
+type Endpoint = typeof summa.$Infer.WebhookEndpoint;
+// { id, url, events, secret, active, description, createdAt, updatedAt }
+
+type Delivery = typeof summa.$Infer.WebhookDelivery;
+// { id, webhookId, eventType, payload, status, attempt, statusCode, responseBody, nextRetryAt, deliveredAt, createdAt }
 ```

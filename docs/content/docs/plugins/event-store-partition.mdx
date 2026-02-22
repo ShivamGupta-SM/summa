@@ -1,0 +1,112 @@
+---
+title: Event Store Partition
+description: PostgreSQL range partitioning for the event store with automated maintenance.
+icon: TableCells
+---
+
+## Overview
+
+The event store partition plugin converts `ledger_event` to a **PostgreSQL range-partitioned table**, partitioned by `created_at`. This enables partition pruning on time-range queries and keeps each partition at a manageable size — critical for ledgers with billions of events.
+
+The plugin wraps the core `partitionMaintenance()` function and provides a **daily background worker** that automatically creates future partitions and optionally detaches old ones.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { eventStorePartition } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [eventStorePartition()],
+});
+```
+
+<Callout type="warn" title="Initial migration required">
+  The plugin handles ongoing partition maintenance (creating future partitions, detaching old ones). The **initial conversion** from a regular table to a partitioned table must be done manually using `summa partition generate`. See [CLI Reference](/docs/cli#summa-partition) for details.
+</Callout>
+
+## Configuration
+
+```ts
+eventStorePartition({
+  interval: "monthly",        // Partition interval: "monthly" or "weekly" (default: "monthly")
+  createAhead: 3,             // Create partitions this many intervals ahead (default: 3)
+  retainPartitions: null,     // Detach after N intervals, null = never detach (default: null)
+  schema: "summa",            // PostgreSQL schema name (default: from config)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `interval` | `"monthly" \| "weekly"` | `"monthly"` | Partition interval |
+| `createAhead` | `number` | `3` | Create future partitions this many intervals ahead |
+| `retainPartitions` | `number \| null` | `null` | Detach partitions older than N intervals. `null` = never detach |
+| `schema` | `string` | config value | PostgreSQL schema name |
+
+## How It Works
+
+1. **Daily worker** runs with a distributed lease (only one instance runs at a time)
+2. Checks `pg_class` to see which partitions already exist
+3. Creates future partitions for the next N intervals (configurable via `createAhead`)
+4. If `retainPartitions` is set, detaches partitions older than the retention window
+5. Detachment is blocked by **hash chain safety checks** — partitions containing unsealed events cannot be detached
+
+## Hash Chain Safety
+
+When `retainPartitions` is configured, the plugin checks `block_checkpoint` before detaching any partition. A partition can only be detached if all events in its date range are covered by a sealed block checkpoint. This prevents accidental hash chain breakage.
+
+## Archive Schema
+
+You can move detached partitions to an archive schema instead of leaving them as standalone tables:
+
+```ts
+import { partitionMaintenance } from "summa/db";
+
+// For advanced use with archive schema
+const plugin = partitionMaintenance({
+  tables: {
+    ledger_event: { interval: "monthly" },
+  },
+  retainPartitions: 24,
+  archiveSchema: "summa_archive",
+});
+```
+
+## Initial Migration
+
+Use the CLI to generate the partition DDL:
+
+```bash
+npx summa partition generate
+npx summa partition generate --interval weekly
+```
+
+This generates a SQL file that:
+
+1. Drops unique constraints incompatible with partitioning
+2. Renames the existing table to `ledger_event_old`
+3. Creates a new partitioned table with `PARTITION BY RANGE (created_at)`
+4. Creates initial partitions + a default partition
+5. Migrates data from the old table
+6. Re-creates constraints with `created_at` included
+7. Re-applies immutability triggers
+
+<Callout type="error" title="Maintenance window required">
+  The generated SQL must be reviewed and executed during a maintenance window. Back up your data first. The CLI does NOT auto-execute the migration.
+</Callout>
+
+## Checking Partition Status
+
+```bash
+npx summa partition status
+```
+
+Shows whether `ledger_event` is partitioned, lists all child partitions with estimated row counts and sizes.
+
+## Query Performance
+
+PostgreSQL automatically prunes partitions for queries with `WHERE created_at` conditions. Existing queries in `event-store.ts` work unchanged — partition pruning is transparent.
+
+For example, `getEvents()` with a date range filter will only scan the relevant partitions instead of the entire table.

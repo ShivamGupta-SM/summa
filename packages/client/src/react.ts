@@ -90,7 +90,7 @@ export function useSummaQuery<T>(
 			cancelled = true;
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [client, fn, _trigger]);
+	}, [client, fn]);
 
 	return { data, error, loading, refetch };
 }

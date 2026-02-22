@@ -1,0 +1,208 @@
+---
+title: Projections (CQRS)
+description: CQRS read models with separate read/write paths and built-in projections.
+icon: ChartBarSquare
+---
+
+## Overview
+
+The `@summa/projections` package provides a **CQRS projection runner** that maintains denormalized read models from the event stream. Projections consume events from Redis Streams and update separate tables optimized for reads — separating the read path from the write path.
+
+This enables:
+- **Read replicas** serving projection tables (no contention with writes)
+- **Fast queries** on denormalized data (no joins across event tables)
+- **Custom read models** tailored to specific query patterns
+
+## Installation
+
+```bash
+pnpm add @summa/projections @summa/message-queue
+```
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { createRedisStreamsBus } from "@summa/message-queue";
+import {
+  projectionRunner,
+  AccountBalanceProjection,
+  TransactionHistoryProjection,
+} from "@summa/projections";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    projectionRunner(bus, [
+      AccountBalanceProjection,
+      TransactionHistoryProjection,
+    ]),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+projectionRunner(bus, projections, {
+  topic: "summa:events",           // Redis Streams topic (default)
+  group: "projection-runner",      // Consumer group name (default)
+  consumer: "proj-1",              // Consumer name, unique per process
+  batchSize: 100,                  // Max messages per poll (default: 100)
+  pollInterval: "5s",              // Worker poll interval (default: "5s")
+  pendingClaimAfterMs: 30_000,     // Reclaim idle messages (default: 30s)
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `topic` | `string` | `"summa:events"` | Redis Streams topic to consume |
+| `group` | `string` | `"projection-runner"` | Consumer group name |
+| `consumer` | `string` | auto-generated | Consumer name (unique per process) |
+| `batchSize` | `number` | `100` | Max messages per poll cycle |
+| `pollInterval` | `string` | `"5s"` | How often each projection worker polls |
+| `pendingClaimAfterMs` | `number` | `30000` | Reclaim idle pending messages |
+
+## How It Works
+
+The projection runner creates two types of workers:
+
+### Publisher Worker
+- Runs with a distributed lease (single instance)
+- Reads new events from `ledger_event` since the last watermark
+- Publishes them to Redis Streams
+- Tracks progress in `projection_watermark` table
+
+### Projection Workers
+- One worker per projection (no lease required — multiple instances can run)
+- Each worker polls Redis Streams via `XREADGROUP`
+- Processes events through the projection's `handleEvent()` in a database transaction
+- ACKs the message on successful processing
+- Failed messages stay in PEL and are reclaimed on next poll
+
+## Built-in Projections
+
+### Account Balance Projection
+
+Maintains a `projection_account_balance` table from `TransactionPosted` events:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `account_id` | `text` | Account identifier |
+| `ledger_id` | `text` | Ledger identifier |
+| `balance` | `bigint` | Current balance |
+| `last_event_sequence` | `bigint` | Last processed event sequence |
+| `updated_at` | `timestamp` | Last update time |
+
+Idempotent via sequence number — reprocessing the same event is a no-op.
+
+### Transaction History Projection
+
+Maintains a `projection_transaction_history` table from `TransactionInitiated` and `TransactionPosted` events:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `transaction_id` | `text` | Transaction identifier |
+| `ledger_id` | `text` | Ledger identifier |
+| `reference` | `text` | Transaction reference |
+| `amount` | `bigint` | Transaction amount |
+| `currency` | `text` | Currency code |
+| `source_account` | `text` | Source account ID |
+| `destination_account` | `text` | Destination account ID |
+| `status` | `text` | `"initiated"` or `"posted"` |
+| `posted_at` | `timestamp` | When the transaction was posted |
+
+## Custom Projections
+
+Define your own projections by implementing the `Projection` interface:
+
+```ts
+import type { Projection } from "@summa/projections";
+
+const MyProjection: Projection = {
+  id: "daily-volume",
+  description: "Track daily transaction volume per account",
+  eventTypes: ["TransactionPosted"],
+
+  async handleEvent(event, tx, ctx) {
+    const t = createTableResolver(ctx.options.schema);
+    const data = event.eventData as { entries: Array<{ accountId: string; amount: number }> };
+    const date = event.createdAt.toISOString().slice(0, 10);
+
+    for (const entry of data.entries ?? []) {
+      await tx.raw(
+        `INSERT INTO ${t("projection_daily_volume")} (account_id, date, volume, tx_count)
+         VALUES ($1, $2, $3, 1)
+         ON CONFLICT (account_id, date)
+         DO UPDATE SET volume = projection_daily_volume.volume + $3,
+                       tx_count = projection_daily_volume.tx_count + 1`,
+        [entry.accountId, date, Math.abs(entry.amount)],
+      );
+    }
+  },
+};
+```
+
+Then register it alongside the built-in projections:
+
+```ts
+projectionRunner(bus, [
+  AccountBalanceProjection,
+  TransactionHistoryProjection,
+  MyProjection,
+])
+```
+
+## CQRS Adapter
+
+For full read/write separation, use the CQRS adapter to route reads to a replica:
+
+```ts
+import { createCQRSAdapter } from "@summa/projections";
+
+const cqrs = createCQRSAdapter({
+  readAdapter: replicaAdapter,   // Connected to read replica
+  writeAdapter: primaryAdapter,  // Connected to primary
+});
+
+// Use cqrs.read for queries on projection tables
+// Use cqrs.write for mutations
+```
+
+## Architecture
+
+```
+┌──────────────┐
+│  Write Path  │
+│  (Primary)   │
+│  ledger_event│──────┐
+└──────────────┘      │
+                      ▼
+              ┌──────────────┐
+              │ Redis Streams │
+              │  (Publisher)  │
+              └──────┬───────┘
+         ┌───────────┼───────────┐
+         ▼           ▼           ▼
+  ┌────────────┐┌────────────┐┌────────────┐
+  │  Balance   ││  History   ││  Custom    │
+  │ Projection ││ Projection ││ Projection │
+  └─────┬──────┘└─────┬──────┘└─────┬──────┘
+        │              │              │
+        ▼              ▼              ▼
+┌──────────────────────────────────────────┐
+│          Read Path (Replica)             │
+│  projection_account_balance              │
+│  projection_transaction_history          │
+│  projection_*                            │
+└──────────────────────────────────────────┘
+```
+
+## Eventual Consistency
+
+Projections are **eventually consistent** — there is a brief delay between a write and its appearance in the read model. Typical lag is under 5 seconds with the default `pollInterval: "5s"`. For use cases requiring strict consistency, query the primary database directly.

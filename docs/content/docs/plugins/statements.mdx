@@ -215,7 +215,7 @@ The plugin creates a `statement_job` table to track generation jobs. This table 
 
 ## Programmatic API
 
-The plugin also exports standalone functions for direct use without HTTP:
+The plugin exports standalone functions for direct use without HTTP:
 
 ```ts
 import {
@@ -223,6 +223,8 @@ import {
   getStatementSummary,
   generateStatementCsv,
   generateStatementPdf,
+  generateStatementPdfStream,
+  generateStatementCsvStream,
 } from "summa/plugins";
 
 // Full statement with pagination
@@ -239,18 +241,44 @@ const summary = await getStatementSummary(ctx, "user_123", {
   dateTo: "2026-02-01",
 });
 
-// CSV string
+// CSV string (in-memory)
 const csv = await generateStatementCsv(ctx, "user_123", {
   dateFrom: "2026-01-01",
   dateTo: "2026-02-01",
 });
 
-// PDF buffer
+// PDF buffer (in-memory)
 const pdf = await generateStatementPdf(ctx, "user_123", {
   dateFrom: "2026-01-01",
   dateTo: "2026-02-01",
 });
 ```
+
+### Streaming Generation
+
+For large statements (10K+ entries), use the streaming variants to avoid buffering everything in memory:
+
+```ts
+// PDF stream — returns a PDFDocument (Readable stream)
+const pdfStream = await generateStatementPdfStream(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+// Pipe directly to HTTP response
+pdfStream.pipe(res);
+
+// CSV stream — returns an AsyncGenerator<string>
+const csvStream = generateStatementCsvStream(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+for await (const row of csvStream) {
+  res.write(row);
+}
+res.end();
+```
+
+Both streaming functions fetch entries in 500-row batches internally — memory usage stays constant regardless of statement size. The PDF stream starts writing immediately and the caller can pipe it before all entries are processed.
 
 ## Types
 

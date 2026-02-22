@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: summa
+  labels:
+    app.kubernetes.io/name: summa
+    app.kubernetes.io/part-of: summa-ledger

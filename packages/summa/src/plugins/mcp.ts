@@ -137,9 +137,6 @@ export function mcp(options?: McpOptions): SummaPlugin {
 		args: Record<string, unknown>,
 		ctx: SummaContext,
 	): Promise<unknown> {
-		const { default: summaModule } = await import("../summa/base.js");
-		void summaModule; // Avoid unused import — we use ctx directly
-
 		switch (toolName) {
 			case "summa_get_balance": {
 				const { getAccountByHolder, getAccountBalance } = await import(
@@ -151,8 +148,8 @@ export function mcp(options?: McpOptions): SummaPlugin {
 			case "summa_list_accounts": {
 				const { listAccounts } = await import("../managers/account-manager.js");
 				return listAccounts(ctx, {
-					status: args.status as string | undefined,
-					holderType: args.holderType as string | undefined,
+					status: args.status as Parameters<typeof listAccounts>[1]["status"],
+					holderType: args.holderType as Parameters<typeof listAccounts>[1]["holderType"],
 					page: args.page as number | undefined,
 					perPage: args.perPage as number | undefined,
 				});
@@ -165,15 +162,15 @@ export function mcp(options?: McpOptions): SummaPlugin {
 				const { listAccountTransactions } = await import("../managers/transaction-manager.js");
 				return listAccountTransactions(ctx, {
 					holderId: args.holderId as string,
-					status: args.status as string | undefined,
-					type: args.type as string | undefined,
+					status: args.status as Parameters<typeof listAccountTransactions>[1]["status"],
+					type: args.type as Parameters<typeof listAccountTransactions>[1]["type"],
 					page: args.page as number | undefined,
 					perPage: args.perPage as number | undefined,
 				});
 			}
 			case "summa_transfer": {
-				const { createTransfer } = await import("../managers/transaction-manager.js");
-				return createTransfer(ctx, {
+				const { transfer } = await import("../managers/transaction-manager.js");
+				return transfer(ctx, {
 					sourceHolderId: args.sourceHolderId as string,
 					destinationHolderId: args.destinationHolderId as string,
 					amount: args.amount as number,
@@ -182,10 +179,9 @@ export function mcp(options?: McpOptions): SummaPlugin {
 				});
 			}
 			case "summa_verify_equation": {
-				const { validateAccountingEquation } = await import(
-					"../managers/chart-of-accounts-manager.js"
-				);
-				return validateAccountingEquation(ctx);
+				const { validateAccountingEquation } = await import("../managers/chart-of-accounts.js");
+				const { getLedgerId } = await import("../managers/ledger-helpers.js");
+				return validateAccountingEquation(ctx, getLedgerId(ctx));
 			}
 			default:
 				throw new Error(`Unknown tool: ${toolName}`);

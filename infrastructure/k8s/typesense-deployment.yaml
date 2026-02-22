@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: typesense
+  namespace: summa
+  labels:
+    app.kubernetes.io/name: typesense
+    app.kubernetes.io/part-of: summa-ledger
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: typesense
+  template:
+    metadata:
+      labels:
+        app: typesense
+    spec:
+      containers:
+        - name: typesense
+          image: typesense/typesense:27.1
+          ports:
+            - containerPort: 8108
+              name: http
+          env:
+            - name: TYPESENSE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: summa-secrets
+                  key: TYPESENSE_API_KEY
+            - name: TYPESENSE_DATA_DIR
+              value: /data
+          args:
+            - "--data-dir=/data"
+            - "--enable-cors"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          volumeMounts:
+            - name: typesense-data
+              mountPath: /data
+      volumes:
+        - name: typesense-data
+          persistentVolumeClaim:
+            claimName: typesense-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: typesense-data
+  namespace: summa
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: typesense
+  namespace: summa
+  labels:
+    app.kubernetes.io/name: typesense
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8108
+      targetPort: http
+      name: http
+  selector:
+    app: typesense

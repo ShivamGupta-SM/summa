@@ -7,6 +7,7 @@ import type { HoldDestination, SummaContext, SummaTransactionAdapter } from "@su
 import { SummaError } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import { getSystemAccount } from "./system-accounts.js";
 
 export interface CreditDestinationResult {
@@ -35,6 +36,7 @@ export async function creditMultiDestinations(
 	},
 ): Promise<CreditDestinationResult[]> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const { transactionId, currency, totalAmount, destinations } = params;
 
 	// Calculate amounts: explicit amounts first, then remainder
@@ -73,7 +75,7 @@ export async function creditMultiDestinations(
 		NonNullable<Awaited<ReturnType<typeof getSystemAccount>>>
 	>();
 	for (const name of systemAccountNames) {
-		const sys = await getSystemAccount(ctx, name);
+		const sys = await getSystemAccount(ctx, name, ledgerId);
 		if (!sys) throw SummaError.notFound(`System account ${name} not found`);
 		systemAccountMap.set(name, sys);
 	}
@@ -121,10 +123,10 @@ export async function creditMultiDestinations(
 			// User account destination -- lock inside tx to prevent crediting frozen/closed accounts
 			const destRows = await tx.raw<{ id: string; status: string }>(
 				`SELECT id, status FROM ${t("account_balance")}
-         WHERE holder_id = $1
+         WHERE ledger_id = $1 AND holder_id = $2
          LIMIT 1
          ${ctx.dialect.forUpdate()}`,
-				[dest.holderId],
+				[ledgerId, dest.holderId],
 			);
 
 			const destRow = destRows[0];

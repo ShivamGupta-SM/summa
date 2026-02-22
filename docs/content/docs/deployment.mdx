@@ -385,11 +385,12 @@ readinessProbe:
 For production deployments, start with:
 
 ```ts
+// Core workers (hold expiry, idempotency cleanup, lease cleanup)
+// run automatically — no plugin needed for basic cleanup
 plugins: [
   auditLog(),                       // Compliance
   reconciliation(),                 // Integrity
-  maintenance(),                    // Cleanup
-  dataRetention(),                  // Unified data lifecycle management
+  dataRetention(),                  // Retention policies for plugin tables
   observability(),                  // Metrics
   admin({ authorize: checkAuth }),  // Management
   openApi(),                        // Documentation
@@ -398,9 +399,9 @@ plugins: [
 
 Add more plugins based on your requirements:
 - **`velocityLimits()`** — if you need per-account transaction limits
-- **`holdExpiry()`** — if you use two-phase holds
+- **`freezeExpiry()`** — if you use time-bounded account freezes
 - **`outbox({ publisher })`** + **`dlqManager()`** — if you publish events to external systems
-- **`hotAccounts()`** — if you have high-traffic accounts (> 1000 txn/min)
+- **`hotAccounts()`** — if you have high-traffic accounts (> 1000 txn/min). **Strongly recommended** if you use `systemAccounts`
 - **`snapshots()`** — if you need historical balance queries
 - **`scheduledTransactions()`** — if you need future/recurring transactions
 - **`dataRetention()`** — if you need configurable retention policies per table (see [Data Retention](/docs/plugins/data-retention))

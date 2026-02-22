@@ -29,19 +29,23 @@ const DEFAULT_ADVANCED: ResolvedAdvancedOptions = {
 	transactionTimeoutMs: 5000,
 	lockTimeoutMs: 3000,
 	maxTransactionAmount: 1_000_000_000_00,
-	// Event sourcing and hash chains are always-on by design.
-	// These flags exist for forward compatibility but MUST remain true in production.
-	// Disabling them will not actually skip event/hash logic — the code paths are unconditional.
+	// Event sourcing and hash chains are enabled by default.
+	// Setting these to false WILL skip event/hash logic. Only disable for development/testing.
 	enableEventSourcing: true,
 	enableHashChain: true,
 	hmacSecret: null,
 	verifyHashOnRead: true,
-	// Performance scaling defaults — preserve current behavior
-	useDenormalizedBalance: false,
+	// Denormalized balance eliminates LATERAL JOIN on balance reads.
+	// Requires the column-aware immutability trigger on account_balance.
+	useDenormalizedBalance: true,
 	lockRetryCount: 0,
 	lockRetryBaseDelayMs: 50,
 	lockRetryMaxDelayMs: 500,
 	lockMode: "wait",
+	optimisticRetryCount: 3,
+	enableBatching: false,
+	batchMaxSize: 200,
+	batchFlushIntervalMs: 5,
 };
 
 // =============================================================================
@@ -55,6 +59,13 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 	// Resolve adapter
 	const adapter: SummaAdapter =
 		typeof options.database === "function" ? options.database() : options.database;
+
+	// Resolve read replica adapter (defaults to primary when not configured)
+	const readAdapter: SummaAdapter = options.readDatabase
+		? typeof options.readDatabase === "function"
+			? options.readDatabase()
+			: options.readDatabase
+		: adapter;
 
 	// Resolve logger
 	const logger = options.logger ?? createConsoleLogger();
@@ -85,6 +96,7 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 		systemAccounts,
 		advanced,
 		schema,
+		coreWorkers: options.coreWorkers,
 	};
 
 	// Propagate schema and hmacSecret to adapter options for sub-function access
@@ -118,12 +130,22 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 		);
 	}
 
+	// Warn about hot-accounts when system accounts are configured
+	const hasSystemAccounts = Object.keys(options.systemAccounts ?? {}).length > 0;
+	if (hasSystemAccounts && !pluginIds.has("hot-accounts")) {
+		logger.warn(
+			"hot-accounts plugin is not registered but system accounts are configured. Core writes hot_account_entry rows that will accumulate without the hot-accounts plugin. For production deployments, register hotAccounts() in your plugins.",
+		);
+	}
+
 	return {
 		adapter,
+		readAdapter,
 		dialect,
 		options: resolvedOptions,
 		logger,
 		plugins,
+		ledgerId: options.ledgerId ?? "",
 		_hookCache: buildHookCache(plugins),
 	};
 }

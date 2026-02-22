@@ -21,6 +21,19 @@ Tables are created automatically via `summa migrate push` or through your ORM's 
 
 These tables are always created, regardless of which plugins you enable.
 
+### ledger
+
+Stores tenant/namespace metadata for multi-tenancy. Each ledger is an isolated namespace with its own accounts, transactions, and system accounts.
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `name` | VARCHAR(255) | Ledger name |
+| `metadata` | JSONB | Custom metadata |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+---
+
 ### ledger_event
 
 The **source of truth** — an immutable, append-only event log. Every state change in Summa produces an event. Events are linked via SHA-256 hash chains for tamper detection.
@@ -28,6 +41,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
+| `ledger_id` | UUID | FK to `ledger` — scopes events per tenant |
 | `sequence_number` | BIGSERIAL | Global ordering (unique) |
 | `aggregate_type` | VARCHAR(50) | Event aggregate type |
 | `aggregate_id` | UUID | Which account/entity this event belongs to |
@@ -50,6 +64,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
+| `ledger_id` | UUID | FK to `ledger` — scopes accounts per tenant |
 | `holder_id` | VARCHAR(255) | User or entity identifier |
 | `holder_type` | VARCHAR(100) | `"individual"`, `"business"`, `"organization"`, etc. |
 | `currency` | CHAR(3) | ISO 4217 currency code |
@@ -64,7 +79,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | `metadata` | JSONB | Custom fields |
 | `created_at` | TIMESTAMPTZ | Creation time |
 
-**Key indexes:** `(holder_id, currency)` unique, `(account_type)`, `(parent_account_id)`
+**Key indexes:** `(ledger_id, holder_id, currency)` unique, `(account_type)`, `(parent_account_id)`
 
 ---
 
@@ -101,6 +116,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
+| `ledger_id` | UUID | FK to `ledger` — each ledger has its own system accounts |
 | `identifier` | VARCHAR(100) | Unique name (e.g., `"@fees"`, `"@revenue"`) |
 | `name` | VARCHAR(255) | Display name |
 | `allow_overdraft` | BOOLEAN | Always `true` |
@@ -134,6 +150,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
+| `ledger_id` | UUID | FK to `ledger` — scopes transactions per tenant |
 | `type` | VARCHAR(50) | Transaction type (`"credit"`, `"debit"`, `"transfer"`, `"journal"`, etc.) |
 | `reference` | VARCHAR(255) | Unique reference / idempotency key |
 | `amount` | BIGINT | Amount in minor units |
@@ -151,7 +168,7 @@ The **source of truth** — an immutable, append-only event log. Every state cha
 | `meta_data` | JSONB | Custom metadata |
 | `created_at` | TIMESTAMPTZ | Creation time |
 
-**Key indexes:** `(reference)` unique, `(type)`, `(source_account_id)`, `(destination_account_id)`, `(hold_expires_at)`, `(parent_id)`, `(created_at)`
+**Key indexes:** `(ledger_id, reference)` unique, `(type)`, `(source_account_id)`, `(destination_account_id)`, `(hold_expires_at)`, `(parent_id)`, `(created_at)`
 
 ---
 
@@ -205,6 +222,7 @@ Block-based hash chain checkpoints (Azure SQL Ledger pattern). Enables O(new eve
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | UUID | Primary key |
+| `ledger_id` | UUID | FK to `ledger` — block checkpoints are per-ledger |
 | `block_sequence` | BIGSERIAL | Block ordering |
 | `from_event_sequence` / `to_event_sequence` | BIGINT | Event range in this block |
 | `event_count` | INTEGER | Number of events |
@@ -261,7 +279,8 @@ Prevents duplicate transactions. Keys expire after 24 hours by default.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| `key` | VARCHAR(255) | Primary key — the idempotency key |
+| `ledger_id` | UUID | FK to `ledger` — same key OK across different ledgers |
+| `key` | VARCHAR(255) | The idempotency key (composite PK with `ledger_id`) |
 | `reference` | VARCHAR(255) | Transaction reference |
 | `result_event_id` | UUID | Result event ID |
 | `result_data` | JSONB | Cached response |
@@ -287,21 +306,45 @@ Distributed worker coordination. Prevents duplicate background job execution acr
 | Table | Purpose |
 |-------|---------|
 | `outbox` | Transactional outbox for reliable event publishing |
-| `dead_letter_queue` | Failed outbox events for manual recovery |
 | `hot_account_entry` | Batched updates for high-throughput system accounts |
-| `hot_account_failed_sequence` | Hot account batch failure tracking |
 | `processed_event` | Consumer-side event deduplication |
-| `reconciliation_result` | Daily reconciliation run results |
-| `reconciliation_watermark` | Incremental reconciliation tracking |
-| `account_snapshot` | End-of-day balance snapshots |
-| `scheduled_transaction` | Recurring / future-dated transactions |
 | `account_limit` | Per-account velocity limits |
 | `account_transaction_log` | Denormalized transaction log for velocity checks |
-| `failed_event` | Event publication DLQ |
 
 ## Plugin Tables
 
 Plugins create their own tables when enabled. These are only created if you include the plugin in your configuration.
+
+### Scheduled Transactions
+
+| Table | Purpose |
+|-------|---------|
+| `scheduled_transaction` | Recurring / future-dated transactions |
+
+### Reconciliation
+
+| Table | Purpose |
+|-------|---------|
+| `reconciliation_result` | Daily reconciliation run results |
+| `reconciliation_watermark` | Incremental reconciliation tracking |
+
+### Snapshots
+
+| Table | Purpose |
+|-------|---------|
+| `account_snapshot` | End-of-day balance snapshots |
+
+### DLQ Manager
+
+| Table | Purpose |
+|-------|---------|
+| `dead_letter_queue` | Failed outbox events for manual recovery |
+
+### Hot Accounts
+
+| Table | Purpose |
+|-------|---------|
+| `hot_account_failed_sequence` | Hot account batch failure tracking |
 
 ### Audit Log
 
@@ -422,8 +465,7 @@ account_balance → account_balance_version (append-only state)
     │              entry_record → transaction_record → transaction_status
     │                                    ↑
     ├── account_limit                    ├── idempotency_key
-    ├── account_snapshot                 └── outbox → dead_letter_queue
-    └── account_transaction_log
+    └── account_transaction_log          └── outbox → processed_event
 
 block_checkpoint → merkle_node (Merkle tree)
 block_checkpoint ← verifies → ledger_event
@@ -435,7 +477,12 @@ worker_lease ← coordinates → background workers
 
 | Category | Tables |
 |----------|:------:|
-| Core | 25 |
+| Core | 19 |
+| Scheduled Transactions plugin | 1 |
+| Reconciliation plugin | 2 |
+| Snapshots plugin | 1 |
+| DLQ Manager plugin | 1 |
+| Hot Accounts plugin | 1 |
 | Audit Log plugin | 1 |
 | Accrual Accounting plugin | 2 |
 | FX Engine plugin | 3 |

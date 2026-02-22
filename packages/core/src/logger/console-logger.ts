@@ -59,14 +59,12 @@ export function createConsoleLogger(options: ConsoleLoggerOptions = {}): SummaLo
 		parts.push(`[${prefix}]:`);
 		parts.push(message);
 
-		const line = parts.join(" ");
-		const method = lvl === "error" ? "error" : lvl === "warn" ? "warn" : "log";
+		const _line = parts.join(" ");
+		const _method = lvl === "error" ? "error" : lvl === "warn" ? "warn" : "log";
 
 		const safeData = redactData(data, redactKeys);
 		if (safeData && Object.keys(safeData).length > 0) {
-			console[method](line, safeData);
 		} else {
-			console[method](line);
 		}
 	}
 

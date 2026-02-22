@@ -56,7 +56,16 @@ export interface SummaHookContext {
 // =============================================================================
 
 export interface ColumnDefinition {
-	type: "text" | "integer" | "bigint" | "boolean" | "timestamp" | "jsonb" | "uuid" | "serial";
+	type:
+		| "text"
+		| "integer"
+		| "bigint"
+		| "boolean"
+		| "timestamp"
+		| "jsonb"
+		| "uuid"
+		| "serial"
+		| "tsvector";
 	primaryKey?: boolean;
 	notNull?: boolean;
 	default?: string;
@@ -71,6 +80,8 @@ export interface TableDefinition {
 		name: string;
 		columns: string[];
 		unique?: boolean;
+		/** Index method: btree (default) or gin (for tsvector/jsonb columns). */
+		using?: "btree" | "gin";
 	}>;
 }
 

@@ -174,18 +174,18 @@ const all = await summa.holds.listAll({
 
 ## Expiry
 
-Holds with `expiresInMinutes` automatically become non-committable after expiration. To automatically void expired holds and release reserved funds, use the [holdExpiry plugin](/docs/plugins/hold-expiry):
+Holds with `expiresInMinutes` automatically become non-committable after expiration. Hold expiry is a **core worker** that runs automatically when you call `summa.workers.start()` — no plugin needed. The interval is configurable via `coreWorkers`:
 
 ```ts
-import { holdExpiry } from "summa/plugins";
-
 const summa = createSumma({
   database: adapter,
-  plugins: [holdExpiry({ interval: "5m" })],
+  coreWorkers: {
+    holdExpiry: { interval: "2m" },  // Default: "5m"
+  },
 });
 ```
 
-Or void expired holds manually:
+You can also void expired holds manually:
 
 ```ts
 const result = await summa.holds.expireAll();

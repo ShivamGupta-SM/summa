@@ -40,4 +40,6 @@ export interface LedgerTransaction {
 	metadata: Record<string, unknown>;
 	createdAt: string;
 	postedAt: string | null;
+	/** Effective date for backdated transactions. Defaults to createdAt when not specified. */
+	effectiveDate: string | null;
 }

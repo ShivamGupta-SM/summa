@@ -40,13 +40,14 @@ The wizard walks you through:
 1. **Database adapter** — Drizzle ORM (recommended), Prisma, Kysely, or In-Memory
 2. **Framework** — auto-detected from `package.json` dependencies (Next.js, Hono, Express, Fastify, SvelteKit) or manual selection
 3. **Currency** — ISO 4217 currency code (default: USD)
-4. **Plugins** — multiselect from 25 built-in plugins (audit log, reconciliation, snapshots, velocity limits, hold expiry, freeze expiry, outbox, DLQ manager, hot accounts, scheduled transactions, maintenance, admin, OpenAPI, observability, statements, i18n, MCP, and more)
+4. **Plugins** — multiselect from all 32 built-in plugins (audit log, reconciliation, snapshots, velocity limits, freeze expiry, outbox, DLQ manager, hot accounts, scheduled transactions, admin, OpenAPI, observability, statements, period close, financial reporting, FX engine, GL sub-ledger, approval workflow, batch import, accrual accounting, data retention, version retention, i18n, MCP, identity, API keys, balance monitor, backup, search, batch engine, event store partition, verification snapshots)
 5. **System accounts** — use defaults (@World, @Fees, @Suspense) or customize
 
 The init wizard also:
 
 - **Auto-detects your package manager** (pnpm/npm/yarn/bun)
 - **Auto-installs dependencies** — prompts to run `pnpm add` / `npm install` automatically after config generation
+- **Smart plugin scaffolding** — generates plugin-specific configuration (e.g., `admin()` with authorize callback, `search()` with `pgSearchBackend()`, `identity()` with encryption key, `outbox()` with messageQueue TODO, `eventStorePartition()` with monthly interval, `verificationSnapshots()` with 6h interval)
 - **Generates a client SDK file** — creates `src/summa.client.ts` with full type inference from your server-side Summa instance
 - **Generates `.env.example`** with `DATABASE_URL` placeholder
 - **Scaffolds an API route** based on the detected framework:
@@ -77,6 +78,11 @@ npx summa generate --adapter drizzle --out src/db/schema.ts
 
 If `--adapter` is not specified, it is auto-detected from your config file or you are prompted interactively. If the output file already exists and content hasn't changed, it reports "already up to date". Otherwise, it asks for overwrite confirmation (skip with `--yes`).
 
+**Foreign key references** defined in plugin schemas (`column.references`) are fully supported across all adapters:
+- **Drizzle** — `.references(() => table.column)` chain
+- **Prisma** — `@relation(fields: [...], references: [...])` decorator with relation fields
+- **Kysely** — JSDoc `/** FK → table.column */` annotations
+
 ### `summa migrate`
 
 Manage database schema and migrations. Has three subcommands:
@@ -100,9 +106,9 @@ If your config uses a non-public schema (default: `"summa"`), the command automa
 
 Shows a migration preview before applying:
 - Schema creation (if needed)
-- Tables to create
+- Tables to create (with foreign key `REFERENCES` constraints from plugin schemas)
 - Columns to add to existing tables
-- Indexes to create
+- Indexes to create (including `USING gin` for tsvector/JSONB columns)
 
 #### `summa migrate status`
 
@@ -125,6 +131,57 @@ Shows instructions for generating migrations through your ORM of choice (Drizzle
 npx summa migrate generate
 ```
 
+### `summa partition`
+
+Manage event store partitioning. Has two subcommands.
+
+#### `summa partition generate`
+
+Generate SQL for converting `ledger_event` to a PostgreSQL range-partitioned table. Does NOT auto-execute — writes a SQL file for manual review.
+
+```bash
+npx summa partition generate
+npx summa partition generate --interval weekly
+npx summa partition generate --output migration.sql
+```
+
+| Option | Description |
+|--------|-------------|
+| `--interval <interval>` | Partition interval: `monthly` or `weekly` (default: `monthly`) |
+| `--schema <schema>` | PostgreSQL schema name (default: from config or `summa`) |
+| `-o, --output <path>` | Output file path (default: auto-generated with timestamp) |
+
+The generated SQL includes:
+
+1. **Phase 1** — Drop unique constraints incompatible with partitioning
+2. **Phase 2-5** — Rename table, create partitioned table, create initial partitions, migrate data
+3. **Phase 6** — Re-add constraints with `created_at` included (required for partitioned unique indexes)
+4. **Phase 7** — Re-apply immutability triggers (auto-propagate to child partitions)
+5. **Phase 8** — Instructions for dropping the old table after verification
+
+<Callout type="error" title="Run during maintenance window">
+  Review the generated SQL carefully and execute it during a maintenance window. Back up your data first. Row counts should be verified before dropping the old table.
+</Callout>
+
+#### `summa partition status`
+
+Show current partition status for `ledger_event`.
+
+```bash
+npx summa partition status
+npx summa partition status --url postgres://...
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+| `--schema <schema>` | PostgreSQL schema name (default: `summa`) |
+
+Displays:
+- Whether `ledger_event` is partitioned (checks `pg_class.relkind`)
+- List of child partitions with estimated row counts and sizes
+- Guidance on next steps if not yet partitioned
+
 ### `summa status`
 
 Show a comprehensive system status dashboard including configuration, database connectivity, ledger statistics, and integrity checks.
@@ -142,7 +199,7 @@ Displays:
 - **Configuration** — config file, adapter, currency, system accounts, plugins, advanced options
 - **Database** — connection status
 - **Ledger Statistics** — account count, system accounts, transactions, active holds, events
-- **Integrity** — last block checkpoint, double-entry balance check (user + system + hot = 0), last reconciliation status, outbox/DLQ queue
+- **Integrity** — last block checkpoint, double-entry balance check (user + system + hot = 0), last reconciliation status, outbox/DLQ queue, migration freshness (days since last applied migration)
 
 ### `summa verify`
 
@@ -152,12 +209,16 @@ Verify ledger integrity with comprehensive checks. Can run all checks or specifi
 npx summa verify
 npx summa verify --balances
 npx summa verify --chain
+npx summa verify --triggers
+npx summa verify --full
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--chain` | Verify event hash chain integrity only |
 | `--balances` | Verify double-entry balance integrity only |
+| `--triggers` | Verify immutability triggers on financial tables |
+| `--full` | Audit ALL aggregates (no sampling limit) |
 | `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
 
 **Balance checks:**
@@ -167,7 +228,11 @@ npx summa verify --chain
 
 **Hash chain checks:**
 - Block checkpoint chain linkage (prev_block_hash matches)
-- Event hash chain per aggregate (samples up to 50 aggregates; warns if the total aggregate count exceeds the sample size)
+- Event hash chain per aggregate (samples up to 50 aggregates by default; use `--full` to audit every aggregate)
+
+**Trigger checks** (`--triggers`):
+- Verifies that `trg_immutable_*` triggers exist on all 11 immutable core tables (`account_balance`, `account_balance_version`, `system_account`, `system_account_version`, `transaction_record`, `transaction_status`, `entry_record`, `ledger_event`, `block_checkpoint`, `merkle_node`, `entity_status_log`)
+- Reports missing triggers as failures
 
 Shows a summary at the end: `3 passed / 0 failed / 1 skipped`
 
@@ -190,6 +255,39 @@ Shows:
 - **System** — OS, CPU, memory, Node.js version, package manager
 - **Summa** — version, config file path, adapter, currency, plugins, system accounts, installed adapter packages, database URL (redacted)
 
+### `summa doctor`
+
+Run comprehensive diagnostics to identify common setup issues. Useful for debugging installation problems or validating a deployment.
+
+```bash
+npx summa doctor
+npx summa doctor --url postgres://...
+```
+
+| Option | Description |
+|--------|-------------|
+| `--url <url>` | PostgreSQL connection URL (or set `DATABASE_URL`) |
+
+Checks performed:
+
+| Check | What it verifies |
+|-------|-----------------|
+| **Node.js version** | >= 18 required |
+| **Summa installation** | `summa` package is resolvable |
+| **PostgreSQL driver** | `pg` package is available |
+| **Config file** | Discovery and parsing of `summa.config.ts` |
+| **Database adapter** | Adapter type from resolved config |
+| **System accounts** | System account configuration |
+| **DATABASE_URL** | Environment variable or `--url` flag |
+| **`.env` files** | Checks for `.env`, `.env.local`, `.env.development`, `.env.production` |
+| **Database connection** | TCP connectivity to PostgreSQL |
+| **Schema existence** | Target schema exists in the database |
+| **Core tables** | `account_balance`, `transaction_record`, `entry_record`, `ledger_event` |
+| **Migration count** | Number of applied migrations and freshness |
+| **Immutability triggers** | Count of `trg_immutable_*` triggers on financial tables |
+
+Each check shows a pass/fail/warning status with actionable hints for failures.
+
 ### `summa secret`
 
 Generate a cryptographically secure random secret.
@@ -198,14 +296,15 @@ Generate a cryptographically secure random secret.
 npx summa secret
 npx summa secret --length 64 --base64
 npx summa secret --env
-npx summa secret --env --copy
+npx summa secret --env --name SUMMA_ENCRYPTION_KEY --copy
 ```
 
 | Option | Description |
 |--------|-------------|
 | `-l, --length <n>` | Length in bytes (default: 32) |
+| `-n, --name <name>` | Environment variable name (default: `SUMMA_SECRET`) |
 | `--base64` | Output base64 instead of hex |
-| `--env` | Output in `.env` format (`SUMMA_SECRET=...`) |
+| `--env` | Output in `.env` format (`NAME=...`) |
 | `--copy` | Copy to clipboard |
 
 ### `summa telemetry`
@@ -255,3 +354,5 @@ export const summa = { database: ..., currency: "USD" };
 ```
 
 The CLI uses [c12](https://github.com/unjs/c12) + [jiti](https://github.com/unjs/jiti) for runtime TypeScript transpilation, supporting path aliases from your `tsconfig.json`.
+
+Environment variables are automatically loaded from `.env`, `.env.local`, `.env.development`, and `.env.production` via c12's built-in dotenv integration. Config parsing errors are surfaced to stderr with the file path for easier debugging.

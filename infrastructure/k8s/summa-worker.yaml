@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: summa-worker
+  namespace: summa
+  labels:
+    app.kubernetes.io/name: summa-worker
+    app.kubernetes.io/part-of: summa-ledger
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: summa-worker
+  template:
+    metadata:
+      labels:
+        app: summa-worker
+    spec:
+      containers:
+        - name: summa-worker
+          image: summa/server:latest
+          envFrom:
+            - configMapRef:
+                name: summa-config
+            - secretRef:
+                name: summa-secrets
+          env:
+            - name: SUMMA_MODE
+              value: "worker"
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Worker doesn't serve HTTP, use exec probe
+          livenessProbe:
+            exec:
+              command: ["node", "-e", "process.exit(0)"]
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      terminationGracePeriodSeconds: 60
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: summa-worker-hpa
+  namespace: summa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: summa-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300

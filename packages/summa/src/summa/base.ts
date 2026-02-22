@@ -13,6 +13,7 @@ import type {
 	HolderType,
 	InferPluginTypes,
 	JournalEntryLeg,
+	Ledger,
 	LedgerTransaction,
 	MerkleProof,
 	StoredEvent,
@@ -38,6 +39,8 @@ import {
 import * as corrections from "../managers/correction-manager.js";
 import * as holds from "../managers/hold-manager.js";
 import * as journal from "../managers/journal-manager.js";
+import { getLedgerId } from "../managers/ledger-helpers.js";
+import * as ledgers from "../managers/ledger-manager.js";
 import type { AccountLimitInfo, LimitType } from "../managers/limit-manager.js";
 import * as limits from "../managers/limit-manager.js";
 import { initializeSystemAccounts } from "../managers/system-accounts.js";
@@ -48,6 +51,11 @@ import * as transactions from "../managers/transaction-manager.js";
 // =============================================================================
 
 export interface Summa<TInfer = Record<string, never>> {
+	ledgers: {
+		create: (params: { name: string; metadata?: Record<string, unknown> }) => Promise<Ledger>;
+		get: (ledgerId: string) => Promise<Ledger>;
+		list: () => Promise<Ledger[]>;
+	};
 	accounts: {
 		create: (params: {
 			holderId: string;
@@ -62,7 +70,7 @@ export interface Summa<TInfer = Record<string, never>> {
 		}) => Promise<Account>;
 		get: (holderId: string) => Promise<Account>;
 		getById: (accountId: string) => Promise<Account>;
-		getBalance: (holderId: string) => Promise<AccountBalance>;
+		getBalance: (holderId: string, options?: { asOf?: Date | string }) => Promise<AccountBalance>;
 		freeze: (params: { holderId: string; reason: string; frozenBy: string }) => Promise<Account>;
 		unfreeze: (params: {
 			holderId: string;
@@ -99,6 +107,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			metadata?: Record<string, unknown>;
 			sourceSystemAccount?: string;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		debit: (params: {
 			holderId: string;
@@ -110,6 +119,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			destinationSystemAccount?: string;
 			allowOverdraft?: boolean;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		transfer: (params: {
 			sourceHolderId: string;
@@ -122,6 +132,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			idempotencyKey?: string;
 			/** Exchange rate as scaled integer (rate × 1_000_000). Auto-resolved if fx-engine plugin is registered. */
 			exchangeRate?: number;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		multiTransfer: (params: {
 			sourceHolderId: string;
@@ -132,6 +143,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			category?: string;
 			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		refund: (params: {
 			transactionId: string;
@@ -153,6 +165,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			description?: string;
 			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		journal: (params: {
 			entries: JournalEntryLeg[];
@@ -160,6 +173,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			description?: string;
 			metadata?: Record<string, unknown>;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		get: (id: string) => Promise<LedgerTransaction>;
 		list: (params: {
@@ -282,9 +296,9 @@ export interface Summa<TInfer = Record<string, never>> {
 		}) => Promise<{ daily: number; monthly: number }>;
 	};
 	workers: {
-		/** Start all plugin background workers */
+		/** Start all background workers (core + plugin) */
 		start: () => Promise<void>;
-		/** Stop all plugin background workers and release leases */
+		/** Stop all background workers and release leases */
 		stop: () => Promise<void>;
 	};
 	$context: Promise<SummaContext>;
@@ -311,7 +325,11 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 
 	const ctxPromise = (async () => {
 		const ctx = await buildContext(options);
-		await initializeSystemAccounts(ctx);
+		// System accounts are initialized per-ledger when creating a ledger.
+		// If a default ledgerId is provided, initialize system accounts for it.
+		if (ctx.ledgerId) {
+			await initializeSystemAccounts(ctx, ctx.ledgerId);
+		}
 		for (const plugin of ctx.plugins) {
 			if (plugin.init) await plugin.init(ctx);
 		}
@@ -321,6 +339,20 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 	const getCtx = () => ctxPromise;
 
 	return {
+		ledgers: {
+			create: async (params) => {
+				const ctx = await getCtx();
+				return ledgers.createLedger(ctx, params);
+			},
+			get: async (ledgerId) => {
+				const ctx = await getCtx();
+				return ledgers.getLedger(ctx, ledgerId);
+			},
+			list: async () => {
+				const ctx = await getCtx();
+				return ledgers.listLedgers(ctx);
+			},
+		},
 		accounts: {
 			create: async (params) => {
 				const ctx = await getCtx();
@@ -334,10 +366,10 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				const ctx = await getCtx();
 				return accounts.getAccountById(ctx, accountId);
 			},
-			getBalance: async (holderId) => {
+			getBalance: async (holderId, options) => {
 				const ctx = await getCtx();
 				const acct = await accounts.getAccountByHolder(ctx, holderId);
-				return accounts.getAccountBalance(ctx, acct);
+				return accounts.getAccountBalance(ctx, acct, options);
 			},
 			freeze: async (params) => {
 				const ctx = await getCtx();
@@ -359,19 +391,23 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 		chartOfAccounts: {
 			getByType: async (accountType) => {
 				const ctx = await getCtx();
-				return getAccountsByType(ctx, accountType);
+				const ledgerId = getLedgerId(ctx);
+				return getAccountsByType(ctx, accountType, ledgerId);
 			},
 			getChildren: async (parentAccountId) => {
 				const ctx = await getCtx();
-				return getChildAccounts(ctx, parentAccountId);
+				const ledgerId = getLedgerId(ctx);
+				return getChildAccounts(ctx, parentAccountId, ledgerId);
 			},
 			getHierarchy: async (rootAccountId) => {
 				const ctx = await getCtx();
-				return getAccountHierarchy(ctx, rootAccountId);
+				const ledgerId = getLedgerId(ctx);
+				return getAccountHierarchy(ctx, ledgerId, rootAccountId);
 			},
 			validateEquation: async () => {
 				const ctx = await getCtx();
-				return validateAccountingEquation(ctx);
+				const ledgerId = getLedgerId(ctx);
+				return validateAccountingEquation(ctx, ledgerId);
 			},
 		},
 		transactions: {
@@ -457,23 +493,28 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 		events: {
 			getForAggregate: async (type, id) => {
 				const ctx = await getCtx();
-				return events.getEvents(ctx, type, id);
+				const ledgerId = getLedgerId(ctx);
+				return events.getEvents(ctx, type, id, ledgerId);
 			},
 			getByCorrelation: async (correlationId) => {
 				const ctx = await getCtx();
-				return events.getEventsByCorrelation(ctx, correlationId);
+				const ledgerId = getLedgerId(ctx);
+				return events.getEventsByCorrelation(ctx, correlationId, ledgerId);
 			},
 			verifyChain: async (type, id) => {
 				const ctx = await getCtx();
-				return hashChain.verifyHashChain(ctx, type.toLowerCase(), id);
+				const ledgerId = getLedgerId(ctx);
+				return hashChain.verifyHashChain(ctx, type.toLowerCase(), id, ledgerId);
 			},
 			verifyExternalAnchor: async (blockSequence: number, externalBlockHash: string) => {
 				const ctx = await getCtx();
-				return hashChain.verifyExternalAnchor(ctx, blockSequence, externalBlockHash);
+				const ledgerId = getLedgerId(ctx);
+				return hashChain.verifyExternalAnchor(ctx, blockSequence, externalBlockHash, ledgerId);
 			},
 			generateProof: async (eventId) => {
 				const ctx = await getCtx();
-				return hashChain.generateEventProof(ctx, eventId);
+				const ledgerId = getLedgerId(ctx);
+				return hashChain.generateEventProof(ctx, eventId, ledgerId);
 			},
 			verifyProof: async (proof, blockId) => {
 				const ctx = await getCtx();

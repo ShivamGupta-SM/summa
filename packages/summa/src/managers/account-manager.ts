@@ -38,6 +38,7 @@ import {
 } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import type { RawAccountRow } from "./raw-types.js";
 import { readLatestVersion } from "./sql-helpers.js";
 
@@ -133,6 +134,8 @@ export async function createAccount(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
+
 	const hookParams = { holderId, holderType, ctx };
 	await runBeforeAccountCreateHooks(ctx, hookParams);
 
@@ -142,8 +145,8 @@ export async function createAccount(
 
 	// Fast path: check if account already exists (no lock needed)
 	const existingRows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.holder_id = $1 AND a.holder_type = $2 LIMIT 1`,
-		[holderId, holderType],
+		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 AND a.holder_type = $3 LIMIT 1`,
+		[ledgerId, holderId, holderType],
 	);
 
 	if (existingRows[0]) {
@@ -151,15 +154,15 @@ export async function createAccount(
 	}
 
 	// Slow path: acquire advisory lock to prevent race conditions.
-	const lockKey = hashLockKey(`${holderId}:${holderType}`);
+	const lockKey = hashLockKey(`${ledgerId}:${holderId}:${holderType}`);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		await tx.raw(ctx.dialect.advisoryLock(lockKey), []);
 
 		// Re-check inside lock
 		const existingInLockRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.holder_id = $1 AND a.holder_type = $2 LIMIT 1`,
-			[holderId, holderType],
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 AND a.holder_type = $3 LIMIT 1`,
+			[ledgerId, holderId, holderType],
 		);
 
 		if (existingInLockRows[0]) {
@@ -169,8 +172,8 @@ export async function createAccount(
 		// Validate parent account if specified
 		if (parentAccountId) {
 			const parentRows = await tx.raw<{ id: string; account_type: string | null }>(
-				`SELECT id, account_type FROM ${t("account_balance")} WHERE id = $1 LIMIT 1`,
-				[parentAccountId],
+				`SELECT id, account_type FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 LIMIT 1`,
+				[ledgerId, parentAccountId],
 			);
 			const parent = parentRows[0];
 			if (!parent) throw SummaError.notFound(`Parent account "${parentAccountId}" not found`);
@@ -196,9 +199,10 @@ export async function createAccount(
 		);
 
 		const baseCols =
-			"holder_id, holder_type, currency, allow_overdraft, overdraft_limit, indicator, account_type, account_code, parent_account_id, normal_balance, metadata";
-		const baseVals = "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11";
+			"ledger_id, holder_id, holder_type, currency, allow_overdraft, overdraft_limit, indicator, account_type, account_code, parent_account_id, normal_balance, metadata";
+		const baseVals = "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12";
 		const baseParams: unknown[] = [
+			ledgerId,
 			holderId,
 			holderType,
 			currency,
@@ -216,7 +220,7 @@ export async function createAccount(
 		let insertParams: unknown[];
 		if (dn) {
 			insertSql = `INSERT INTO ${t("account_balance")} (${baseCols}, cached_balance, cached_credit_balance, cached_debit_balance, cached_pending_debit, cached_pending_credit, cached_version, cached_status, cached_checksum)
-       VALUES (${baseVals}, $12, $13, $14, $15, $16, $17, $18, $19)
+       VALUES (${baseVals}, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING id`;
 			insertParams = [...baseParams, 0, 0, 0, 0, 0, 1, "active", initialChecksum];
 		} else {
@@ -257,6 +261,7 @@ export async function createAccount(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Write to outbox for async publishing
@@ -277,9 +282,10 @@ export async function createAccount(
 		);
 
 		// Read back the combined row for response
-		const createdRows = await tx.raw<RawAccountRow>(`${accountSelectSql(t, dn)} WHERE a.id = $1`, [
-			accountId,
-		]);
+		const createdRows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			[ledgerId, accountId],
+		);
 		const created = createdRows[0];
 		if (!created) throw SummaError.internal("Failed to read created account");
 		return rawRowToAccount(created);
@@ -298,11 +304,12 @@ export async function createAccount(
 // =============================================================================
 
 export async function getAccountByHolder(ctx: SummaContext, holderId: string): Promise<Account> {
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
-	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.holder_id = $1 LIMIT 1`,
-		[holderId],
+	const rows = await ctx.readAdapter.raw<RawAccountRow>(
+		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 LIMIT 1`,
+		[ledgerId, holderId],
 	);
 
 	if (!rows[0]) throw SummaError.notFound("Account not found");
@@ -312,21 +319,57 @@ export async function getAccountByHolder(ctx: SummaContext, holderId: string): P
 /** Resolve account by holderId inside a transaction with FOR UPDATE lock on immutable parent. */
 export async function resolveAccountForUpdate(
 	tx: SummaTransactionAdapter,
+	ledgerId: string,
 	holderId: string,
 	schema: string,
-	lockMode: "wait" | "nowait" = "wait",
+	lockMode: "wait" | "nowait" | "optimistic" = "wait",
 	useDenormalizedBalance = false,
 ): Promise<RawAccountRow> {
 	const t = createTableResolver(schema);
 
-	const lockSuffix = lockMode === "nowait" ? "FOR UPDATE NOWAIT" : "FOR UPDATE";
+	// Optimistic mode: read WITHOUT any lock. Rely on UNIQUE(account_id, version)
+	// constraint on account_balance_version INSERT to detect conflicts.
+	const isOptimistic = lockMode === "optimistic";
+	const lockSuffix = isOptimistic ? "" : lockMode === "nowait" ? "FOR UPDATE NOWAIT" : "FOR UPDATE";
 
 	if (useDenormalizedBalance) {
 		// Denormalized path: lock + read cached balance in a single query.
 		// No LATERAL JOIN needed — all state lives on account_balance.
 		const rows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, true)} WHERE a.holder_id = $1 LIMIT 1 ${lockSuffix}`,
-			[holderId],
+			`${accountSelectSql(t, true)} WHERE a.ledger_id = $1 AND a.holder_id = $2 LIMIT 1 ${lockSuffix}`,
+			[ledgerId, holderId],
+		);
+		if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
+		const row = rows[0];
+
+		if (row.checksum) {
+			const hmacSecret = tx.options?.hmacSecret ?? null;
+			const expected = computeBalanceChecksum(
+				{
+					balance: Number(row.balance),
+					creditBalance: Number(row.credit_balance),
+					debitBalance: Number(row.debit_balance),
+					pendingDebit: Number(row.pending_debit),
+					pendingCredit: Number(row.pending_credit),
+					lockVersion: Number(row.version),
+				},
+				hmacSecret,
+			);
+			if (expected !== row.checksum) {
+				throw SummaError.chainIntegrityViolation(
+					`Balance checksum mismatch for account ${row.id}: balance data may have been tampered with`,
+				);
+			}
+		}
+
+		return row;
+	}
+
+	if (isOptimistic) {
+		// Optimistic path: read without locking. Conflict detected at INSERT time.
+		const rows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t)} WHERE a.ledger_id = $1 AND a.holder_id = $2`,
+			[ledgerId, holderId],
 		);
 		if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
 		const row = rows[0];
@@ -357,15 +400,18 @@ export async function resolveAccountForUpdate(
 	// Standard path: lock parent row, then LATERAL JOIN for latest version.
 	const parentRows = await tx.raw<{ id: string }>(
 		`SELECT id FROM ${t("account_balance")}
-     WHERE holder_id = $1
+     WHERE ledger_id = $1 AND holder_id = $2
      LIMIT 1
      ${lockSuffix}`,
-		[holderId],
+		[ledgerId, holderId],
 	);
 	if (!parentRows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
 	const accountId = parentRows[0].id;
 
-	const rows = await tx.raw<RawAccountRow>(`${accountSelectSql(t)} WHERE a.id = $1`, [accountId]);
+	const rows = await tx.raw<RawAccountRow>(
+		`${accountSelectSql(t)} WHERE a.ledger_id = $1 AND a.id = $2`,
+		[ledgerId, accountId],
+	);
 	if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
 
 	const row = rows[0];
@@ -394,11 +440,12 @@ export async function resolveAccountForUpdate(
 }
 
 export async function getAccountById(ctx: SummaContext, accountId: string): Promise<Account> {
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
-	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.id = $1 LIMIT 1`,
-		[accountId],
+	const rows = await ctx.readAdapter.raw<RawAccountRow>(
+		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2 LIMIT 1`,
+		[ledgerId, accountId],
 	);
 
 	if (!rows[0]) throw SummaError.notFound("Account not found");
@@ -412,12 +459,29 @@ export async function getAccountById(ctx: SummaContext, accountId: string): Prom
 export async function getAccountBalance(
 	ctx: SummaContext,
 	account: Account,
+	options?: { asOf?: Date | string },
 ): Promise<AccountBalanceType> {
+	// Point-in-time balance query via effective_date
+	if (options?.asOf) {
+		const { getBalanceAsOf } = await import("./effective-date.js");
+		const result = await getBalanceAsOf(ctx, account.id, options.asOf);
+		return {
+			balance: result.balance,
+			creditBalance: result.creditBalance,
+			debitBalance: result.debitBalance,
+			pendingCredit: 0,
+			pendingDebit: 0,
+			availableBalance: result.balance,
+			currency: result.currency,
+		};
+	}
+
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
 	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.id = $1 LIMIT 1`,
-		[account.id],
+		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2 LIMIT 1`,
+		[ledgerId, account.id],
 	);
 
 	if (!rows[0]) throw SummaError.notFound("Account not found");
@@ -470,6 +534,7 @@ export async function freezeAccount(
 	},
 ): Promise<Account> {
 	const { holderId, reason, frozenBy } = params;
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 
 	const dn = ctx.options.advanced.useDenormalizedBalance;
@@ -478,6 +543,7 @@ export async function freezeAccount(
 		// Lock and read inside transaction to prevent TOCTOU race
 		const lockedRow = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -562,6 +628,7 @@ export async function freezeAccount(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		await tx.raw(
@@ -580,9 +647,10 @@ export async function freezeAccount(
 		);
 
 		// Read back to return
-		const updatedRows = await tx.raw<RawAccountRow>(`${accountSelectSql(t, dn)} WHERE a.id = $1`, [
-			lockedRow.id,
-		]);
+		const updatedRows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			[ledgerId, lockedRow.id],
+		);
 		const frozen = updatedRows[0];
 		if (!frozen) throw SummaError.internal("Failed to read frozen account");
 		return rawRowToAccount(frozen);
@@ -604,12 +672,14 @@ export async function unfreezeAccount(
 	},
 ): Promise<Account> {
 	const { holderId, unfrozenBy } = params;
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const lockedRow = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -695,6 +765,7 @@ export async function unfreezeAccount(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		await tx.raw(
@@ -712,9 +783,10 @@ export async function unfreezeAccount(
 		);
 
 		// Read back to return
-		const updatedRows = await tx.raw<RawAccountRow>(`${accountSelectSql(t, dn)} WHERE a.id = $1`, [
-			lockedRow.id,
-		]);
+		const updatedRows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			[ledgerId, lockedRow.id],
+		);
 		const unfrozen = updatedRows[0];
 		if (!unfrozen) throw SummaError.internal("Failed to read unfrozen account");
 		return rawRowToAccount(unfrozen);
@@ -738,6 +810,7 @@ export async function closeAccount(
 	},
 ): Promise<Account> {
 	const { holderId, closedBy, reason } = params;
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
 
@@ -749,9 +822,9 @@ export async function closeAccount(
 		if (params.transferToHolderId) {
 			const destRows = await tx.raw<{ id: string }>(
 				`SELECT id FROM ${t("account_balance")}
-         WHERE holder_id = $1
+         WHERE ledger_id = $1 AND holder_id = $2
          LIMIT 1`,
-				[params.transferToHolderId],
+				[ledgerId, params.transferToHolderId],
 			);
 			if (destRows[0]) destAccountId = destRows[0].id;
 		}
@@ -759,6 +832,7 @@ export async function closeAccount(
 		// Lock the source account inside the transaction (prevents TOCTOU race)
 		const sourceRow = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -800,8 +874,8 @@ export async function closeAccount(
 			if (dn) {
 				// Denormalized: lock + read status from cached columns in one query
 				const destRows = await tx.raw<{ id: string; cached_status: string; currency: string }>(
-					`SELECT id, cached_status, currency FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`,
-					[destAccountId],
+					`SELECT id, cached_status, currency FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 FOR UPDATE`,
+					[ledgerId, destAccountId],
 				);
 				if (destRows[0]) {
 					destRow = {
@@ -812,9 +886,10 @@ export async function closeAccount(
 				}
 			} else {
 				// Standard: lock parent, then LATERAL JOIN for latest version
-				await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [
-					destAccountId,
-				]);
+				await tx.raw(
+					`SELECT id FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 FOR UPDATE`,
+					[ledgerId, destAccountId],
+				);
 				const destVersionRows = await tx.raw<{ status: string; currency: string }>(
 					`SELECT v.status, a.currency
            FROM ${t("account_balance")} a
@@ -822,8 +897,8 @@ export async function closeAccount(
              SELECT status FROM ${t("account_balance_version")}
              WHERE account_id = a.id ORDER BY version DESC LIMIT 1
            ) v ON true
-           WHERE a.id = $1`,
-					[destAccountId],
+           WHERE a.ledger_id = $1 AND a.id = $2`,
+					[ledgerId, destAccountId],
 				);
 				if (destVersionRows[0]) {
 					destRow = {
@@ -929,6 +1004,7 @@ export async function closeAccount(
 				},
 				ctx.options.schema,
 				ctx.options.advanced.hmacSecret,
+				ledgerId,
 			);
 		}
 
@@ -1009,6 +1085,7 @@ export async function closeAccount(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		await tx.raw(
@@ -1036,9 +1113,10 @@ export async function closeAccount(
 		});
 
 		// Read back final state
-		const closedRows = await tx.raw<RawAccountRow>(`${accountSelectSql(t, dn)} WHERE a.id = $1`, [
-			sourceRow.id,
-		]);
+		const closedRows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			[ledgerId, sourceRow.id],
+		);
 		const closed = closedRows[0];
 		if (!closed) throw SummaError.internal("Failed to read closed account");
 		return rawRowToAccount(closed);
@@ -1083,6 +1161,7 @@ export async function listAccounts(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 	const dn = ctx.options.advanced.useDenormalizedBalance;
 
@@ -1091,6 +1170,10 @@ export async function listAccounts(
 	const conditions: string[] = [];
 	const queryParams: unknown[] = [];
 	let paramIdx = 1;
+
+	// Mandatory ledger_id filter
+	conditions.push(`combined.ledger_id = $${paramIdx++}`);
+	queryParams.push(ledgerId);
 
 	if (params.status) {
 		conditions.push(`combined.status = $${paramIdx++}`);
@@ -1127,7 +1210,7 @@ export async function listAccounts(
 	if (useCursor) {
 		// Cursor-based: no OFFSET, no COUNT(*) OVER() (faster)
 		queryParams.push(perPage + 1);
-		const rows = await ctx.adapter.raw<RawAccountRow>(
+		const rows = await ctx.readAdapter.raw<RawAccountRow>(
 			`SELECT combined.* FROM (
            ${accountSelectSql(t, dn)}
          ) combined
@@ -1145,13 +1228,13 @@ export async function listAccounts(
 		return { accounts: data, hasMore, total: -1, nextCursor };
 	}
 
-	// Traditional OFFSET/LIMIT (backward compatible)
+	// OFFSET/LIMIT pagination
 	const page = Math.max(1, params.page ?? 1);
 	const offset = (page - 1) * perPage;
 
 	queryParams.push(perPage + 1);
 	queryParams.push(offset);
-	const rows = await ctx.adapter.raw<RawAccountRow & { _total_count: number }>(
+	const rows = await ctx.readAdapter.raw<RawAccountRow & { _total_count: number }>(
 		`SELECT combined.*, COUNT(*) OVER()::int AS _total_count FROM (
        ${accountSelectSql(t, dn)}
      ) combined

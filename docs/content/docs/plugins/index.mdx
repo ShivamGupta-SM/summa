@@ -14,13 +14,11 @@ import {
   reconciliation,
   snapshots,
   velocityLimits,
-  holdExpiry,
   freezeExpiry,
   outbox,
   dlqManager,
   hotAccounts,
   scheduledTransactions,
-  maintenance,
   admin,
   openApi,
   observability,
@@ -36,22 +34,29 @@ import {
   versionRetention,
   i18n,
   mcp,
+  identity,
+  apiKeys,
+  balanceMonitor,
+  backup,
+  search,
+  batchEngine,
 } from "summa/plugins";
 
 const summa = createSumma({
   database: adapter,
   currency: "USD",
+  // Hold expiry, idempotency cleanup, and lease cleanup run automatically
+  // as core workers — no plugin needed
   plugins: [
     auditLog(),
     reconciliation(),
     snapshots(),
     velocityLimits(),
-    holdExpiry(),
+    freezeExpiry(),
     outbox({ publisher: myPublisher }),
     dlqManager(),
     hotAccounts(),
     scheduledTransactions(),
-    maintenance(),
     admin({ authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY }),
     openApi(),
     observability(),
@@ -68,16 +73,15 @@ const summa = createSumma({
 | [`reconciliation`](/docs/plugins/reconciliation) | Integrity | Yes | Automated balance reconciliation with 5-step verification |
 | [`snapshots`](/docs/plugins/snapshots) | Reporting | Yes | Point-in-time balance snapshots for historical queries |
 | [`velocityLimits`](/docs/plugins/velocity-limits) | Security | Yes | Per-transaction, daily, and monthly amount limits |
-| [`holdExpiry`](/docs/plugins/hold-expiry) | Automation | Yes | Automatic void of expired holds |
+| [`freezeExpiry`](/docs/plugins/freeze-expiry) | Automation | Yes | Auto-unfreeze accounts after their `frozen_until` TTL |
 | [`outbox`](/docs/plugins/outbox) | Integration | Yes | Transactional outbox for reliable event publishing |
 | [`dlqManager`](/docs/plugins/dlq-manager) | Operations | Yes | Dead letter queue for failed event processing |
 | [`hotAccounts`](/docs/plugins/hot-accounts) | Performance | Yes | Optimistic concurrency for high-traffic accounts |
 | [`scheduledTransactions`](/docs/plugins/scheduled-transactions) | Automation | Yes | Future and recurring transaction scheduling |
-| [`maintenance`](/docs/plugins/maintenance) | Operations | Yes | Automated cleanup of expired data |
 | [`admin`](/docs/plugins/admin) | Management | No | Elevated admin endpoints with authorization and dashboard stats |
 | [`openApi`](/docs/plugins/open-api) | Documentation | No | Auto-generated OpenAPI 3.1 specification |
 | [`observability`](/docs/plugins/observability) | Monitoring | No | Distributed tracing and Prometheus metrics via `/metrics` endpoint |
-| [`statements`](/docs/plugins/statements) | Reporting | No | Account statement generation with JSON, CSV, and PDF download |
+| [`statements`](/docs/plugins/statements) | Reporting | Yes | Account statement generation with JSON, CSV, and PDF download |
 | [`periodClose`](/docs/plugins/period-close) | Compliance | No | Lock accounting periods to prevent backdated transactions |
 | [`financialReporting`](/docs/plugins/financial-reporting) | Reporting | No | Trial balance, balance sheet, and income statement |
 | [`fxEngine`](/docs/plugins/fx-engine) | Finance | Yes | Auto-resolves exchange rates for cross-currency transfers, rate caching, quotes, and gain/loss tracking |
@@ -87,9 +91,14 @@ const summa = createSumma({
 | [`accrualAccounting`](/docs/plugins/accrual-accounting) | Finance | Yes | Revenue/expense recognition over time |
 | [`dataRetention`](/docs/plugins/data-retention) | Operations | Yes | Unified data retention policies across all tables |
 | [`versionRetention`](/docs/plugins/version-retention) | Performance | Yes | Archive and prune old `account_balance_version` rows to keep the table bounded |
-| [`freezeExpiry`](/docs/plugins/freeze-expiry) | Automation | Yes | TTL-based auto-unfreeze for frozen accounts |
 | [`i18n`](/docs/plugins/i18n) | Localization | No | Multi-locale error message translation with Accept-Language detection |
 | [`mcp`](/docs/plugins/mcp) | Integration | No | Model Context Protocol tools for AI agent access to the ledger |
+| [`identity`](/docs/plugins/identity) | Compliance | No | KYC identity management with AES-256-GCM PII tokenization |
+| [`apiKeys`](/docs/plugins/api-keys) | Security | Yes | SHA-256 hashed API key management with scoped permissions and rotation |
+| [`balanceMonitor`](/docs/plugins/balance-monitor) | Monitoring | No | Real-time condition-based balance alerts and threshold triggers |
+| [`backup`](/docs/plugins/backup) | Operations | Yes | Automated PostgreSQL backups with local disk and S3 storage |
+| [`search`](/docs/plugins/search) | Integration | Yes | Native PostgreSQL full-text search (zero-dependency) with optional Typesense and Meilisearch backends |
+| [`batchEngine`](/docs/scaling#transaction-batching-batch-engine) | Performance | No | TigerBeetle-inspired transaction batching for 100,000+ TPS |
 
 ## Plugin Architecture
 
@@ -284,7 +293,7 @@ interface SummaWorkerDefinition {
 }
 ```
 
-Start all plugin workers:
+Start all workers (core + plugin):
 
 ```ts
 await summa.workers.start();
@@ -295,7 +304,23 @@ process.on("SIGTERM", async () => {
 });
 ```
 
-Worker intervals support `"5s"`, `"1m"`, `"30m"`, `"1h"`, `"1d"` format. A ±25% jitter is applied to prevent thundering herd effects. Lease duration is `2x` the worker interval.
+`summa.workers.start()` starts both **core workers** and **plugin workers**. Worker intervals support `"5s"`, `"1m"`, `"30m"`, `"1h"`, `"1d"` format. A ±25% jitter is applied to prevent thundering herd effects. Lease duration is `2x` the worker interval.
+
+#### Core Workers
+
+Core workers run automatically regardless of which plugins are registered. They handle cleanup for tables that core itself writes to:
+
+| Worker | Interval | Description |
+|--------|----------|-------------|
+| `core:hold-expiry` | `5m` | Expires holds past `hold_expires_at` (uses `FOR UPDATE SKIP LOCKED`) |
+| `core:idempotency-cleanup` | `1h` | Removes expired idempotency keys |
+| `core:lease-cleanup` | `6h` | Removes stale worker lease records |
+
+Configure intervals via `coreWorkers` in [`createSumma()`](/docs/configuration#core-workers). Set any worker to `false` to disable it (only if you handle cleanup externally).
+
+#### Plugin Workers
+
+Plugin workers only run when their plugin is registered. Examples include outbox delivery, reconciliation checks, snapshot creation, and data retention cleanup. Each plugin's docs list its workers. The [outbox plugin](/docs/plugins/outbox) also handles `processed_event` dedup cleanup as part of its `outbox-cleanup` worker.
 
 ### Type Inference
 
@@ -315,10 +340,11 @@ type FailedEvent = typeof summa.$Infer.FailedEvent;
 ### Minimum Production Setup
 
 ```ts
+// Core workers (hold expiry, idempotency cleanup, lease cleanup)
+// run automatically — no plugins needed for basic cleanup
 plugins: [
   auditLog(),         // Compliance and debugging
   reconciliation(),   // Data integrity verification
-  maintenance(),      // Cleanup expired keys and events
 ]
 ```
 
@@ -330,11 +356,10 @@ plugins: [
   reconciliation(),
   snapshots(),
   velocityLimits(),
-  holdExpiry(),
+  freezeExpiry(),
   outbox({ publisher: myPublisher }),
   dlqManager(),
   hotAccounts(),
-  maintenance(),
   observability(),
   admin({ authorize: checkAdminAuth }),
   openApi(),

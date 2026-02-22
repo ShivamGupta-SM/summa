@@ -213,16 +213,16 @@ describe("plugins", () => {
 
 		it("outbox-processor worker has interval '5s' and leaseRequired false", () => {
 			const plugin = outbox({ publisher: mockPublisher });
-			const processor = plugin.workers?.find((w) => w.id === "outbox-processor")!;
-			expect(processor.interval).toBe("5s");
-			expect(processor.leaseRequired).toBe(false);
+			const processor = plugin.workers?.find((w) => w.id === "outbox-processor");
+			expect(processor?.interval).toBe("5s");
+			expect(processor?.leaseRequired).toBe(false);
 		});
 
 		it("outbox-cleanup worker has interval '6h' and leaseRequired true", () => {
 			const plugin = outbox({ publisher: mockPublisher });
-			const cleanup = plugin.workers?.find((w) => w.id === "outbox-cleanup")!;
-			expect(cleanup.interval).toBe("6h");
-			expect(cleanup.leaseRequired).toBe(true);
+			const cleanup = plugin.workers?.find((w) => w.id === "outbox-cleanup");
+			expect(cleanup?.interval).toBe("6h");
+			expect(cleanup?.leaseRequired).toBe(true);
 		});
 
 		it("applies custom options", () => {
@@ -277,16 +277,16 @@ describe("plugins", () => {
 
 		it("hot-account-processor worker has interval '30s' and leaseRequired true", () => {
 			const plugin = hotAccounts();
-			const processor = plugin.workers?.find((w) => w.id === "hot-account-processor")!;
-			expect(processor.interval).toBe("30s");
-			expect(processor.leaseRequired).toBe(true);
+			const processor = plugin.workers?.find((w) => w.id === "hot-account-processor");
+			expect(processor?.interval).toBe("30s");
+			expect(processor?.leaseRequired).toBe(true);
 		});
 
 		it("hot-account-cleanup worker has interval '6h' and leaseRequired true", () => {
 			const plugin = hotAccounts();
-			const cleanup = plugin.workers?.find((w) => w.id === "hot-account-cleanup")!;
-			expect(cleanup.interval).toBe("6h");
-			expect(cleanup.leaseRequired).toBe(true);
+			const cleanup = plugin.workers?.find((w) => w.id === "hot-account-cleanup");
+			expect(cleanup?.interval).toBe("6h");
+			expect(cleanup?.leaseRequired).toBe(true);
 		});
 
 		it("accepts custom options", () => {

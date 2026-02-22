@@ -1,0 +1,141 @@
+---
+title: Backup & Restore
+description: Automated database backups with local disk and S3 storage backends.
+icon: CloudArrowUp
+---
+
+## Overview
+
+The backup plugin provides automated PostgreSQL database backups with **local disk** and **AWS S3** storage backends. Schedule daily backups, track backup history, and enforce retention policies — all from a single plugin.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { backup } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    backup({
+      storage: "local",
+      localPath: "/var/backups/summa",
+    }),
+  ],
+});
+```
+
+## Configuration
+
+### Local Storage
+
+```ts
+backup({
+  storage: "local",
+  localPath: "/var/backups/summa",   // Directory for backup files
+  retentionDays: 30,                 // Days to keep backups
+  scheduledBackup: true,             // Enable daily automatic backups
+  backupInterval: "1d",              // Backup schedule interval
+  cleanupInterval: "1d",             // Retention cleanup interval
+})
+```
+
+### S3 Storage
+
+```ts
+backup({
+  storage: "s3",
+  s3Bucket: "my-summa-backups",
+  s3Region: "us-east-1",
+  s3AccessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+  s3SecretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+  s3Prefix: "backups/",             // Optional key prefix
+  retentionDays: 90,
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `storage` | `"local" \| "s3"` | `"local"` | Storage backend |
+| `localPath` | `string` | — | Local directory for backup files |
+| `s3Bucket` | `string` | — | S3 bucket name |
+| `s3Region` | `string` | — | AWS region |
+| `s3AccessKeyId` | `string` | — | AWS access key ID |
+| `s3SecretAccessKey` | `string` | — | AWS secret access key |
+| `s3Prefix` | `string` | `""` | S3 key prefix |
+| `retentionDays` | `number` | `30` | Days to retain backup files |
+| `scheduledBackup` | `boolean` | `true` | Enable automatic scheduled backups |
+| `backupInterval` | `string` | `"1d"` | Automatic backup interval |
+| `cleanupInterval` | `string` | `"1d"` | Retention cleanup interval |
+
+## How It Works
+
+### Backup Process
+
+1. A backup record is created in the `backup_history` table with status `in_progress`
+2. `pg_dump` is executed via `child_process.execFile` with the database connection URL
+3. The SQL dump is written to the configured storage backend
+4. On success, the record is updated to `completed` with the file path and size
+5. On failure, the record is updated to `failed` with the error message
+
+### Manual Backup
+
+Trigger a backup on demand via the HTTP API:
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/backups \
+  -H "Content-Type: application/json" \
+  -H "X-Api-Key: sk_live_your_key"
+```
+
+### Backup History
+
+View all backup records with status, file size, and timing:
+
+```bash
+curl http://localhost:3000/api/ledger/backups \
+  -H "X-Api-Key: sk_live_your_key"
+```
+
+## HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/backups` | Trigger a manual backup |
+| `GET` | `/backups` | List backup history |
+
+## Background Workers
+
+| Worker | Interval | Description |
+|--------|----------|-------------|
+| `scheduled-backup` | `1d` | Runs automatic daily backups |
+| `backup-cleanup` | `1d` | Deletes backups older than `retentionDays` |
+
+## Querying Backup History
+
+```ts
+import { listBackupRecords } from "summa/plugins";
+
+const backups = await listBackupRecords(summa.$context, {
+  limit: 20,
+  offset: 0,
+});
+
+for (const b of backups) {
+  console.log(b.id);         // Backup record ID
+  console.log(b.status);     // "completed" | "in_progress" | "failed"
+  console.log(b.filePath);   // Storage path
+  console.log(b.fileSize);   // Size in bytes
+  console.log(b.createdAt);  // Backup timestamp
+}
+```
+
+## Type Inference
+
+```ts
+import type { BackupRecord } from "summa/plugins";
+
+type Backup = typeof summa.$Infer.BackupRecord;
+// { id, status, storage, file_path, file_size, error, started_at, completed_at, created_at }
+```

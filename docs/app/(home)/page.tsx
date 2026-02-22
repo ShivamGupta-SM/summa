@@ -38,6 +38,9 @@ import {
 	UserGroupIcon,
 	WalletIcon,
 	WrenchScrewdriverIcon,
+	KeyIcon,
+	MagnifyingGlassIcon,
+	CloudArrowUpIcon,
 } from "@heroicons/react/24/outline";
 import { ArrowRight, Check, Plus } from "lucide-react";
 import Link from "next/link";
@@ -93,7 +96,7 @@ const features = [
 			</>
 		),
 		description:
-			"26 plugins — audit logs, velocity limits, reconciliation, snapshots, version retention, i18n, MCP, scheduled transactions, and more. Compose what you need.",
+			"34 plugins + 3 core workers — audit logs, velocity limits, reconciliation, identity management, API keys, webhook delivery, full-text search, balance monitoring, backups, transaction batching, CQRS projections, and more. Compose what you need.",
 	},
 	{
 		id: "adapters",
@@ -136,6 +139,20 @@ const features = [
 		),
 		description:
 			"Built-in FX engine auto-resolves exchange rates, caches quotes, and tracks realized gain/loss. Transfer between USD, EUR, BTC — any currency pair.",
+	},
+	{
+		id: "multi-tenancy",
+		icon: UserGroupIcon,
+		color: "text-accent-violet",
+		label: "Multi-Tenancy",
+		href: "/docs/multi-tenancy",
+		title: (
+			<>
+				Ledger-as-<strong>namespace</strong> isolation.
+			</>
+		),
+		description:
+			"Each tenant gets its own ledger with isolated accounts, transactions, system accounts, and event chains. Same holderId, same reference — different ledgers, zero leakage.",
 	},
 ];
 
@@ -183,9 +200,9 @@ const plugins = [
 	{ name: "Reconciliation", description: "Merkle tree verification and double-entry balance checks", icon: ArrowsRightLeftIcon },
 	{ name: "Snapshots", description: "Point-in-time balance snapshots for reporting", icon: TableCellsIcon },
 	{ name: "Velocity Limits", description: "Rate and amount limits per account or holder", icon: FunnelIcon },
-	{ name: "Hold Expiry", description: "Auto-expire authorization holds after TTL", icon: ClockIcon },
+	{ name: "Expiry", description: "Auto-expire holds and auto-unfreeze accounts after TTL", icon: ClockIcon },
 	{ name: "Scheduled Tx", description: "Future-dated transactions with cron triggers", icon: ClockIcon },
-	{ name: "Outbox", description: "Transactional outbox pattern for reliable events", icon: InboxStackIcon },
+	{ name: "Outbox", description: "Transactional outbox with built-in webhook delivery and HMAC signing", icon: InboxStackIcon },
 	{ name: "DLQ Manager", description: "Capture and replay failed operations", icon: ShieldExclamationIcon },
 	{ name: "Hot Accounts", description: "Optimized high-throughput account handling", icon: FireIcon },
 	{ name: "Admin", description: "Management API for accounts and operations", icon: Cog6ToothIcon },
@@ -201,10 +218,19 @@ const plugins = [
 	{ name: "Data Retention", description: "Configurable cleanup policies for sensitive operational data", icon: ClockIcon },
 	{ name: "GL Sub-Ledger", description: "General ledger integration with chart of accounts mapping", icon: BookOpenIcon },
 	{ name: "Period Close", description: "Fiscal period closing with validation and rollover", icon: CalendarDaysIcon },
-	{ name: "Freeze Expiry", description: "TTL-based auto-unfreeze for frozen accounts", icon: BoltIcon },
 	{ name: "i18n", description: "Multi-locale error messages with Accept-Language detection", icon: LanguageIcon },
 	{ name: "Version Retention", description: "Archive and prune old balance versions to keep tables bounded", icon: ClockIcon },
 	{ name: "MCP", description: "AI agent tools for balance queries, transfers, and verification", icon: CpuChipIcon },
+	{ name: "Identity", description: "KYC identity management with AES-256-GCM PII tokenization", icon: FingerPrintIcon },
+	{ name: "API Keys", description: "SHA-256 hashed key management with scoped permissions and rotation", icon: KeyIcon },
+	{ name: "Balance Monitor", description: "Real-time condition-based balance alerts and threshold triggers", icon: ChartBarSquareIcon },
+	{ name: "Backup", description: "Automated PostgreSQL backups with local disk and S3 storage", icon: CloudArrowUpIcon },
+	{ name: "Search", description: "Native PostgreSQL full-text search with optional Typesense and Meilisearch backends", icon: MagnifyingGlassIcon },
+	{ name: "Batch Engine", description: "TigerBeetle-inspired transaction batching for 10,000+ TPS throughput", icon: BoltIcon },
+	{ name: "Event Store Partition", description: "PostgreSQL range partitioning with automated maintenance and archive", icon: TableCellsIcon },
+	{ name: "Verification Snapshots", description: "O(recent events) hash verification via per-aggregate snapshots", icon: ShieldCheckIcon },
+	{ name: "Message Queue", description: "Redis Streams message bus for high-throughput event delivery", icon: InboxStackIcon },
+	{ name: "Projections", description: "CQRS read models with separate read/write paths and built-in projections", icon: ChartBarSquareIcon },
 ];
 
 const frameworks = [
@@ -924,7 +950,7 @@ export default function HomePage() {
 							<div className="max-w-2xl">
 								<p className="text-xs font-pixel text-accent-emerald tracking-widest uppercase mb-4">Plugin Ecosystem</p>
 								<h2 className="text-3xl md:text-4xl lg:text-5xl font-semibold tracking-tighter">
-									26 plugins.{" "}
+									30 plugins.{" "}
 									<span className="text-muted-foreground">Compose what you need.</span>
 								</h2>
 							</div>
@@ -1101,7 +1127,7 @@ export default function HomePage() {
 					<div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-border border border-border">
 						{[
 							{ value: <span>MIT</span>, label: "License" },
-							{ value: <Counter target={26} />, label: "Plugins" },
+							{ value: <Counter target={33} />, label: "Plugins" },
 							{ value: <Counter target={36} suffix="+" />, label: "Endpoints" },
 							{ value: <Counter target={2} />, label: "Runtime deps" },
 						].map((stat, i) => (

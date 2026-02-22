@@ -182,14 +182,24 @@ export const statusCommand = new Command("status")
 				);
 			}
 
-			// Double-entry balance check
+			// Double-entry balance check (use latest version rows for accurate totals)
 			const deBalance = await safeQuery(
 				client,
-				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM ${t("account_balance")}`,
+				`SELECT COALESCE(SUM(v.balance), 0)::bigint AS total
+				 FROM ${t("account_balance")} a
+				 JOIN LATERAL (
+				   SELECT balance FROM ${t("account_balance_version")}
+				   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
+				 ) v ON true`,
 			);
 			const sysBalance = await safeQuery(
 				client,
-				`SELECT COALESCE(SUM(balance), 0)::bigint AS total FROM ${t("system_account")}`,
+				`SELECT COALESCE(SUM(v.balance), 0)::bigint AS total
+				 FROM ${t("system_account")} sa
+				 JOIN LATERAL (
+				   SELECT balance FROM ${t("system_account_version")}
+				   WHERE system_account_id = sa.id ORDER BY version DESC LIMIT 1
+				 ) v ON true`,
 			);
 			const hotBalance = await safeQuery(
 				client,
@@ -240,6 +250,21 @@ export const statusCommand = new Command("status")
 			p.log.info(
 				`  Outbox queue:  ${pc.cyan(String(outboxPending?.count ?? 0))} pending, ${pc.cyan(String(dlqCount?.count ?? 0))} in DLQ`,
 			);
+
+			// Migration freshness
+			const migTable =
+				schema === "public" ? `"_summa_migrations"` : `"${schema}"."_summa_migrations"`;
+			const lastMig = await safeQuery(
+				client,
+				`SELECT name, applied_at FROM ${migTable} ORDER BY id DESC LIMIT 1`,
+			);
+			if (lastMig?.applied_at) {
+				const appliedAt = new Date(lastMig.applied_at as string);
+				const daysAgo = Math.floor((Date.now() - appliedAt.getTime()) / (1000 * 60 * 60 * 24));
+				p.log.info(
+					`  Last migration:${daysAgo > 90 ? pc.yellow(` ${daysAgo}d ago`) : pc.dim(` ${daysAgo}d ago`)} ${pc.dim(`(${String(lastMig.name)})`)}`,
+				);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			p.log.error(`  Connection:    ${pc.red("failed")} ${pc.dim(message)}`);

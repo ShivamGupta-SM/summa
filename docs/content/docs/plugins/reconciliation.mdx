@@ -27,6 +27,8 @@ const summa = createSumma({
 reconciliation({
   reconciliationInterval: "1d",      // Full reconciliation interval (default: "1d")
   fastReconciliationInterval: "1h",  // Fast integrity check interval (default: "1h")
+  forceFullScan: false,              // Force Step 1 to scan all accounts (default: false)
+  fullScanEveryNRuns: 7,             // Full scan every N incremental runs (default: 7)
   onBlockCheckpoint: async (anchor) => {
     // Called after each block checkpoint is created
     // Use this to anchor block hashes to an external store
@@ -39,6 +41,8 @@ reconciliation({
 |--------|------|---------|-------------|
 | `reconciliationInterval` | `string` | `"1d"` | How often the full 5-step reconciliation runs |
 | `fastReconciliationInterval` | `string` | `"1h"` | How often the fast integrity check runs |
+| `forceFullScan` | `boolean` | `false` | Force Step 1 to scan all accounts regardless of watermark |
+| `fullScanEveryNRuns` | `number` | `7` | Run a full account scan every N incremental runs as a safety net |
 | `onBlockCheckpoint` | `function` | — | Callback for external anchoring of block hashes |
 
 The plugin registers three background workers:
@@ -49,15 +53,30 @@ The plugin registers three background workers:
 | `fast-reconciliation` | Configurable | Yes | Lightweight double-entry + block chain check |
 | `block-checkpoint` | `1h` | Yes | Creates hash chain checkpoints |
 
+## Incremental Reconciliation
+
+By default, Step 1 (per-account balance verification) runs incrementally — it only checks accounts that had activity since the last reconciliation run instead of scanning every account.
+
+**How it works:**
+1. The watermark tracks `lastEntryCreatedAt` — the timestamp of the last processed entry
+2. On each run, `SELECT DISTINCT account_id FROM entry_record WHERE created_at > $watermark` finds only active accounts
+3. Only those accounts are verified, dramatically reducing scan time
+4. Every `fullScanEveryNRuns` runs (default: 7), a full scan is triggered as a safety net
+5. The `incremental_run_count` is tracked on the watermark and resets after each full scan
+
+**First run:** Always a full scan (no watermark exists yet).
+
+Set `forceFullScan: true` to always scan all accounts (useful for debugging or after data migrations).
+
 ## Verification Steps
 
 The reconciliation process runs these checks:
 
-1. **Per-transaction double-entry balance** — every transaction must have equal total debits and credits
+1. **Per-account balance verification** — stored balance matches SUM of all entries (incremental by default — only active accounts)
 2. **Duplicate entry detection** — no two entries should be identical
 3. **Lock version monotonicity** — account lock versions must be monotonically increasing
-4. **User account balance verification** — stored balance matches SUM of all entries
-5. **System account balance with hot entries** — includes pending hot account entries in the sum
+4. **System account balance with hot entries** — includes pending hot account entries in the sum
+5. **Hash chain verification** — uses checkpoint-aware verification (`verifyHashChainFromCheckpoint`) to only scan events after the last sealed block checkpoint, making this O(delta) instead of O(all events)
 
 ## Fast Reconciliation
 
@@ -75,6 +94,7 @@ The `onBlockCheckpoint` callback fires after each block checkpoint is created, p
 ```ts
 interface BlockCheckpointAnchor {
   blockHash: string;         // SHA-256/HMAC hash of the block
+  merkleRoot: string;        // Merkle root of events in this block
   blockSequence: number;     // Monotonically increasing block number
   eventCount: number;        // Number of events in this block
   fromEventSequence: number; // First event sequence in the block

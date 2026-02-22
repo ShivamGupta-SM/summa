@@ -1,0 +1,133 @@
+---
+title: Balance Monitor
+description: Real-time balance monitoring with condition-based alerts and threshold triggers.
+icon: ChartBarSquare
+---
+
+## Overview
+
+The balance monitor plugin watches account balances in real-time and triggers alerts when configurable conditions are met. Set up monitors for low balance warnings, high-value thresholds, or any custom condition — alerts are emitted as events to the outbox for downstream processing.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { balanceMonitor } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [balanceMonitor()],
+});
+```
+
+## Configuration
+
+```ts
+balanceMonitor({
+  cacheTtlMs: 300000,          // Monitor cache TTL (default: 5 minutes)
+  maxCacheEntries: 10000,      // Max monitors to cache in memory
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `cacheTtlMs` | `number` | `300000` | In-memory monitor cache TTL in milliseconds |
+| `maxCacheEntries` | `number` | `10000` | Maximum cached monitor entries (LRU eviction) |
+
+## How It Works
+
+### Creating Monitors
+
+Define monitors with conditions that trigger when a balance field crosses a threshold:
+
+```ts
+POST /balance-monitors
+{
+  "holderId": "user_123",
+  "field": "balance",
+  "operator": "lt",
+  "threshold": 10000,
+  "description": "Low balance alert — under $100"
+}
+```
+
+### Condition Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `gt` | Greater than | Balance exceeds $10,000 |
+| `lt` | Less than | Balance drops below $100 |
+| `gte` | Greater than or equal | Balance reaches $5,000 |
+| `lte` | Less than or equal | Balance at or below $0 |
+| `eq` | Equal to | Balance is exactly $0 |
+
+### Monitored Fields
+
+| Field | Description |
+|-------|-------------|
+| `balance` | Current net balance |
+| `credit_balance` | Total credits |
+| `debit_balance` | Total debits |
+| `pending_credit` | Pending incoming funds |
+| `pending_debit` | Pending outgoing funds (holds) |
+
+### How Alerts Are Triggered
+
+The plugin uses an `afterTransaction` hook that fires after every transaction. For each affected account (source and destination):
+
+1. Loads active monitors for that holderId (from cache or database)
+2. Evaluates each monitor's condition against the current balance
+3. If the condition is met, emits a `balance.monitor` event to the **outbox** table
+4. The event includes the monitor ID, holderId, current balance value, and threshold
+
+### Alert Event Format
+
+Events emitted to the outbox:
+
+```json
+{
+  "type": "balance.monitor",
+  "payload": {
+    "monitorId": "mon_abc123",
+    "holderId": "user_123",
+    "field": "balance",
+    "operator": "lt",
+    "threshold": 10000,
+    "currentValue": 8500,
+    "description": "Low balance alert — under $100"
+  }
+}
+```
+
+Combine with the **webhook delivery** or **outbox** plugin to forward these alerts to Slack, email, PagerDuty, or any external system.
+
+## HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/balance-monitors` | Create a new balance monitor |
+| `GET` | `/balance-monitors` | List monitors (filter by holderId) |
+| `GET` | `/balance-monitors/:id` | Get a specific monitor |
+| `DELETE` | `/balance-monitors/:id` | Delete a monitor |
+
+## Querying Monitors
+
+```ts
+import { listMonitors } from "summa/plugins";
+
+const monitors = await listMonitors(summa.$context, {
+  holderId: "user_123",  // Optional filter
+  limit: 50,
+  offset: 0,
+});
+```
+
+## Type Inference
+
+```ts
+import type { BalanceMonitorRecord } from "summa/plugins";
+
+type Monitor = typeof summa.$Infer.BalanceMonitorRecord;
+// { id, holder_id, field, operator, threshold, description, active, created_at }
+```

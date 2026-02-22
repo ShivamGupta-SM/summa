@@ -4,7 +4,6 @@ import {
 	bigserial,
 	boolean,
 	char,
-	date,
 	index,
 	integer,
 	jsonb,
@@ -19,6 +18,21 @@ import {
 export const summaSchema = pgSchema("summa");
 
 // =============================================================================
+// 0. LEDGER REGISTRY (Multi-tenancy)
+// =============================================================================
+// Each ledger is an isolated tenant namespace.
+
+export const ledger = summaSchema.table("ledger", {
+	id: uuid("id").primaryKey().defaultRandom(),
+	name: varchar("name", { length: 255 }).unique().notNull(),
+	metadata: jsonb("metadata"),
+	createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export type LedgerRow = typeof ledger.$inferSelect;
+export type LedgerInsert = typeof ledger.$inferInsert;
+
+// =============================================================================
 // 1. EVENT STORE (Source of Truth)
 // =============================================================================
 // Immutable append-only event log with hash chains for tamper detection.
@@ -27,6 +41,9 @@ export const ledgerEvent = summaSchema.table(
 	"ledger_event",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		ledgerId: uuid("ledger_id")
+			.notNull()
+			.references(() => ledger.id),
 		sequenceNumber: bigserial("sequence_number", { mode: "number" }).unique().notNull(),
 
 		aggregateType: varchar("aggregate_type", { length: 50 }).notNull(),
@@ -44,12 +61,14 @@ export const ledgerEvent = summaSchema.table(
 	},
 	(table) => [
 		uniqueIndex("uq_ledger_event_aggregate_version").on(
+			table.ledgerId,
 			table.aggregateType,
 			table.aggregateId,
 			table.aggregateVersion,
 		),
-		index("idx_ledger_event_aggregate").on(table.aggregateType, table.aggregateId),
-		index("idx_ledger_event_correlation").on(table.correlationId),
+		index("idx_ledger_event_ledger").on(table.ledgerId),
+		index("idx_ledger_event_aggregate").on(table.ledgerId, table.aggregateType, table.aggregateId),
+		index("idx_ledger_event_correlation").on(table.ledgerId, table.correlationId),
 	],
 );
 
@@ -65,6 +84,9 @@ export const accountBalance = summaSchema.table(
 	"account_balance",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		ledgerId: uuid("ledger_id")
+			.notNull()
+			.references(() => ledger.id),
 		indicator: varchar("indicator", { length: 255 }).unique(),
 
 		holderId: varchar("holder_id", { length: 255 }).notNull(),
@@ -85,7 +107,7 @@ export const accountBalance = summaSchema.table(
 		overdraftLimit: bigint("overdraft_limit", { mode: "number" }),
 		status: varchar("status", { length: 20 }).notNull().default("active"),
 
-		// Chart of Accounts fields (nullable for backward compat)
+		// Chart of Accounts fields (optional — set when CoA classification is used)
 		accountType: varchar("account_type", { length: 20 }),
 		accountCode: varchar("account_code", { length: 50 }).unique(),
 		parentAccountId: uuid("parent_account_id"),
@@ -110,11 +132,16 @@ export const accountBalance = summaSchema.table(
 			.$onUpdate(() => new Date()),
 	},
 	(table) => [
-		uniqueIndex("uq_account_balance_holder_currency").on(table.holderId, table.currency),
+		uniqueIndex("uq_account_balance_holder_currency").on(
+			table.ledgerId,
+			table.holderId,
+			table.currency,
+		),
+		index("idx_account_balance_ledger").on(table.ledgerId),
 		index("idx_account_balance_sequence").on(table.lastSequenceNumber),
 		index("idx_account_balance_status").on(table.status),
-		index("idx_account_balance_holder_lookup").on(table.holderId, table.holderType),
-		index("idx_account_balance_type").on(table.accountType),
+		index("idx_account_balance_holder_lookup").on(table.ledgerId, table.holderId, table.holderType),
+		index("idx_account_balance_type").on(table.ledgerId, table.accountType),
 		index("idx_account_balance_parent").on(table.parentAccountId),
 	],
 );
@@ -129,7 +156,10 @@ export type AccountBalanceInsert = typeof accountBalance.$inferInsert;
 
 export const systemAccount = summaSchema.table("system_account", {
 	id: uuid("id").primaryKey().defaultRandom(),
-	identifier: varchar("identifier", { length: 100 }).unique().notNull(),
+	ledgerId: uuid("ledger_id")
+		.notNull()
+		.references(() => ledger.id),
+	identifier: varchar("identifier", { length: 100 }).notNull(),
 	name: varchar("name", { length: 255 }).notNull(),
 
 	balance: bigint("balance", { mode: "number" }).notNull().default(0),
@@ -156,8 +186,11 @@ export const transactionRecord = summaSchema.table(
 	"transaction_record",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
+		ledgerId: uuid("ledger_id")
+			.notNull()
+			.references(() => ledger.id),
 		type: varchar("type", { length: 50 }).notNull(),
-		reference: varchar("reference", { length: 255 }).unique().notNull(),
+		reference: varchar("reference", { length: 255 }).notNull(),
 		status: varchar("status", { length: 20 }).notNull().default("pending"),
 
 		amount: bigint("amount", { mode: "number" }).notNull(),
@@ -185,9 +218,10 @@ export const transactionRecord = summaSchema.table(
 		postedAt: timestamp("posted_at", { withTimezone: true }),
 	},
 	(table) => [
+		index("idx_txn_record_ledger").on(table.ledgerId),
+		uniqueIndex("uq_txn_record_reference").on(table.ledgerId, table.reference),
 		index("idx_txn_record_status").on(table.status),
 		index("idx_txn_record_type").on(table.type),
-		index("idx_txn_record_reference").on(table.reference),
 		index("idx_txn_record_source").on(table.sourceAccountId),
 		index("idx_txn_record_destination").on(table.destinationAccountId),
 		index("idx_txn_record_hold_expiry").on(table.holdExpiresAt),
@@ -274,32 +308,6 @@ export type OutboxRow = typeof outbox.$inferSelect;
 export type OutboxInsert = typeof outbox.$inferInsert;
 
 // =============================================================================
-// 7. DEAD LETTER QUEUE
-// =============================================================================
-// Stores outbox entries that exceeded max retries. Used by the outbox plugin
-// for post-mortem analysis and manual retry.
-
-export const deadLetterQueue = summaSchema.table(
-	"dead_letter_queue",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		outboxId: uuid("outbox_id").references(() => outbox.id),
-		topic: varchar("topic", { length: 100 }).notNull(),
-		payload: jsonb("payload").notNull(),
-		errorMessage: text("error_message").notNull(),
-		retryCount: integer("retry_count").notNull(),
-		status: varchar("status", { length: 20 }).notNull().default("pending"),
-		resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-		resolvedBy: varchar("resolved_by", { length: 100 }),
-		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-	},
-	(table) => [index("idx_dlq_status").on(table.status, table.createdAt)],
-);
-
-export type DeadLetterQueueRow = typeof deadLetterQueue.$inferSelect;
-export type DeadLetterQueueInsert = typeof deadLetterQueue.$inferInsert;
-
-// =============================================================================
 // 8. HOT ACCOUNT ENTRY QUEUE
 // =============================================================================
 // Async batched updates for high-volume system accounts.
@@ -326,29 +334,6 @@ export type HotAccountEntryRow = typeof hotAccountEntry.$inferSelect;
 export type HotAccountEntryInsert = typeof hotAccountEntry.$inferInsert;
 
 // =============================================================================
-// 9. HOT ACCOUNT FAILED SEQUENCES
-// =============================================================================
-// Records batch processing failures for hot accounts. Used by the hot-accounts
-// plugin for traceable recovery after aggregation failures.
-
-export const hotAccountFailedSequence = summaSchema.table(
-	"hot_account_failed_sequence",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		accountId: uuid("account_id").notNull(),
-		entryIds: jsonb("entry_ids").notNull(),
-		errorMessage: text("error_message"),
-		netDelta: bigint("net_delta", { mode: "number" }).notNull().default(0),
-		creditDelta: bigint("credit_delta", { mode: "number" }).notNull().default(0),
-		debitDelta: bigint("debit_delta", { mode: "number" }).notNull().default(0),
-		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-	},
-	(table) => [index("idx_hot_account_failed_account").on(table.accountId)],
-);
-
-export type HotAccountFailedSequenceRow = typeof hotAccountFailedSequence.$inferSelect;
-
-// =============================================================================
 // 10. PROCESSED EVENTS (consumer idempotency)
 // =============================================================================
 // Tracks which outbox events have been successfully published for deduplication.
@@ -373,7 +358,11 @@ export type ProcessedEventRow = typeof processedEvent.$inferSelect;
 export const idempotencyKey = summaSchema.table(
 	"idempotency_key",
 	{
-		key: varchar("key", { length: 255 }).primaryKey(),
+		id: uuid("id").primaryKey().defaultRandom(),
+		ledgerId: uuid("ledger_id")
+			.notNull()
+			.references(() => ledger.id),
+		key: varchar("key", { length: 255 }).notNull(),
 		reference: varchar("reference", { length: 255 }),
 		resultEventId: uuid("result_event_id"),
 		resultData: jsonb("result_data"),
@@ -382,118 +371,13 @@ export const idempotencyKey = summaSchema.table(
 			.default(sql`NOW() + INTERVAL '24 hours'`),
 	},
 	(table) => [
+		uniqueIndex("uq_idempotency_ledger_key").on(table.ledgerId, table.key),
 		index("idx_idempotency_reference").on(table.reference),
 		index("idx_idempotency_expires").on(table.expiresAt),
 	],
 );
 
 export type IdempotencyKeyRow = typeof idempotencyKey.$inferSelect;
-
-// =============================================================================
-// 12. RECONCILIATION RESULTS
-// =============================================================================
-// Stores results of daily reconciliation runs. Each run produces one row
-// with per-step results and overall status.
-
-export const reconciliationResult = summaSchema.table(
-	"reconciliation_result",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		runDate: varchar("run_date", { length: 50 }).unique().notNull(),
-		status: varchar("status", { length: 20 }).notNull(),
-		totalMismatches: integer("total_mismatches").notNull().default(0),
-
-		step0Result: jsonb("step0_result"),
-		step0bResult: jsonb("step0b_result"),
-		step0cResult: jsonb("step0c_result"),
-		step1Result: jsonb("step1_result"),
-		step2Result: jsonb("step2_result"),
-		step3Result: jsonb("step3_result"),
-
-		durationMs: integer("duration_ms"),
-		mismatches: jsonb("mismatches"),
-
-		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-	},
-	(table) => [index("idx_reconciliation_status").on(table.status)],
-);
-
-export type ReconciliationResultRow = typeof reconciliationResult.$inferSelect;
-
-// =============================================================================
-// 12b. RECONCILIATION WATERMARK (incremental processing)
-// =============================================================================
-// Singleton row tracking the last reconciled entry timestamp.
-
-export const reconciliationWatermark = summaSchema.table("reconciliation_watermark", {
-	id: integer("id").primaryKey().default(1),
-	lastEntryCreatedAt: timestamp("last_entry_created_at", { withTimezone: true }),
-	lastRunDate: date("last_run_date"),
-	lastMismatches: integer("last_mismatches").default(0),
-	updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
-});
-
-export type ReconciliationWatermarkRow = typeof reconciliationWatermark.$inferSelect;
-
-// =============================================================================
-// 13. ACCOUNT SNAPSHOTS (daily)
-// =============================================================================
-// Immutable end-of-day balance snapshots. Used by the snapshots plugin for
-// historical balance queries and month-end reporting.
-
-export const accountSnapshot = summaSchema.table(
-	"account_snapshot",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		accountId: uuid("account_id").notNull(),
-		snapshotDate: date("snapshot_date").notNull(),
-
-		balance: bigint("balance", { mode: "number" }).notNull(),
-		creditBalance: bigint("credit_balance", { mode: "number" }).notNull().default(0),
-		debitBalance: bigint("debit_balance", { mode: "number" }).notNull().default(0),
-		pendingCredit: bigint("pending_credit", { mode: "number" }).notNull().default(0),
-		pendingDebit: bigint("pending_debit", { mode: "number" }).notNull().default(0),
-		availableBalance: bigint("available_balance", { mode: "number" }).notNull().default(0),
-
-		currency: char("currency", { length: 3 }).notNull().default("INR"),
-		accountStatus: varchar("account_status", { length: 20 }).notNull().default("active"),
-		checkpointHash: varchar("checkpoint_hash", { length: 64 }),
-
-		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-	},
-	(table) => [
-		uniqueIndex("uq_account_snapshot_account_date").on(table.accountId, table.snapshotDate),
-	],
-);
-
-export type AccountSnapshotRow = typeof accountSnapshot.$inferSelect;
-
-// =============================================================================
-// 14. SCHEDULED TRANSACTIONS
-// =============================================================================
-
-export const scheduledTransaction = summaSchema.table(
-	"scheduled_transaction",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		reference: varchar("reference", { length: 255 }),
-		amount: bigint("amount", { mode: "number" }).notNull(),
-		currency: char("currency", { length: 3 }).notNull().default("INR"),
-		sourceIdentifier: varchar("source_identifier", { length: 255 }).notNull(),
-		destinationIdentifier: varchar("destination_identifier", { length: 255 }),
-		scheduledFor: timestamp("scheduled_for", { withTimezone: true }).notNull(),
-		recurrence: jsonb("recurrence"),
-		status: varchar("status", { length: 20 }).notNull().default("scheduled"),
-		lastExecutedAt: timestamp("last_executed_at", { withTimezone: true }),
-		nextExecutionAt: timestamp("next_execution_at", { withTimezone: true }),
-		executionCount: integer("execution_count").notNull().default(0),
-		retryCount: integer("retry_count").notNull().default(0),
-		lastRetryAt: timestamp("last_retry_at", { withTimezone: true }),
-	},
-	(table) => [index("idx_scheduled_pending").on(table.nextExecutionAt)],
-);
-
-export type ScheduledTransactionRow = typeof scheduledTransaction.$inferSelect;
 
 // =============================================================================
 // 16. BLOCK CHECKPOINTS (Azure SQL Ledger pattern)
@@ -505,7 +389,10 @@ export const blockCheckpoint = summaSchema.table(
 	"block_checkpoint",
 	{
 		id: uuid("id").primaryKey().defaultRandom(),
-		blockSequence: bigserial("block_sequence", { mode: "number" }).unique().notNull(),
+		ledgerId: uuid("ledger_id")
+			.notNull()
+			.references(() => ledger.id),
+		blockSequence: bigserial("block_sequence", { mode: "number" }).notNull(),
 		blockAt: timestamp("block_at", { withTimezone: true }).notNull().defaultNow(),
 
 		// Event range covered by this block
@@ -522,7 +409,10 @@ export const blockCheckpoint = summaSchema.table(
 		prevBlockId: uuid("prev_block_id"),
 		prevBlockHash: varchar("prev_block_hash", { length: 64 }),
 	},
-	(table) => [index("idx_block_checkpoint_sequence").on(table.toEventSequence)],
+	(table) => [
+		uniqueIndex("uq_block_checkpoint_sequence").on(table.ledgerId, table.blockSequence),
+		index("idx_block_checkpoint_sequence").on(table.toEventSequence),
+	],
 );
 
 export type BlockCheckpointRow = typeof blockCheckpoint.$inferSelect;
@@ -612,27 +502,3 @@ export const accountTransactionLog = summaSchema.table(
 );
 
 export type AccountTransactionLogRow = typeof accountTransactionLog.$inferSelect;
-
-// =============================================================================
-// 20. FAILED EVENTS (PubSub DLQ -- copied from wallet)
-// =============================================================================
-
-export const failedEvent = summaSchema.table(
-	"failed_event",
-	{
-		id: uuid("id").primaryKey().defaultRandom(),
-		topic: varchar("topic", { length: 100 }).notNull(),
-		eventData: jsonb("event_data").notNull(),
-		errorMessage: text("error_message"),
-		retryCount: integer("retry_count").notNull().default(0),
-		lastRetryAt: timestamp("last_retry_at", { withTimezone: true }),
-		resolved: boolean("resolved").notNull().default(false),
-		resolvedAt: timestamp("resolved_at", { withTimezone: true }),
-		resolvedBy: varchar("resolved_by", { length: 100 }),
-		createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-	},
-	(table) => [index("idx_failed_event_unresolved").on(table.resolved, table.createdAt)],
-);
-
-export type FailedEventRow = typeof failedEvent.$inferSelect;
-export type FailedEventInsert = typeof failedEvent.$inferInsert;

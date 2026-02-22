@@ -32,6 +32,7 @@ import {
 	isValidCachedResult,
 	saveIdempotencyKeyInTx,
 } from "./idempotency.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import { enforceLimitsWithAccountId } from "./limit-manager.js";
 import { creditMultiDestinations } from "./multi-dest-credit.js";
 import type { LatestVersion, RawHoldSummaryRow, RawTransactionRow } from "./raw-types.js";
@@ -137,11 +138,14 @@ export async function createHold(
 
 	await runBeforeHoldCreateHooks(ctx, { holderId, amount, reference, ctx });
 
+	const ledgerId = getLedgerId(ctx);
+
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 
 		// Idempotency check INSIDE transaction
 		const idem = await checkIdempotencyKeyInTx(tx, {
+			ledgerId,
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
@@ -152,6 +156,7 @@ export async function createHold(
 		// Get source account (FOR UPDATE to prevent stale balance reads)
 		const src = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -183,7 +188,7 @@ export async function createHold(
 		let destSystemAccountId: string | null = null;
 
 		if (params.destinationSystemAccount) {
-			const sys = await getSystemAccount(ctx, params.destinationSystemAccount);
+			const sys = await getSystemAccount(ctx, params.destinationSystemAccount, ledgerId);
 			if (!sys)
 				throw SummaError.notFound(`System account ${params.destinationSystemAccount} not found`);
 			destSystemAccountId = sys.id;
@@ -206,8 +211,8 @@ export async function createHold(
 
 		// Create hold transaction record (IMMUTABLE — no status field)
 		const holdRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, destination_system_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, destination_system_account_id, is_hold, hold_expires_at, correlation_id, meta_data, ledger_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING *`,
 			[
 				"debit",
@@ -222,6 +227,7 @@ export async function createHold(
 				holdExpiresAt?.toISOString() ?? null,
 				correlationId,
 				JSON.stringify({ ...metadata, category, holderId, holderType: src.holder_type }),
+				ledgerId,
 			],
 		);
 		const holdRecord = holdRecordRows[0];
@@ -266,6 +272,7 @@ export async function createHold(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Outbox
@@ -289,6 +296,7 @@ export async function createHold(
 		// Save idempotency key inside transaction for atomicity
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
+				ledgerId,
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,
@@ -357,10 +365,13 @@ export async function createMultiDestinationHold(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
+
 	return await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 
 		const idem = await checkIdempotencyKeyInTx(tx, {
+			ledgerId,
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
@@ -371,6 +382,7 @@ export async function createMultiDestinationHold(
 		// Get source account (FOR UPDATE)
 		const src = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -403,8 +415,8 @@ export async function createMultiDestinationHold(
 
 		// Create hold transaction record (IMMUTABLE — no status field)
 		const holdRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, is_hold, hold_expires_at, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, is_hold, hold_expires_at, correlation_id, meta_data, ledger_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
 			[
 				"debit",
@@ -423,6 +435,7 @@ export async function createMultiDestinationHold(
 					holderId,
 					holderType: src.holder_type,
 				}),
+				ledgerId,
 			],
 		);
 		const holdRecord = holdRecordRows[0];
@@ -466,6 +479,7 @@ export async function createMultiDestinationHold(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Outbox
@@ -487,6 +501,7 @@ export async function createMultiDestinationHold(
 
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
+				ledgerId,
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,
@@ -510,6 +525,7 @@ export async function commitHold(
 	},
 ): Promise<{ holdId: string; committedAmount: number; originalAmount: number }> {
 	const { holdId } = params;
+	const ledgerId = getLedgerId(ctx);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
@@ -527,8 +543,9 @@ export async function commitHold(
        ) ts ON true
        WHERE tr.id = $1
          AND tr.is_hold = true
+         AND tr.ledger_id = $2
        FOR UPDATE OF tr`,
-			[holdId],
+			[holdId, ledgerId],
 		);
 
 		const hold = holdRows[0];
@@ -694,6 +711,7 @@ export async function commitHold(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Outbox
@@ -743,6 +761,7 @@ export async function voidHold(
 	},
 ): Promise<{ holdId: string; amount: number }> {
 	const { holdId, reason = "voided" } = params;
+	const ledgerId = getLedgerId(ctx);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
@@ -759,8 +778,9 @@ export async function voidHold(
        ) ts ON true
        WHERE tr.id = $1
          AND tr.is_hold = true
+         AND tr.ledger_id = $2
        FOR UPDATE OF tr`,
-			[holdId],
+			[holdId, ledgerId],
 		);
 
 		const hold = holdRows[0];
@@ -814,6 +834,7 @@ export async function voidHold(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Outbox
@@ -844,8 +865,8 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 	let expired = 0;
 
 	// Find candidate expired holds using LATERAL JOIN to get latest status
-	const candidates = await ctx.adapter.raw<RawHoldSummaryRow>(
-		`SELECT tr.id, tr.source_account_id, tr.amount, tr.reference, tr.meta_data
+	const candidates = await ctx.adapter.raw<RawHoldSummaryRow & { ledger_id: string }>(
+		`SELECT tr.id, tr.source_account_id, tr.amount, tr.reference, tr.meta_data, tr.ledger_id
      FROM ${t("transaction_record")} tr
      JOIN LATERAL (
        SELECT status FROM ${t("transaction_status")}
@@ -918,6 +939,7 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 					},
 					ctx.options.schema,
 					ctx.options.advanced.hmacSecret,
+					candidate.ledger_id,
 				);
 
 				// Outbox
@@ -957,12 +979,13 @@ export async function expireHolds(ctx: SummaContext): Promise<{ expired: number 
 // =============================================================================
 
 export async function getHold(ctx: SummaContext, holdId: string): Promise<Hold> {
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawTransactionRow>(
+	const rows = await ctx.readAdapter.raw<RawTransactionRow>(
 		`${txnWithStatusSql(t)}
-     WHERE tr.id = $1 AND tr.is_hold = true
+     WHERE tr.id = $1 AND tr.is_hold = true AND tr.ledger_id = $2
      LIMIT 1`,
-		[holdId],
+		[holdId, ledgerId],
 	);
 
 	if (!rows[0]) throw SummaError.notFound("Hold not found");
@@ -1019,7 +1042,7 @@ export async function listActiveHolds(
 	const countWhere = countConditions.join(" AND ");
 
 	const [rows, countRows] = await Promise.all([
-		ctx.adapter.raw<RawTransactionRow>(
+		ctx.readAdapter.raw<RawTransactionRow>(
 			`${txnWithStatusSql(t)}
        WHERE ${whereClause}
        ORDER BY tr.created_at DESC
@@ -1027,7 +1050,7 @@ export async function listActiveHolds(
        OFFSET $${paramIdx}`,
 			queryParams,
 		),
-		ctx.adapter.raw<{ total: number }>(
+		ctx.readAdapter.raw<{ total: number }>(
 			`SELECT COUNT(*)::int as total FROM ${t("transaction_record")} tr
        JOIN LATERAL (
          SELECT status FROM ${t("transaction_status")}
@@ -1097,7 +1120,7 @@ export async function listAllHolds(
 	queryParams.push(offset);
 
 	const [rows, countRows] = await Promise.all([
-		ctx.adapter.raw<RawTransactionRow>(
+		ctx.readAdapter.raw<RawTransactionRow>(
 			`${txnWithStatusSql(t)}
        WHERE ${whereClause}
        ORDER BY tr.created_at DESC
@@ -1105,7 +1128,7 @@ export async function listAllHolds(
        OFFSET $${paramIdx}`,
 			queryParams,
 		),
-		ctx.adapter.raw<{ total: number }>(
+		ctx.readAdapter.raw<{ total: number }>(
 			`SELECT COUNT(*)::int as total FROM ${t("transaction_record")} tr
        JOIN LATERAL (
          SELECT status FROM ${t("transaction_status")}

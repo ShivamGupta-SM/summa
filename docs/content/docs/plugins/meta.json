@@ -6,12 +6,15 @@
 		"reconciliation",
 		"snapshots",
 		"velocity-limits",
-		"hold-expiry",
+		"freeze-expiry",
 		"outbox",
 		"dlq-manager",
 		"hot-accounts",
+		"event-store-partition",
+		"hash-snapshot",
+		"message-queue",
+		"projections",
 		"scheduled-transactions",
-		"maintenance",
 		"admin",
 		"open-api",
 		"observability",
@@ -24,8 +27,13 @@
 		"batch-import",
 		"accrual-accounting",
 		"data-retention",
-		"freeze-expiry",
+		"version-retention",
 		"i18n",
-		"mcp"
+		"mcp",
+		"identity",
+		"api-keys",
+		"balance-monitor",
+		"backup",
+		"search"
 	]
 }

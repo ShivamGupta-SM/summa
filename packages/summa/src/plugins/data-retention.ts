@@ -1,8 +1,9 @@
 // =============================================================================
-// DATA RETENTION PLUGIN -- Unified cleanup policy for all Summa tables
+// DATA RETENTION PLUGIN -- Cleanup policy for plugin-owned tables
 // =============================================================================
-// Consolidates retention for audit logs, idempotency keys, processed outbox,
-// hot account entries, FX quotes, and velocity logs into one configurable plugin.
+// Manages retention for velocity logs, audit logs, hot account entries,
+// and FX quotes. Core-owned tables (idempotency_key, processed_event,
+// worker_lease) are now cleaned by core workers and the outbox plugin.
 
 import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
@@ -12,17 +13,13 @@ import { createTableResolver } from "@summa/core/db";
 // =============================================================================
 
 export interface DataRetentionOptions {
-	/** Retention for audit logs. e.g. "365d", "7y". Default: "365d" */
+	/** Retention for audit logs. e.g. "365d", "7y". */
 	auditLogs?: string;
-	/** Retention for idempotency keys. Default: "24h" */
-	idempotencyKeys?: string;
-	/** Retention for processed outbox events. Default: "7d" */
-	processedOutbox?: string;
-	/** Retention for hot account entries. Default: "24h" */
+	/** Retention for hot account entries. e.g. "24h" */
 	hotAccountEntries?: string;
 	/** Retention for velocity/rate-limit logs. Default: "30d" */
 	velocityLogs?: string;
-	/** Retention for FX quotes. Default: "30d" */
+	/** Retention for FX quotes. e.g. "30d" */
 	fxQuotes?: string;
 	/** Retention for ledger events (metadata cleanup, not deletion). Default: never */
 	events?: string;
@@ -77,32 +74,13 @@ export function dataRetention(options?: DataRetentionOptions): SummaPlugin {
 	function buildPolicies(): RetentionPolicy[] {
 		const policies: RetentionPolicy[] = [];
 
-		if (opts.idempotencyKeys !== undefined || true) {
-			policies.push({
-				table: "idempotency_key",
-				column: "expires_at",
-				retention: opts.idempotencyKeys ?? "24h",
-				description: "Expired idempotency keys",
-			});
-		}
-
-		if (opts.processedOutbox !== undefined || true) {
-			policies.push({
-				table: "processed_event",
-				column: "processed_at",
-				retention: opts.processedOutbox ?? "7d",
-				description: "Processed outbox events",
-			});
-		}
-
-		if (opts.velocityLogs !== undefined || true) {
-			policies.push({
-				table: "rate_limit_log",
-				column: "created_at",
-				retention: opts.velocityLogs ?? "30d",
-				description: "Velocity/rate-limit logs",
-			});
-		}
+		// Rate limit logs — always included (no other owner)
+		policies.push({
+			table: "rate_limit_log",
+			column: "created_at",
+			retention: opts.velocityLogs ?? "30d",
+			description: "Velocity/rate-limit logs",
+		});
 
 		// Optional policies (only if the related plugin tables exist)
 		if (opts.auditLogs) {

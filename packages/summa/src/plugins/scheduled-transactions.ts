@@ -1,21 +1,31 @@
 // =============================================================================
-// SCHEDULED TRANSACTIONS PLUGIN -- Process due scheduled transactions
+// SCHEDULED TRANSACTIONS PLUGIN -- Schedule future & recurring transactions
 // =============================================================================
-// Polls for scheduled transactions whose next_execution_at has passed,
-// executes them via the transaction manager (credit/debit/transfer), and
-// handles recurrence rescheduling or failure after max retries.
+// Provides a typed creation API for scheduling one-time and recurring
+// transactions, plus a background worker that polls for due transactions and
+// executes them via the transaction manager (credit/debit/transfer).
 //
 // Status is tracked via entity_status_log (append-only) instead of a mutable
 // status column on the scheduled_transaction table.  Mutable execution
 // counters (execution_count, retry_count, last_executed_at, next_execution_at,
-// last_retry_at) are stored as metadata on the entity_status_log rows until a
-// dedicated scheduled_transaction_execution table is introduced.
+// last_retry_at) are stored as metadata on the entity_status_log rows.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import type {
+	PluginApiRequest,
+	PluginApiResponse,
+	SummaContext,
+	SummaPlugin,
+	TableDefinition,
+} from "@summa/core";
 import { AGGREGATE_TYPES, SCHEDULED_EVENTS, SummaError } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
-import { transitionEntityStatus } from "../../infrastructure/entity-status.js";
+import {
+	getEntityStatus,
+	initializeEntityStatus,
+	transitionEntityStatus,
+} from "../infrastructure/entity-status.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 import { creditAccount, debitAccount, transfer } from "../managers/transaction-manager.js";
 
 // =============================================================================
@@ -38,11 +48,80 @@ export interface ScheduledTransactionsOptions {
 }
 
 // =============================================================================
+// PUBLIC TYPES
+// =============================================================================
+
+export interface CreateScheduledTransactionParams {
+	/** Source holder ID or system account (e.g., "@World") */
+	sourceIdentifier: string;
+	/** Destination holder ID or system account (e.g., "@Fees"). Required for transfers. */
+	destinationIdentifier?: string | null;
+	/** Amount in smallest currency unit (e.g., cents) */
+	amount: number;
+	/** ISO 4217 currency code */
+	currency?: string;
+	/** When to execute. ISO 8601 string or Date. */
+	scheduledFor: Date | string;
+	/** Optional unique reference for idempotency */
+	reference?: string;
+	/** Recurrence configuration for recurring schedules */
+	recurrence?: RecurrenceInput;
+}
+
+export interface RecurrenceInput {
+	/** Interval between executions in milliseconds */
+	intervalMs: number;
+	/** Maximum number of executions (omit for unlimited) */
+	maxExecutions?: number;
+}
+
+export type ScheduledTransactionStatus =
+	| "scheduled"
+	| "processing"
+	| "completed"
+	| "failed"
+	| "cancelled";
+
+export interface ScheduledTransaction {
+	id: string;
+	reference: string | null;
+	amount: number;
+	currency: string;
+	sourceIdentifier: string;
+	destinationIdentifier: string | null;
+	scheduledFor: string;
+	recurrence: RecurrenceInput | null;
+	status: ScheduledTransactionStatus;
+	executionCount: number;
+	retryCount: number;
+	lastExecutedAt: string | null;
+	nextExecutionAt: string | null;
+	createdAt: string;
+}
+
+// =============================================================================
 // RAW ROW TYPES
 // =============================================================================
 
 interface RawScheduledRow {
 	id: string;
+}
+
+interface RawScheduledInsertRow {
+	id: string;
+	reference: string | null;
+	amount: number;
+	currency: string;
+	source_identifier: string;
+	destination_identifier: string | null;
+	scheduled_for: string | Date;
+	recurrence: Recurrence | string | null;
+	status: string;
+	execution_count: number;
+	retry_count: number;
+	last_executed_at: string | Date | null;
+	next_execution_at: string | Date | null;
+	created_at: string | Date;
 }
 
 /** Row shape returned by the LATERAL JOIN candidate query. */
@@ -65,6 +144,43 @@ interface Recurrence {
 	maxExecutions?: number;
 }
 
+function json(status: number, body: unknown): PluginApiResponse {
+	return { status, body };
+}
+
+// =============================================================================
+// SCHEMA
+// =============================================================================
+
+const scheduledTransactionSchema: Record<string, TableDefinition> = {
+	scheduled_transaction: {
+		columns: {
+			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: { type: "uuid", notNull: true },
+			reference: { type: "text" },
+			amount: { type: "bigint", notNull: true },
+			currency: { type: "text", notNull: true },
+			source_identifier: { type: "text", notNull: true },
+			destination_identifier: { type: "text" },
+			scheduled_for: { type: "timestamp", notNull: true },
+			recurrence: { type: "jsonb" },
+			status: { type: "text", notNull: true, default: "'scheduled'" },
+			execution_count: { type: "integer", notNull: true, default: "0" },
+			retry_count: { type: "integer", notNull: true, default: "0" },
+			last_executed_at: { type: "timestamp" },
+			next_execution_at: { type: "timestamp" },
+			last_retry_at: { type: "timestamp" },
+			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+		indexes: [
+			{ name: "idx_scheduled_pending", columns: ["next_execution_at"] },
+			{ name: "idx_scheduled_ledger", columns: ["ledger_id"] },
+			{ name: "idx_scheduled_source", columns: ["source_identifier"] },
+			{ name: "idx_scheduled_status", columns: ["status", "next_execution_at"] },
+		],
+	},
+};
+
 // =============================================================================
 // PLUGIN FACTORY
 // =============================================================================
@@ -76,6 +192,97 @@ export function scheduledTransactions(options?: ScheduledTransactionsOptions): S
 
 	return {
 		id: "scheduled-transactions",
+
+		schema: scheduledTransactionSchema,
+
+		$Infer: {} as {
+			ScheduledTransaction: ScheduledTransaction;
+		},
+
+		endpoints: [
+			// POST /scheduled-transactions — Create a scheduled transaction
+			{
+				method: "POST",
+				path: "/scheduled-transactions",
+				handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+					const body = req.body as Record<string, unknown> | null;
+					if (!body || typeof body !== "object")
+						return json(400, {
+							error: { code: "INVALID_ARGUMENT", message: "Request body required" },
+						});
+
+					const sourceIdentifier = body.sourceIdentifier as string | undefined;
+					const amount = body.amount as number | undefined;
+					const scheduledFor = body.scheduledFor as string | undefined;
+
+					if (!sourceIdentifier)
+						return json(400, {
+							error: { code: "INVALID_ARGUMENT", message: "sourceIdentifier is required" },
+						});
+					if (amount == null || typeof amount !== "number" || amount <= 0)
+						return json(400, {
+							error: {
+								code: "INVALID_ARGUMENT",
+								message: "amount must be a positive number",
+							},
+						});
+					if (!scheduledFor)
+						return json(400, {
+							error: { code: "INVALID_ARGUMENT", message: "scheduledFor is required" },
+						});
+
+					const result = await createScheduledTransactionRecord(ctx, {
+						sourceIdentifier,
+						destinationIdentifier: (body.destinationIdentifier as string) ?? null,
+						amount,
+						currency: body.currency as string | undefined,
+						scheduledFor,
+						reference: body.reference as string | undefined,
+						recurrence: body.recurrence as RecurrenceInput | undefined,
+					});
+					return json(201, result);
+				},
+			},
+
+			// GET /scheduled-transactions/:id — Get a scheduled transaction
+			{
+				method: "GET",
+				path: "/scheduled-transactions/:id",
+				handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+					const id = req.params.id ?? "";
+					const result = await getScheduledTransactionRecord(ctx, id);
+					return json(200, result);
+				},
+			},
+
+			// GET /scheduled-transactions — List scheduled transactions
+			{
+				method: "GET",
+				path: "/scheduled-transactions",
+				handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+					const result = await listScheduledTransactionRecords(ctx, {
+						status: req.query.status as ScheduledTransactionStatus | undefined,
+						sourceIdentifier: req.query.sourceIdentifier,
+						limit: req.query.limit ? Number(req.query.limit) : undefined,
+						offset: req.query.offset ? Number(req.query.offset) : undefined,
+					});
+					return json(200, result);
+				},
+			},
+
+			// POST /scheduled-transactions/:id/cancel — Cancel a scheduled transaction
+			{
+				method: "POST",
+				path: "/scheduled-transactions/:id/cancel",
+				handler: async (req: PluginApiRequest, ctx: SummaContext) => {
+					const id = req.params.id ?? "";
+					const body = req.body as Record<string, unknown> | null;
+					const reason = (body?.reason as string) ?? undefined;
+					const result = await cancelScheduledTransactionRecord(ctx, id, reason);
+					return json(200, result);
+				},
+			},
+		],
 
 		workers: [
 			{
@@ -96,6 +303,347 @@ export function scheduledTransactions(options?: ScheduledTransactionsOptions): S
 }
 
 // =============================================================================
+// CREATE SCHEDULED TRANSACTION
+// =============================================================================
+
+async function createScheduledTransactionRecord(
+	ctx: SummaContext,
+	params: CreateScheduledTransactionParams,
+): Promise<ScheduledTransaction> {
+	const t = createTableResolver(ctx.options.schema);
+	const d = ctx.dialect;
+	const ledgerId = getLedgerId(ctx);
+
+	const { sourceIdentifier, destinationIdentifier, amount, scheduledFor, reference, recurrence } =
+		params;
+	const currency = params.currency ?? ctx.options.currency;
+
+	// Validate amount
+	if (amount <= 0) {
+		throw SummaError.invalidArgument("amount must be a positive number");
+	}
+
+	// Validate identifier routing
+	const sourceIsSystem = isSystemAccount(sourceIdentifier);
+	const destIsSystem =
+		destinationIdentifier != null ? isSystemAccount(destinationIdentifier) : true;
+	if (sourceIsSystem && destIsSystem && destinationIdentifier != null) {
+		throw SummaError.invalidArgument(
+			"System-to-system transfers are not supported. At least one side must be a holder.",
+		);
+	}
+
+	// Validate recurrence
+	if (recurrence) {
+		if (typeof recurrence.intervalMs !== "number" || recurrence.intervalMs <= 0) {
+			throw SummaError.invalidArgument("recurrence.intervalMs must be a positive number");
+		}
+		if (
+			recurrence.maxExecutions != null &&
+			(typeof recurrence.maxExecutions !== "number" || recurrence.maxExecutions <= 0)
+		) {
+			throw SummaError.invalidArgument(
+				"recurrence.maxExecutions must be a positive number if provided",
+			);
+		}
+	}
+
+	const scheduledForIso = scheduledFor instanceof Date ? scheduledFor.toISOString() : scheduledFor;
+
+	const row = await withTransactionTimeout(ctx, async (tx) => {
+		// Insert the scheduled transaction row
+		const rows = await tx.raw<RawScheduledInsertRow>(
+			`INSERT INTO ${t("scheduled_transaction")} (
+				id, reference, amount, currency,
+				source_identifier, destination_identifier,
+				scheduled_for, recurrence, status,
+				execution_count, retry_count,
+				next_execution_at, ledger_id
+			) VALUES (
+				${d.generateUuid()}, $1, $2, $3,
+				$4, $5,
+				$6, $7, 'scheduled',
+				0, 0,
+				$6, $8
+			) RETURNING *`,
+			[
+				reference ?? null,
+				amount,
+				currency,
+				sourceIdentifier,
+				destinationIdentifier ?? null,
+				scheduledForIso,
+				recurrence ? JSON.stringify(recurrence) : null,
+				ledgerId,
+			],
+		);
+
+		const row = rows[0];
+		if (!row) throw SummaError.internal("Failed to create scheduled transaction");
+
+		// Initialize entity status
+		await initializeEntityStatus(tx, ENTITY_TYPE, row.id, "scheduled", {
+			execution_count: 0,
+			retry_count: 0,
+			last_executed_at: null,
+			next_execution_at: scheduledForIso,
+			last_retry_at: null,
+		});
+
+		// Append CREATED event
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+				aggregateId: row.id,
+				eventType: SCHEDULED_EVENTS.CREATED,
+				eventData: {
+					scheduledId: row.id,
+					sourceIdentifier,
+					destinationIdentifier: destinationIdentifier ?? null,
+					amount,
+					currency,
+					scheduledFor: scheduledForIso,
+					recurrence: recurrence ?? null,
+					reference: reference ?? null,
+				},
+			},
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+			ledgerId,
+		);
+
+		return row;
+	});
+
+	return rawToScheduledTransaction(row, "scheduled", {
+		execution_count: 0,
+		retry_count: 0,
+		last_executed_at: null,
+		next_execution_at: scheduledForIso,
+		last_retry_at: null,
+	});
+}
+
+// =============================================================================
+// GET SCHEDULED TRANSACTION
+// =============================================================================
+
+async function getScheduledTransactionRecord(
+	ctx: SummaContext,
+	scheduledId: string,
+): Promise<ScheduledTransaction> {
+	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
+
+	const rows = await ctx.adapter.raw<
+		RawScheduledInsertRow & { esl_status: string; esl_metadata: Record<string, unknown> | null }
+	>(
+		`SELECT st.*, latest.status AS esl_status, latest.metadata AS esl_metadata
+		 FROM ${t("scheduled_transaction")} st
+		 LEFT JOIN LATERAL (
+			SELECT esl.status, esl.metadata
+			FROM ${t("entity_status_log")} esl
+			WHERE esl.entity_type = '${ENTITY_TYPE}'
+			  AND esl.entity_id = st.id
+			ORDER BY esl.created_at DESC
+			LIMIT 1
+		 ) latest ON true
+		 WHERE st.id = $1 AND st.ledger_id = $2`,
+		[scheduledId, ledgerId],
+	);
+
+	const row = rows[0];
+	if (!row) throw SummaError.notFound("Scheduled transaction not found");
+
+	return rawToScheduledTransaction(
+		row,
+		(row.esl_status ?? row.status) as ScheduledTransactionStatus,
+		row.esl_metadata,
+	);
+}
+
+// =============================================================================
+// LIST SCHEDULED TRANSACTIONS
+// =============================================================================
+
+async function listScheduledTransactionRecords(
+	ctx: SummaContext,
+	params?: {
+		status?: ScheduledTransactionStatus;
+		sourceIdentifier?: string;
+		limit?: number;
+		offset?: number;
+	},
+): Promise<ScheduledTransaction[]> {
+	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
+	const limit = params?.limit ?? 50;
+	const offset = params?.offset ?? 0;
+
+	const conditions: string[] = ["st.ledger_id = $1"];
+	const values: unknown[] = [ledgerId];
+	let paramIdx = 2;
+
+	if (params?.status) {
+		conditions.push(`latest.status = $${paramIdx}`);
+		values.push(params.status);
+		paramIdx++;
+	}
+
+	if (params?.sourceIdentifier) {
+		conditions.push(`st.source_identifier = $${paramIdx}`);
+		values.push(params.sourceIdentifier);
+		paramIdx++;
+	}
+
+	values.push(limit, offset);
+
+	const rows = await ctx.adapter.raw<
+		RawScheduledInsertRow & { esl_status: string; esl_metadata: Record<string, unknown> | null }
+	>(
+		`SELECT st.*, latest.status AS esl_status, latest.metadata AS esl_metadata
+		 FROM ${t("scheduled_transaction")} st
+		 LEFT JOIN LATERAL (
+			SELECT esl.status, esl.metadata
+			FROM ${t("entity_status_log")} esl
+			WHERE esl.entity_type = '${ENTITY_TYPE}'
+			  AND esl.entity_id = st.id
+			ORDER BY esl.created_at DESC
+			LIMIT 1
+		 ) latest ON true
+		 WHERE ${conditions.join(" AND ")}
+		 ORDER BY st.scheduled_for ASC
+		 LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+		values,
+	);
+
+	return rows.map((row) =>
+		rawToScheduledTransaction(
+			row,
+			(row.esl_status ?? row.status) as ScheduledTransactionStatus,
+			row.esl_metadata,
+		),
+	);
+}
+
+// =============================================================================
+// CANCEL SCHEDULED TRANSACTION
+// =============================================================================
+
+async function cancelScheduledTransactionRecord(
+	ctx: SummaContext,
+	scheduledId: string,
+	reason?: string,
+): Promise<ScheduledTransaction> {
+	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
+
+	return withTransactionTimeout(ctx, async (tx) => {
+		// Fetch and lock the row
+		const rows = await tx.raw<RawScheduledInsertRow>(
+			`SELECT st.*
+			 FROM ${t("scheduled_transaction")} st
+			 WHERE st.id = $1 AND st.ledger_id = $2
+			 ${ctx.dialect.forUpdateSkipLocked()}`,
+			[scheduledId, ledgerId],
+		);
+
+		const row = rows[0];
+		if (!row) throw SummaError.notFound("Scheduled transaction not found");
+
+		// Verify current status is cancellable
+		const currentStatus = await getEntityStatus(tx, ENTITY_TYPE, scheduledId);
+		if (!currentStatus || !["scheduled"].includes(currentStatus.status)) {
+			throw SummaError.conflict(
+				`Cannot cancel scheduled transaction in status "${currentStatus?.status ?? "unknown"}"`,
+			);
+		}
+
+		// Transition to cancelled
+		await transitionEntityStatus({
+			tx,
+			entityType: ENTITY_TYPE,
+			entityId: scheduledId,
+			status: "cancelled",
+			expectedCurrentStatus: "scheduled",
+			reason: reason ?? "Cancelled by user",
+			metadata: {
+				...(currentStatus.metadata ?? {}),
+				next_execution_at: null,
+			},
+		});
+
+		// Append CANCELLED event
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
+				aggregateId: scheduledId,
+				eventType: SCHEDULED_EVENTS.CANCELLED,
+				eventData: {
+					scheduledId,
+					reason: reason ?? "Cancelled by user",
+				},
+			},
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+			ledgerId,
+		);
+
+		return rawToScheduledTransaction(row, "cancelled", {
+			...(currentStatus.metadata ?? {}),
+			next_execution_at: null,
+		});
+	});
+}
+
+// =============================================================================
+// ROW MAPPER
+// =============================================================================
+
+function rawToScheduledTransaction(
+	row: RawScheduledInsertRow,
+	status: ScheduledTransactionStatus,
+	metadata: Record<string, unknown> | null,
+): ScheduledTransaction {
+	const rec = parseRecurrence(row.recurrence);
+	return {
+		id: row.id,
+		reference: row.reference,
+		amount: Number(row.amount),
+		currency: row.currency,
+		sourceIdentifier: row.source_identifier,
+		destinationIdentifier: row.destination_identifier,
+		scheduledFor: new Date(row.scheduled_for).toISOString(),
+		recurrence: rec,
+		status,
+		executionCount: Number(metadata?.execution_count ?? row.execution_count ?? 0),
+		retryCount: Number(metadata?.retry_count ?? row.retry_count ?? 0),
+		lastExecutedAt: metadata?.last_executed_at
+			? String(metadata.last_executed_at)
+			: row.last_executed_at
+				? new Date(row.last_executed_at).toISOString()
+				: null,
+		nextExecutionAt: metadata?.next_execution_at
+			? String(metadata.next_execution_at)
+			: row.next_execution_at
+				? new Date(row.next_execution_at).toISOString()
+				: null,
+		createdAt: new Date(row.created_at).toISOString(),
+	};
+}
+
+// =============================================================================
+// PUBLIC API EXPORTS
+// =============================================================================
+
+export { createScheduledTransactionRecord as createScheduledTransaction };
+export { getScheduledTransactionRecord as getScheduledTransaction };
+export { listScheduledTransactionRecords as listScheduledTransactions };
+export { cancelScheduledTransactionRecord as cancelScheduledTransaction };
+
+// =============================================================================
 // PROCESS SCHEDULED TRANSACTIONS
 // =============================================================================
 
@@ -104,6 +652,7 @@ async function processScheduledTransactions(
 	options: Required<ScheduledTransactionsOptions>,
 ): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const { maxRetries, batchSize, maxBatchesPerRun } = options;
 
 	for (let batch = 0; batch < maxBatchesPerRun; batch++) {
@@ -124,11 +673,12 @@ async function processScheduledTransactions(
          ORDER BY esl.created_at DESC
          LIMIT 1
        ) latest_status ON true
-       WHERE latest_status.status = 'scheduled'
-         AND (latest_status.metadata->>'next_execution_at')::timestamptz <= $1::timestamptz
+       WHERE st.ledger_id = $1
+         AND latest_status.status = 'scheduled'
+         AND (latest_status.metadata->>'next_execution_at')::timestamptz <= $2::timestamptz
        ORDER BY (latest_status.metadata->>'next_execution_at')::timestamptz ASC
-       LIMIT $2`,
-			[now, batchSize],
+       LIMIT $3`,
+			[ledgerId, now, batchSize],
 		);
 
 		if (candidates.length === 0) {
@@ -151,6 +701,7 @@ async function processSingleScheduledTransaction(
 	maxRetries: number,
 ): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	// -------------------------------------------------------------------------
 	// Phase 1: Lock row, mark as processing, append PROCESSING event
 	// -------------------------------------------------------------------------
@@ -211,6 +762,7 @@ async function processSingleScheduledTransaction(
 				},
 				ctx.options.schema,
 				ctx.options.advanced.hmacSecret,
+				ledgerId,
 			);
 
 			return row;
@@ -298,6 +850,7 @@ async function processSingleScheduledTransaction(
 					},
 					ctx.options.schema,
 					ctx.options.advanced.hmacSecret,
+					ledgerId,
 				);
 
 				ctx.logger.info("Scheduled transaction rescheduled", {
@@ -335,6 +888,7 @@ async function processSingleScheduledTransaction(
 					},
 					ctx.options.schema,
 					ctx.options.advanced.hmacSecret,
+					ledgerId,
 				);
 
 				ctx.logger.info("Scheduled transaction completed", {
@@ -371,6 +925,7 @@ async function handleExecutionFailure(
 	const errorMessage = error instanceof Error ? error.message : String(error);
 	const currentRetryCount = counters.retryCount + 1;
 	const nowIso = new Date().toISOString();
+	const ledgerId = getLedgerId(ctx);
 
 	try {
 		await withTransactionTimeout(ctx, async (tx) => {
@@ -407,6 +962,7 @@ async function handleExecutionFailure(
 					},
 					ctx.options.schema,
 					ctx.options.advanced.hmacSecret,
+					ledgerId,
 				);
 
 				ctx.logger.error("Scheduled transaction permanently failed", {

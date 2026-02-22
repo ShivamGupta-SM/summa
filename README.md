@@ -46,7 +46,7 @@ Every mutation produces an immutable event with a **SHA-256 hash chain** for tam
 | **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
 | **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
 | **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
-| **High-traffic accounts** | Hot account pattern with optimistic concurrency |
+| **High-traffic accounts** | Hot accounts, mega CTE combined writes, and transaction batching for 100,000+ TPS |
 | **Network retries** | Built-in idempotency keys prevent duplicate transactions |
 | **Partial failures** | Two-phase holds: reserve first, commit or void later |
 | **Data inconsistency** | Automated reconciliation compares balances against entry records |
@@ -319,6 +319,14 @@ Extend Summa with composable, type-safe plugins:
 | `approvalWorkflow` | Maker-checker dual authorization |
 | `batchImport` | Bulk CSV/JSON transaction import |
 | `accrualAccounting` | Revenue/expense recognition over time |
+| `batchEngine` | TigerBeetle-inspired transaction batching for 100,000+ TPS |
+| `identity` | KYC identity management with AES-256-GCM PII tokenization |
+| `apiKeys` | SHA-256 hashed key management with scoped permissions |
+| `balanceMonitor` | Real-time condition-based balance alerts |
+| `backup` | Automated PostgreSQL backups with S3 storage |
+| `search` | Native PostgreSQL full-text search with optional Typesense and Meilisearch backends |
+| `webhookDelivery` | Webhook endpoint management with delivery log |
+| `dataRetention` | Configurable cleanup policies for operational data |
 
 <br/>
 

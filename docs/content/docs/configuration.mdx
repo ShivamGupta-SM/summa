@@ -14,6 +14,7 @@ import { createSumma } from "summa";
 const summa = createSumma({
   database: adapter,          // Required — database adapter
   currency: "USD",            // Default currency (ISO 4217)
+  ledgerId: "ledger-uuid",    // Ledger ID for multi-tenancy
   functionalCurrency: "USD",  // Reporting consolidation currency
   schema: "summa",            // PostgreSQL schema (default: "summa")
   systemAccounts: { ... },    // System account definitions
@@ -44,6 +45,16 @@ database: () => drizzleAdapter(drizzle(process.env.DATABASE_URL!))
 ```
 
 See [Adapters](/docs/adapters/drizzle) for adapter-specific setup.
+
+### `readDatabase`
+
+Optional read replica adapter. When configured, all read-only operations (account/transaction listing, search, statements, balance lookups) are routed to the replica, freeing the primary for writes.
+
+```ts
+readDatabase: () => drizzleAdapter(drizzle(process.env.DATABASE_REPLICA_URL!))
+```
+
+When omitted, all reads go to the primary `database` adapter. See [Scaling — Read Replicas](/docs/scaling#read-replicas) for architecture details.
 
 ### `currency`
 
@@ -89,11 +100,28 @@ All table references are automatically qualified at runtime (e.g., `"summa"."acc
   If you change the schema name on an existing deployment, you must migrate the tables manually. Summa does not automatically move tables between schemas.
 </Callout>
 
+### `ledgerId`
+
+The ledger ID for multi-tenant deployments. When set, all operations are scoped to this ledger. You can also pass `ledgerId` per-request via the request body or `X-Ledger-Id` header.
+
+```ts
+ledgerId: "your-ledger-uuid"  // Scope all operations to this ledger
+```
+
+Create ledgers programmatically:
+
+```ts
+const ledger = await summa.ledgers.create({ name: "Acme Corp" });
+// Use ledger.id in subsequent calls
+```
+
+See [Multi-Tenancy](/docs/multi-tenancy) for the full guide on ledger-as-namespace isolation.
+
 ## Extensibility
 
 ### `systemAccounts`
 
-System accounts represent your platform's internal accounts. They are created automatically on startup and used as the counterparty for credits and debits.
+System accounts represent your platform's internal accounts. They are created automatically when a ledger is created and used as the counterparty for credits and debits. Each ledger gets its own set of system accounts.
 
 ```ts
 // Use string shorthand (identifier = name)
@@ -139,9 +167,8 @@ import {
   financialReporting,
   fxEngine,
   glSubLedger,
-  holdExpiry,
+  freezeExpiry,
   hotAccounts,
-  maintenance,
   observability,
   openApi,
   outbox,
@@ -159,13 +186,12 @@ plugins: [
   reconciliation(),
   snapshots(),
   velocityLimits(),
-  holdExpiry(),
+  freezeExpiry(),
   outbox({ publisher: myPublisher }),
   dlqManager(),
   hotAccounts(),
   scheduledTransactions(),
-  maintenance(),
-  dataRetention({ idempotencyKeys: "24h", auditLogs: "7y" }),
+  dataRetention({ auditLogs: "7y" }),
   openApi({ title: "My Ledger API" }),
   observability(),
   statements(),
@@ -183,6 +209,44 @@ plugins: [
 Plugins are automatically sorted by their declared dependencies using topological sort — you can list them in any order. If a plugin declares a dependency that isn't registered, or if there's a circular dependency, `createSumma()` throws immediately.
 
 See [Plugins](/docs/plugins) for details on each plugin.
+
+## Core Workers
+
+Summa automatically runs background workers for essential cleanup tasks. These run when you call `summa.workers.start()` — no plugins needed.
+
+```ts
+coreWorkers: {
+  holdExpiry: { interval: "5m" },        // Default: "5m" — expires holds past hold_expires_at
+  idempotencyCleanup: { interval: "1h" }, // Default: "1h" — removes expired idempotency keys
+  leaseCleanup: { interval: "6h" },       // Default: "6h" — removes stale worker leases
+}
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `holdExpiry` | `boolean \| { interval?: string }` | `true` | Hold expiry worker. `false` to disable |
+| `idempotencyCleanup` | `boolean \| { interval?: string }` | `true` | Idempotency key cleanup worker. `false` to disable |
+| `leaseCleanup` | `boolean \| { interval?: string }` | `true` | Worker lease cleanup. `false` to disable |
+
+All core workers are enabled by default. Disable individual workers only if you handle cleanup externally (e.g., via a cron job).
+
+### Cleanup Ownership
+
+Every table that Summa writes to has a clear cleanup owner:
+
+| Table | Cleanup Owner | Notes |
+|-------|---------------|-------|
+| `hold` (expired) | **Core worker** (`core:hold-expiry`) | Core sets `hold_expires_at`, core expires them |
+| `idempotency_key` | **Core worker** (`core:idempotency-cleanup`) | Core writes idempotency keys on every operation |
+| `worker_lease` | **Core worker** (`core:lease-cleanup`) | Core manages distributed worker leases |
+| `outbox_event` | [**Outbox plugin**](/docs/plugins/outbox) (`outbox-cleanup`) | Outbox owns the event delivery pipeline |
+| `processed_event` | [**Outbox plugin**](/docs/plugins/outbox) (`outbox-cleanup`) | Dedup table populated by outbox processing |
+| `rate_limit_log` | [**Data retention plugin**](/docs/plugins/data-retention) | Always cleaned (default: 30d) |
+| `audit_log` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `auditLogs` |
+| `hot_account_entry` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `hotAccountEntries` |
+| `fx_rate_quote` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `fxQuotes` |
+
+The principle: **if core writes to a table, core cleans it up**. Plugin-owned tables are cleaned by their respective plugins.
 
 ## Advanced Tuning
 
@@ -204,6 +268,10 @@ advanced: {
   lockRetryBaseDelayMs: 50,        // Exponential backoff base delay
   lockRetryMaxDelayMs: 500,        // Max backoff delay
   lockMode: "nowait",              // Fail-fast + retry for contested accounts
+  optimisticRetryCount: 3,         // Retries for optimistic lock version conflicts
+  enableBatching: false,           // Transaction batching for extreme throughput
+  batchMaxSize: 200,               // Max transactions per batch
+  batchFlushIntervalMs: 5,         // Max ms before incomplete batch is flushed
 }
 ```
 
@@ -214,18 +282,22 @@ advanced: {
 | `transactionTimeoutMs` | `number` | `5000` | Maximum time for a database transaction |
 | `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
 | `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
-| `enableEventSourcing` | `boolean` | `true` | Forward-compatibility flag (see note below) |
-| `enableHashChain` | `boolean` | `true` | Forward-compatibility flag (see note below) |
+| `enableEventSourcing` | `boolean` | `true` | Controls event sourcing. Only disable for development/testing (see note below) |
+| `enableHashChain` | `boolean` | `true` | Controls hash chain integrity. Only disable for development/testing (see note below) |
 | `hmacSecret` | `string \| null` | `null` | HMAC secret for tamper-proof hash chains and balance checksums |
 | `verifyHashOnRead` | `boolean` | `true` | Verify hash chain integrity on every read operation |
-| `useDenormalizedBalance` | `boolean` | `false` | Store cached balance on `account_balance` for O(1) reads. See [Scaling — Denormalized Balance](/docs/scaling#denormalized-balance-cache) |
+| `useDenormalizedBalance` | `boolean` | `true` | Store cached balance on `account_balance` for O(1) reads. See [Scaling — Denormalized Balance](/docs/scaling#denormalized-balance-cache) |
 | `lockRetryCount` | `number` | `0` | Number of retry attempts on lock timeout or serialization failure |
 | `lockRetryBaseDelayMs` | `number` | `50` | Base delay in ms between lock retries (exponential backoff with jitter) |
 | `lockRetryMaxDelayMs` | `number` | `500` | Maximum delay in ms between lock retries |
-| `lockMode` | `"wait" \| "nowait"` | `"wait"` | Lock acquisition mode. `"nowait"` fails immediately if locked, triggering retry |
+| `lockMode` | `"wait" \| "nowait" \| "optimistic"` | `"wait"` | Lock acquisition mode. `"nowait"` fails immediately if locked. `"optimistic"` skips `FOR UPDATE` entirely — relies on `UNIQUE(account_id, version)` constraint for conflict detection |
+| `optimisticRetryCount` | `number` | `3` | Retry attempts on optimistic lock version conflicts (only used when `lockMode: "optimistic"`) |
+| `enableBatching` | `boolean` | `false` | Enable transaction batching for extreme throughput. See [Scaling — Transaction Batching](/docs/scaling#transaction-batching-batch-engine) |
+| `batchMaxSize` | `number` | `200` | Maximum transactions per batch (only when `enableBatching: true`) |
+| `batchFlushIntervalMs` | `number` | `5` | Maximum ms before an incomplete batch is flushed |
 
-<Callout type="warn" title="enableEventSourcing and enableHashChain are no-ops">
-  These flags exist for forward compatibility only. The event sourcing and hash chain code paths are **unconditional** — setting these to `false` has no effect. Do not rely on them to disable functionality. They may become functional in a future version.
+<Callout type="warn" title="enableEventSourcing and enableHashChain">
+  These flags are enabled by default and control whether event sourcing and hash chain logic runs. Setting them to `false` **will** skip event/hash logic — only do this for development or testing. **Never disable in production** as it removes your immutability and tamper-detection guarantees.
 </Callout>
 
 <Callout type="warn" title="Configure hmacSecret in production">
@@ -253,8 +325,9 @@ Even with valid configuration, Summa logs warnings at startup for common product
 | `audit-log` plugin not registered | *"For financial-grade deployments, audit logging is strongly recommended."* |
 | `reconciliation` plugin not registered | *"For financial-grade deployments, periodic reconciliation is strongly recommended."* |
 | `advanced.hmacSecret` not set | *"Without HMAC, hash chains use plain SHA-256 and an attacker with DB access can recompute valid hashes."* |
+| `systemAccounts` set but `hot-accounts` plugin not registered | *"hot-accounts plugin is not registered but system accounts are configured. System accounts typically receive high transaction volume — register hotAccounts() for optimistic concurrency."* |
 
-These are warnings only — Summa will still start. But in production, all three should be addressed.
+These are warnings only — Summa will still start. But in production, all four should be addressed.
 
 ## Logging & Storage
 

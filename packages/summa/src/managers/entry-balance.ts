@@ -67,6 +67,33 @@ export interface InsertEntryParams {
 	 * Controlled by ctx.options.advanced.useDenormalizedBalance.
 	 */
 	updateDenormalizedCache?: boolean;
+
+	/**
+	 * Lock acquisition mode. When "optimistic", the FOR UPDATE lock is skipped
+	 * and conflict is detected via the UNIQUE(account_id, version) constraint.
+	 */
+	lockMode?: "wait" | "nowait" | "optimistic";
+
+	/**
+	 * Pre-fetched balance state from resolveAccountForUpdate(). When provided
+	 * together with skipLock=true, the readLatestVersion() SELECT is skipped
+	 * entirely — saving one DB round-trip per transaction.
+	 */
+	existingBalance?: {
+		version: number;
+		balance: number;
+		credit_balance: number;
+		debit_balance: number;
+		pending_debit: number;
+		pending_credit: number;
+		status: string;
+		freeze_reason: string | null;
+		frozen_at: string | Date | null;
+		frozen_by: string | null;
+		closed_at: string | Date | null;
+		closed_by: string | null;
+		closure_reason: string | null;
+	};
 }
 
 export interface InsertEntryResult {
@@ -116,12 +143,15 @@ export async function insertEntryAndUpdateBalance(
 
 	// Step 1: Lock the immutable account_balance parent row (serialization point)
 	// Skipped when the caller already locked via resolveAccountForUpdate()
-	if (!params.skipLock) {
+	// Skipped in optimistic mode — conflict detected via UNIQUE(account_id, version) constraint
+	const isOptimistic = params.lockMode === "optimistic";
+	if (!params.skipLock && !isOptimistic) {
 		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [accountId]);
 	}
 
-	// Step 2: Read latest version from account_balance_version
-	const current = await readLatestVersion(tx, t, accountId);
+	// Step 2: Read latest version from account_balance_version.
+	// Skipped when existingBalance is provided (caller already fetched via resolveAccountForUpdate).
+	const current = params.existingBalance ?? (await readLatestVersion(tx, t, accountId));
 
 	// Step 3: Compute derived fields
 	const balanceBefore = Number(current.balance);

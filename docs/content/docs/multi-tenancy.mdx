@@ -1,0 +1,129 @@
+---
+title: Multi-Tenancy
+description: Isolate tenants with ledger-as-namespace — each ledger gets its own accounts, transactions, and system accounts.
+icon: Building
+---
+
+## Overview
+
+Summa supports **multi-tenancy** through a "ledger-as-namespace" pattern. Each ledger is a fully isolated namespace — accounts, transactions, system accounts, event chains, and idempotency keys are all scoped per-ledger. A single Summa instance can serve multiple tenants without data leakage.
+
+This is the same isolation pattern used by [Blnk](https://blnk.finance) and other production financial ledgers.
+
+## How It Works
+
+Six boundary tables carry a `ledger_id` column:
+
+| Table | Purpose |
+|-------|---------|
+| `account_balance` | All account lookups filter by ledger |
+| `system_account` | Each ledger gets its own @World, @Fees, etc. |
+| `transaction_record` | Same reference is OK across different ledgers |
+| `idempotency_key` | Same key is OK across different ledgers |
+| `ledger_event` | Hash chain integrity is per-ledger |
+| `block_checkpoint` | Merkle tree blocks are per-ledger |
+
+All other tables (`entry_record`, `account_balance_version`, `transaction_status`, etc.) are isolated through foreign key chains — no `ledger_id` needed.
+
+## Creating a Ledger
+
+```ts
+const ledger = await summa.ledgers.create({
+  name: "Acme Corp",
+  metadata: { plan: "enterprise" },
+});
+
+console.log(ledger.id); // UUID
+```
+
+Every ledger automatically gets its own set of system accounts (@World, @Fees, etc.).
+
+## Sending the Ledger ID
+
+Every API call must include a `ledgerId` — either in the request body or via the `X-Ledger-Id` header:
+
+<Tabs items={["Request body", "HTTP header", "Programmatic"]}>
+<Tab value="Request body">
+
+```json
+{
+  "holderId": "user_123",
+  "holderType": "individual",
+  "currency": "USD",
+  "ledgerId": "ledger-uuid-here"
+}
+```
+
+</Tab>
+<Tab value="HTTP header">
+
+```http
+POST /accounts HTTP/1.1
+X-Ledger-Id: ledger-uuid-here
+Content-Type: application/json
+
+{ "holderId": "user_123", "holderType": "individual", "currency": "USD" }
+```
+
+</Tab>
+<Tab value="Programmatic">
+
+```ts
+const summa = createSumma({
+  database: drizzleAdapter(db),
+  currency: "USD",
+  ledgerId: "ledger-uuid-here", // Set at instance level
+});
+```
+
+</Tab>
+</Tabs>
+
+## Isolation Guarantees
+
+<Cards>
+  <Card title="Account Isolation">
+    The same `holderId` can exist in different ledgers. Each gets its own account with independent balances.
+  </Card>
+  <Card title="Reference Isolation">
+    Transaction references and idempotency keys are scoped per-ledger. The same reference can be reused across tenants.
+  </Card>
+  <Card title="System Account Isolation">
+    Each ledger has its own @World system account. Credits and debits are fully contained within the ledger.
+  </Card>
+  <Card title="Event Chain Isolation">
+    Hash chains and Merkle tree block checkpoints are per-ledger. Integrity verification is scoped to individual tenants.
+  </Card>
+</Cards>
+
+## Listing Ledgers
+
+```ts
+const ledgers = await summa.ledgers.list();
+// [{ id: "...", name: "Acme Corp", ... }, ...]
+
+const ledger = await summa.ledgers.get("ledger-uuid-here");
+```
+
+## API Routes
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/ledgers` | Create a new ledger |
+| `GET` | `/ledgers` | List all ledgers |
+| `GET` | `/ledgers/:id` | Get a specific ledger |
+
+## Schema
+
+The `ledger` table stores tenant metadata:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | UUID | Primary key |
+| `name` | VARCHAR(255) | Ledger name |
+| `metadata` | JSONB | Custom metadata |
+| `created_at` | TIMESTAMPTZ | Creation time |
+
+<Callout type="info" title="Indirect FK Isolation">
+  Only 6 tables carry a `ledger_id` column. The remaining ~15 tables inherit isolation through foreign key chains — for example, `entry_record` belongs to a `transaction_record` which belongs to a ledger. This keeps the schema clean and minimizes the migration surface.
+</Callout>

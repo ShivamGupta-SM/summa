@@ -78,6 +78,11 @@ export function rawToTransactionResponse(
 				? row.posted_at.toISOString()
 				: String(row.posted_at)
 			: null,
+		effectiveDate: row.effective_date
+			? row.effective_date instanceof Date
+				? row.effective_date.toISOString()
+				: String(row.effective_date)
+			: null,
 	};
 }
 
@@ -105,6 +110,7 @@ export async function processJournalLegs(
 	legs: JournalEntryLeg[],
 	currency: string,
 	category: string,
+	ledgerId: string,
 ): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
 
@@ -116,7 +122,7 @@ export async function processJournalLegs(
 	];
 	const systemAccountMap = new Map<string, { id: string }>();
 	for (const name of systemAccountNames) {
-		const sys = await getSystemAccount(ctx, name);
+		const sys = await getSystemAccount(ctx, name, ledgerId);
 		if (!sys) throw SummaError.notFound(`System account "${name}" not found`);
 		systemAccountMap.set(name, sys);
 	}
@@ -141,8 +147,8 @@ export async function processJournalLegs(
 	for (const holderId of holderIds) {
 		// Lock immutable parent, then read latest status from version
 		const parentRows = await tx.raw<{ id: string }>(
-			`SELECT id FROM ${t("account_balance")} WHERE holder_id = $1 LIMIT 1 ${ctx.dialect.forUpdate()}`,
-			[holderId],
+			`SELECT id FROM ${t("account_balance")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1 ${ctx.dialect.forUpdate()}`,
+			[ledgerId, holderId],
 		);
 		const parentRow = parentRows[0];
 		if (!parentRow) throw SummaError.notFound(`Account for holder "${holderId}" not found`);

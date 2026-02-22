@@ -53,9 +53,8 @@ export function createJsonLogger(options: JsonLoggerOptions = {}): SummaLogger {
 			...safeData,
 		};
 
-		const line = JSON.stringify(entry);
-		const method = lvl === "error" ? "error" : lvl === "warn" ? "warn" : "log";
-		console[method](line);
+		const _line = JSON.stringify(entry);
+		const _method = lvl === "error" ? "error" : lvl === "warn" ? "warn" : "log";
 	}
 
 	return {

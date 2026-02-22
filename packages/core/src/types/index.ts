@@ -7,6 +7,7 @@ export type {
 	NormalBalance,
 } from "./account.js";
 export type {
+	CoreWorkerOptions,
 	SummaAdvancedOptions,
 	SummaLogger,
 	SummaOptions,
@@ -53,6 +54,7 @@ export type {
 	HoldDestination,
 	HoldStatus,
 } from "./hold.js";
+export type { Ledger } from "./ledger.js";
 export type {
 	AccountLimitInfo,
 	LimitType,

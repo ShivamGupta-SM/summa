@@ -20,7 +20,7 @@ import {
 	getEntityStatus,
 	initializeEntityStatus,
 	transitionEntityStatus,
-} from "../../infrastructure/entity-status.js";
+} from "../infrastructure/entity-status.js";
 
 // =============================================================================
 // CONSTANTS

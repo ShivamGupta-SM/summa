@@ -1,6 +1,6 @@
 ---
 title: Scaling
-description: Scale Summa from thousands to millions of transactions with denormalized balances, cursor pagination, lock retry, version retention, table partitioning, and more.
+description: Scale Summa from thousands to millions of transactions with connection pooling, read replicas, Redis caching, event store partitioning, Redis Streams, CQRS projections, and hash snapshots.
 icon: ChartBar
 ---
 
@@ -26,30 +26,38 @@ A production Summa deployment with all scalability features enabled:
                │           │           │
                ▼           ▼           ▼
          ┌─────────────────────────────────┐
-         │            Redis                │
+         │         Redis + Streams         │
          │  (rate limits, idempotency,     │
-         │   distributed state)            │
+         │   message queue, projections)   │
          └─────────────────────────────────┘
-               │
-     ┌─────────┴─────────┐
-     ▼                   ▼
-┌──────────┐      ┌──────────┐
-│ Primary  │──▶   │ Replica  │
-│   DB     │      │   DB     │
-│ (writes) │      │ (reads)  │
-└──────────┘      └──────────┘
+               │           │
+     ┌─────────┘           └──────┐
+     ▼                            ▼
+┌──────────┐               ┌──────────┐
+│ Primary  │──── stream ──▶│ Replica  │
+│   DB     │   replication │   DB     │
+│ (writes) │               │ (reads + │
+│          │               │ projections)
+└──────────┘               └──────────┘
+  partitioned                read models
+  ledger_event               (CQRS)
 ```
 
 ## Estimated Throughput
 
 | Configuration | Estimated TPS | Notes |
 |---------------|:---:|-------|
-| Single instance, default config | 1,000–5,000 | Limited by advisory locks and single DB |
+| Single instance, default config | 1,000–5,000 | Limited by per-txn round-trips and single DB |
 | + Connection pooling | 3,000–8,000 | Better connection reuse |
 | + Denormalized balance + lock retry | 5,000–15,000 | Fewer queries per txn, fail-fast lock contention |
+| + Mega CTE (combined writes) | 8,000–20,000 | All writes in a single SQL round-trip |
 | + Read replicas | 15,000–30,000 | Offloads read queries |
 | + Redis secondary storage | 20,000–40,000 | Distributed rate limiting, multi-instance |
 | + Hot accounts + version retention | 30,000–60,000 | Reduces contention + keeps tables bounded |
+| + Transaction batching (batch engine) | 60,000–120,000+ | Amortizes overhead across N transactions |
+| + Event store partitioning | — | Keeps query performance constant as data grows |
+| + Redis Streams + CQRS projections | — | Decouples reads from writes, enables dedicated read replicas |
+| + Verification snapshots | — | Reduces reconciliation time from hours to minutes |
 
 ## Quick Start
 
@@ -131,9 +139,18 @@ See [Drizzle Adapter — Connection Pooling](/docs/adapters/drizzle#connection-p
 
 Read replicas offload read queries to one or more PostgreSQL streaming replicas, freeing the primary for writes.
 
-```bash
-# No additional install — included in @summa/core
+The simplest way is to pass a `readDatabase` adapter directly in your config:
+
+```ts
+const summa = createSumma({
+  database: drizzleAdapter(primaryDb),
+  readDatabase: drizzleAdapter(replicaDb),
+});
 ```
+
+All read-only operations (account listing, transaction lookups, search, statements, balance reads, chart-of-accounts, holds, limits) are automatically routed through `readDatabase`. Writes, transactions, and reconciliation always hit the primary.
+
+For advanced multi-replica setups with load balancing:
 
 ```ts
 import { createReadReplicaAdapter } from "@summa/core/db";
@@ -150,12 +167,11 @@ const adapter = createReadReplicaAdapter({
 - Writes (`create`, `update`, `delete`, `rawMutate`) go to primary
 - `FOR UPDATE` queries go to primary (takes row locks)
 - All operations inside a `transaction()` go to primary
+- Reconciliation always uses primary to avoid false positives from replication lag
 
 <Callout type="warn" title="Replication lag">
   PostgreSQL streaming replication has a small delay (typically &lt; 100ms). Operations inside a transaction always use the primary, ensuring read-your-writes consistency where it matters.
 </Callout>
-
-See [Drizzle Adapter — Read Replicas](/docs/adapters/drizzle#read-replicas) for routing details.
 
 ### Redis Secondary Storage
 
@@ -212,13 +228,13 @@ plugins: [
 
 ### Denormalized Balance Cache
 
-By default, Summa reads account balances via a `LATERAL JOIN` on the `account_balance_version` table. As version rows grow into millions, this join becomes a bottleneck. Enable the denormalized balance cache to store the current balance directly on the `account_balance` row:
+Summa stores the current balance directly on the `account_balance` row via cached columns (enabled by default). This eliminates the `LATERAL JOIN` on `account_balance_version` that becomes a bottleneck at millions of version rows. To disable it (e.g., for debugging):
 
 ```ts
 const summa = createSumma({
   database: adapter,
   advanced: {
-    useDenormalizedBalance: true,
+    useDenormalizedBalance: false,  // default: true
   },
 });
 ```
@@ -251,8 +267,36 @@ advanced: {
 **Lock modes:**
 - `"wait"` (default) — `FOR UPDATE` with `lock_timeout`. Blocks until the lock is available or times out.
 - `"nowait"` — `FOR UPDATE NOWAIT`. Fails immediately if the row is locked, triggering a retry with backoff.
+- `"optimistic"` — Skips `FOR UPDATE` entirely. Reads the current balance version without locking, then relies on the `UNIQUE(account_id, version)` constraint on `account_balance_version` to detect conflicts. On conflict (PG error `23505`), retries with jitter up to `optimisticRetryCount` times.
 
 With `lockMode: "nowait"` and `lockRetryCount: 3`, contested accounts fail fast and retry with jitter instead of blocking in a lock queue. This significantly improves throughput on hot user accounts.
+
+### Optimistic Locking
+
+For accounts with very high concurrency where even `"nowait"` isn't enough, optimistic locking eliminates row-level locks entirely:
+
+```ts
+advanced: {
+  lockMode: "optimistic",
+  optimisticRetryCount: 3,        // Retries on version conflict (default: 3)
+}
+```
+
+**How it works:**
+1. Read the current balance version **without** `SELECT ... FOR UPDATE`
+2. Compute the new balance, insert `entry_record` + `account_balance_version` with `version = current + 1`
+3. If another transaction already inserted that version, the `UNIQUE(account_id, version)` constraint raises a `23505` error
+4. Retry with jitter (10-50ms) up to `optimisticRetryCount` times
+
+**When to use:**
+- Single accounts receiving 1000+ TPS where lock queues become the bottleneck
+- Low-conflict workloads where most transactions target different accounts (retry rate stays < 5%)
+
+**When NOT to use:**
+- High-conflict scenarios where the same account gets hammered (retry storms waste CPU)
+- The batch engine — it uses pessimistic locking internally for deterministic ordering
+
+On conflict, Summa throws `SummaError` with code `OPTIMISTIC_LOCK_CONFLICT` if all retries are exhausted.
 
 ### Cursor-Based Pagination
 
@@ -332,17 +376,121 @@ plugins: [
     },
     createAhead: 3,            // Create partitions 3 months ahead
     retainPartitions: 24,      // Detach partitions older than 24 months
+    requireSealedBlocks: true, // Block detachment if events aren't checkpointed (default)
+    archiveSchema: "summa_archive", // Move detached partitions here instead of dropping
   }),
 ]
 ```
 
 **Partition intervals:** `"daily"`, `"weekly"`, or `"monthly"`.
 
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `createAhead` | `number` | `3` | Create partitions this many intervals ahead |
+| `retainPartitions` | `number \| null` | `null` | Detach partitions older than this many intervals. `null` = never detach |
+| `requireSealedBlocks` | `boolean` | `true` | Block partition detachment unless all events are covered by sealed block checkpoints. Prevents hash chain breakage |
+| `archiveSchema` | `string` | — | Move detached partitions to this schema (created automatically) instead of leaving as standalone tables |
+| `workerInterval` | `string` | `"1d"` | How often the maintenance worker runs |
+
+**Hash chain safety:** When `requireSealedBlocks` is enabled (default), the maintenance worker calls `canSafelyDetachPartition()` before detaching `ledger_event`, `entry_record`, or `account_balance_version` partitions. If any events in the partition's date range aren't covered by a sealed block checkpoint, detachment is blocked and a warning is logged. Run `createBlockCheckpoint()` first.
+
+```ts
+import { canSafelyDetachPartition } from "summa/db";
+
+// Check if a partition can be safely detached
+const result = await canSafelyDetachPartition(ctx, "2025-01-01", "2025-02-01");
+if (!result.safe) {
+  console.log(result.reason);        // Why it's blocked
+  console.log(result.unsealedCount); // Events not yet checkpointed
+}
+```
+
 **Impact:** Queries with `created_at` filters hit only relevant partitions. VACUUM and index maintenance happens per-partition. Detaching old partitions is instant (vs DELETE which causes table bloat).
 
 <Callout type="warn" title="One-time migration required">
   Converting existing tables to partitioned tables requires a maintenance window. The `generatePartitionDDL()` helper produces the exact SQL statements, but you must run them manually. Back up your database first.
 </Callout>
+
+### Transaction Batching (Batch Engine)
+
+For the highest throughput, enable the `batchEngine()` plugin. Inspired by [TigerBeetle's](https://tigerbeetle.com/) batching architecture, it buffers incoming transactions and processes them in a single database transaction using multi-row `UNNEST` INSERTs — amortizing per-transaction overhead across the entire batch.
+
+```ts
+import { batchEngine } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  plugins: [
+    batchEngine({
+      maxBatchSize: 200,        // Transactions per batch (default: 200)
+      flushIntervalMs: 5,       // Max wait before flushing (default: 5ms)
+    }),
+  ],
+  advanced: {
+    enableBatching: true,       // Required to activate
+  },
+});
+```
+
+**How it works:**
+1. Each `creditAccount()` / `debitAccount()` call is buffered in-memory instead of executing immediately
+2. When the buffer reaches `maxBatchSize` or `flushIntervalMs` elapses, the batch is flushed
+3. All accounts in the batch are locked in sorted order (prevents deadlocks)
+4. All balances, checksums, and HMAC hashes are computed in-memory
+5. All writes (transaction_record, entry_record, account_balance_version, ledger_event, outbox, velocity log) are inserted via multi-row `UNNEST` — one query per table, not one per transaction
+6. Each transaction in the batch has its own `resolve`/`reject` — validation failures reject individual transactions without failing the batch
+
+**Impact:** At batch size 200 with 20 DB connections, each batch completes in ~10-20ms. That's 200 transactions per 15ms = **10,000-13,000 TPS per connection**, or **60,000-120,000+ TPS** with a 20-connection pool.
+
+<Callout type="info" title="Security preserved">
+  Batching does NOT compromise any security guarantees. Every transaction still gets its own HMAC hash chain entry, balance checksum, immutable event record, and outbox webhook. The only difference is *when* the writes hit the database — batched together instead of one-at-a-time.
+</Callout>
+
+<Callout type="warn" title="Latency trade-off">
+  Batching adds up to `flushIntervalMs` (default: 5ms) of latency to each transaction. For latency-sensitive workloads, keep `flushIntervalMs` low or disable batching and rely on the mega CTE optimization instead (~3,000 TPS with sub-millisecond overhead).
+</Callout>
+
+### Mega CTE (Automatic)
+
+Even without batching enabled, Summa automatically combines all per-transaction writes into a single PostgreSQL CTE (Common Table Expression). Instead of 6-7 sequential INSERT statements, every `creditAccount()` / `debitAccount()` executes a single SQL statement that inserts into all tables at once:
+
+```sql
+WITH new_txn AS (INSERT INTO transaction_record ...),
+     new_status AS (INSERT INTO transaction_status ...),
+     new_entry AS (INSERT INTO entry_record ...),
+     new_version AS (INSERT INTO account_balance_version ...),
+     new_event AS (INSERT INTO ledger_event ...),
+     new_outbox AS (INSERT INTO outbox ...)
+SELECT id, created_at FROM new_txn;
+```
+
+This optimization is always active and requires no configuration. It reduces per-transaction round-trips from ~10 to ~3, roughly tripling throughput compared to the sequential approach.
+
+### Streaming Statement Generation
+
+For large statements (10K+ entries), the in-memory generators (`generateStatementPdf`, `generateStatementCsv`) buffer everything before returning. Use the streaming variants to pipe directly to an HTTP response with bounded memory:
+
+```ts
+import { generateStatementPdfStream, generateStatementCsvStream } from "summa/plugins";
+
+// PDF — returns a Readable stream (PDFDocument)
+const pdfStream = await generateStatementPdfStream(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+  dateTo: "2026-02-01",
+});
+pdfStream.pipe(res); // Pipe directly to HTTP response
+
+// CSV — returns an AsyncGenerator<string>
+const csvStream = generateStatementCsvStream(ctx, "user_123", {
+  dateFrom: "2026-01-01",
+});
+for await (const row of csvStream) {
+  res.write(row);
+}
+res.end();
+```
+
+Both stream entries in 500-row batches internally — memory usage stays constant regardless of statement size. See [Statements Plugin](/docs/plugins/statements#streaming-generation) for full API.
 
 ### Background Statement Generation
 
@@ -417,9 +565,201 @@ if (!healthy) {
 }
 ```
 
+## Tier 2: Beyond 40K TPS
+
+The features above (Tier 1) get you to ~40K-60K TPS. Tier 2 removes secondary bottlenecks — outbox polling throughput, event table growth, read/write contention, and reconciliation time — to push beyond 100K TPS with **zero new infrastructure** (still just PostgreSQL + Redis + Node.js).
+
+### Event Store Partitioning
+
+As `ledger_event` grows past 100M rows, sequential scans and index maintenance slow down. PostgreSQL range partitioning splits the table by `created_at` into monthly (or weekly) partitions — queries automatically prune irrelevant partitions.
+
+```ts
+import { createSumma } from "summa";
+import { eventStorePartition } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    eventStorePartition({
+      interval: "monthly",   // or "weekly" for very high volume
+      createAhead: 3,        // pre-create 3 future partitions
+      retainPartitions: 24,  // archive partitions older than 24 months
+    }),
+  ],
+});
+```
+
+Generate the initial migration SQL (does NOT auto-execute):
+
+```bash
+npx summa partition generate --interval monthly
+# Writes: migrations/partition_ledger_event_<timestamp>.sql
+```
+
+Check partition status:
+
+```bash
+npx summa partition status
+# Shows: partitioned (yes/no), child partitions, row counts, sizes
+```
+
+<Callout type="warn" title="Run during a maintenance window">
+  The generated migration renames the existing table, creates the partitioned replacement, and migrates data. Review the SQL carefully and execute during low-traffic periods.
+</Callout>
+
+### Redis Streams Message Queue
+
+The outbox polling pattern tops out at ~20 msg/s. Redis Streams pushes this to 50K-100K msg/s with sub-millisecond latency — using your existing Redis instance.
+
+```bash
+pnpm add @summa/message-queue
+```
+
+```ts
+import { createSumma } from "summa";
+import { outbox } from "summa/plugins";
+import { createRedisStreamsBus } from "@summa/message-queue";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({ messageQueue: bus }),
+  ],
+});
+```
+
+This is a drop-in upgrade — just pass your Redis Streams bus to the `messageQueue` option. All downstream consumers (webhooks, projections, external systems) receive events via Redis Streams consumer groups instead of polling.
+
+See [Message Queue Plugin](/docs/plugins/message-queue) for standalone usage and consumer group configuration.
+
+### CQRS Projections
+
+Separate read and write paths. Writes go to the primary database, reads are served from denormalized projection tables on a read replica — eliminating read/write contention entirely.
+
+```bash
+pnpm add @summa/projections @summa/message-queue
+```
+
+```ts
+import { createSumma } from "summa";
+import { outbox } from "summa/plugins";
+import { createRedisStreamsBus } from "@summa/message-queue";
+import {
+  projectionRunner,
+  AccountBalanceProjection,
+  TransactionHistoryProjection,
+} from "@summa/projections";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({ messageQueue: bus }),
+    projectionRunner(bus, [
+      AccountBalanceProjection,
+      TransactionHistoryProjection,
+    ]),
+  ],
+});
+```
+
+Projections are **eventually consistent** (typically under 5 seconds). For strict consistency, query the primary database directly. For full read/write separation with a dedicated replica:
+
+```ts
+import { createCQRSAdapter } from "@summa/projections";
+
+const cqrs = createCQRSAdapter({
+  readAdapter: replicaAdapter,   // Connected to read replica
+  writeAdapter: primaryAdapter,  // Connected to primary
+});
+```
+
+See [Projections Plugin](/docs/plugins/projections) for custom projections and architecture details.
+
+### Verification Snapshots
+
+Daily reconciliation verifies the entire event hash chain — O(all events). With millions of events, this takes hours. Verification snapshots store the last verified hash per aggregate, reducing verification to O(events since last snapshot).
+
+```ts
+import { createSumma } from "summa";
+import { verificationSnapshots } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    verificationSnapshots({
+      snapshotInterval: "6h",  // Create snapshots every 6 hours
+      batchSize: 500,          // Process 500 aggregates per worker cycle
+    }),
+  ],
+});
+```
+
+| Aggregates | Events | Without snapshots | With snapshots |
+|:---:|:---:|:---:|:---:|
+| 10K | 1M | ~15 min | ~2 min |
+| 100K | 50M | ~14 hours | ~45 min |
+| 1M | 500M | days | ~3 hours |
+
+The `hash-snapshot-creator` worker runs automatically, creating snapshots for aggregates that have accumulated new events since the last snapshot. The reconciliation plugin automatically uses snapshots when available — no configuration changes needed.
+
+See [Verification Snapshots Plugin](/docs/plugins/hash-snapshot) for schema details and verification API.
+
+### Full Tier 2 Setup
+
+Combining all Tier 2 features:
+
+```ts
+import { createSumma, createDrizzleAdapter } from "summa";
+import {
+  outbox, eventStorePartition, verificationSnapshots,
+} from "summa/plugins";
+import { createRedisStreamsBus } from "@summa/message-queue";
+import {
+  projectionRunner,
+  AccountBalanceProjection,
+  TransactionHistoryProjection,
+} from "@summa/projections";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    // Tier 2: Event Store Partitioning
+    eventStorePartition({ interval: "monthly", createAhead: 3 }),
+
+    // Tier 2: Redis Streams (replaces outbox polling)
+    outbox({ messageQueue: bus }),
+
+    // Tier 2: CQRS Projections
+    projectionRunner(bus, [
+      AccountBalanceProjection,
+      TransactionHistoryProjection,
+    ]),
+
+    // Tier 2: Verification Snapshots (faster reconciliation)
+    verificationSnapshots({ snapshotInterval: "6h" }),
+  ],
+});
+```
+
 ## What's Next
 
-For workloads beyond 60,000 TPS, consider:
-- **CQRS** — separate read/write models with materialized views
+With Tier 1 + Tier 2 optimizations, Summa can exceed 100,000 TPS on a single PostgreSQL instance with constant-time query performance regardless of data volume. For workloads beyond that, consider:
 - **Database sharding** — shard by account for horizontal write scaling
-- **Dedicated message queue** — replace outbox polling with Kafka/Redis Streams
+- **Multiple Summa instances** — horizontal scaling with Redis-backed distributed state

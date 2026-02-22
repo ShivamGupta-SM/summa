@@ -17,7 +17,13 @@ import type {
 	TransactionStatus,
 	TransactionType,
 } from "@summa/core";
-import { decodeCursor, encodeCursor, SummaError, TRANSACTION_EVENTS } from "@summa/core";
+import {
+	computeBalanceChecksum,
+	decodeCursor,
+	encodeCursor,
+	SummaError,
+	TRANSACTION_EVENTS,
+} from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 import {
 	runAfterOperationHooks,
@@ -25,10 +31,13 @@ import {
 	runBeforeTransactionHooks,
 } from "../context/hooks.js";
 import { withTransactionTimeout } from "../infrastructure/event-store.js";
+import type { TransactionBatchEngine } from "../plugins/batch-engine.js";
 import { resolveAccountForUpdate } from "./account-manager.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "./idempotency.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import { enforceLimitsWithAccountId } from "./limit-manager.js";
+import { executeMegaCTE, updateDenormalizedCache } from "./mega-cte.js";
 import { creditMultiDestinations } from "./multi-dest-credit.js";
 import type { RawAccountRow, RawTransactionRow } from "./raw-types.js";
 import { rawToTransactionResponse, txnWithStatusSql } from "./sql-helpers.js";
@@ -55,6 +64,8 @@ export async function creditAccount(
 		metadata?: Record<string, unknown>;
 		sourceSystemAccount?: string;
 		idempotencyKey?: string;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -68,17 +79,34 @@ export async function creditAccount(
 	} = params;
 
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
+	const ledgerId = getLedgerId(ctx);
+
+	// --- Batching fast path: delegate to batch engine if enabled ---
+	const batchEngine = (ctx as SummaContext & { batchEngine?: TransactionBatchEngine }).batchEngine;
+	if (ctx.options.advanced.enableBatching && batchEngine) {
+		return batchEngine.submit({
+			type: "credit",
+			holderId,
+			amount,
+			reference,
+			description,
+			category,
+			metadata,
+			systemAccount: sourceSystemAccount,
+			allowOverdraft: false,
+			idempotencyKey: params.idempotencyKey,
+		});
+	}
 
 	const hookParams = { type: "credit" as const, amount, reference, holderId, category, ctx };
 	await runBeforeTransactionHooks(ctx, hookParams);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		const t = createTableResolver(ctx.options.schema);
-
 		// Idempotency check INSIDE transaction for atomicity
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
+			ledgerId,
 		});
 		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as LedgerTransaction;
@@ -87,6 +115,7 @@ export async function creditAccount(
 		// Get destination account (FOR UPDATE to prevent stale reads)
 		const destAccount = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -103,113 +132,154 @@ export async function creditAccount(
 			category,
 		});
 
-		// Get source system account
+		// Get source system account (cached — no DB hit after first call)
 		const sourceSystemId = await resolveSystemAccountInTx(
 			tx,
 			sourceSystemAccount,
 			ctx.options.schema,
+			ledgerId,
 		);
 
 		const correlationId = randomUUID();
 		const acctCurrency = destAccount.currency;
 
-		// Create transaction record (IMMUTABLE — no status)
-		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, destination_account_id, source_system_account_id, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING *`,
-			[
-				"credit",
-				reference,
-				amount,
-				acctCurrency,
-				description,
-				destAccount.id,
-				sourceSystemId,
-				correlationId,
-				JSON.stringify({ ...metadata, category }),
-			],
-		);
-		const txnRecord = txnRecordRows[0];
-		if (!txnRecord) throw SummaError.internal("Failed to insert credit transaction");
+		// Pre-compute balance update in-memory
+		const balanceBefore = Number(destAccount.balance);
+		const balanceAfter = balanceBefore + amount;
+		const newVersion = Number(destAccount.version) + 1;
+		const newCreditBalance = Number(destAccount.credit_balance) + amount;
+		const newDebitBalance = Number(destAccount.debit_balance);
+		const fullMetadata = { ...metadata, category };
 
-		// INSERT initial status (posted immediately, APPEND-ONLY)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[txnRecord.id, "posted"],
-		);
+		const eventData = {
+			reference,
+			amount,
+			source: sourceSystemAccount,
+			destination: holderId,
+			category,
+		};
 
-		// Credit destination account + update balance (skipLock: already locked above)
-		await insertEntryAndUpdateBalance({
+		// Execute ALL writes in a single mega CTE (1 DB round-trip)
+		const megaResult = await executeMegaCTE({
 			tx,
-			transactionId: txnRecord.id,
-			accountId: destAccount.id,
-			entryType: "CREDIT",
+			schema: ctx.options.schema,
+			ledgerId,
+			hmacSecret: ctx.options.advanced.hmacSecret,
+
+			txnType: "credit",
+			reference,
 			amount,
 			currency: acctCurrency,
-			isHotAccount: false,
-			skipLock: true,
-			updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
+			description,
+			metadata: fullMetadata,
+			correlationId,
+
+			sourceAccountId: null,
+			destinationAccountId: destAccount.id,
+			sourceSystemAccountId: sourceSystemId,
+			destinationSystemAccountId: null,
+
+			userAccountId: destAccount.id,
+			userEntryType: "CREDIT",
+			balanceBefore,
+			balanceAfter,
+			newVersion,
+			newCreditBalance,
+			newDebitBalance,
+			pendingDebit: Number(destAccount.pending_debit),
+			pendingCredit: Number(destAccount.pending_credit),
+			accountStatus: destAccount.status,
+			freezeReason: destAccount.freeze_reason ?? null,
+			frozenAt: destAccount.frozen_at ?? null,
+			frozenBy: destAccount.frozen_by ?? null,
+			closedAt: destAccount.closed_at ?? null,
+			closedBy: destAccount.closed_by ?? null,
+			closureReason: destAccount.closure_reason ?? null,
+
+			systemAccountId: sourceSystemId,
+			systemEntryType: "DEBIT",
+
+			enableEventSourcing: ctx.options.advanced.enableEventSourcing !== false,
+			eventData,
+
+			outboxTopic: "ledger-account-credited",
+			outboxPayload: {
+				accountId: destAccount.id,
+				holderId,
+				holderType: destAccount.holder_type,
+				amount,
+				transactionId: "", // filled by CTE via new_txn.id
+				reference,
+				category,
+			},
+
+			velocityAccountId: destAccount.id,
+			velocityTxnType: "credit",
+
+			idempotencyKey: params.idempotencyKey,
+			idempotencyResultData: undefined, // set below after building response
+			idempotencyTTLSeconds: Math.ceil((ctx.options.advanced.idempotencyTTL ?? 86_400_000) / 1000),
+
+			effectiveDate: params.effectiveDate ?? null,
 		});
 
-		// Batch independent side effects in parallel
-		await Promise.all([
-			// Debit entry for system account (hot)
-			insertEntryAndUpdateBalance({
-				tx,
-				transactionId: txnRecord.id,
-				systemAccountId: sourceSystemId,
-				entryType: "DEBIT",
+		// Update denormalized cache (separate query — trigger blocks CTE-based updates)
+		if (ctx.options.advanced.useDenormalizedBalance) {
+			const hmacSecret = ctx.options.advanced.hmacSecret;
+			const checksum = computeBalanceChecksum(
+				{
+					balance: balanceAfter,
+					creditBalance: newCreditBalance,
+					debitBalance: newDebitBalance,
+					pendingDebit: Number(destAccount.pending_debit),
+					pendingCredit: Number(destAccount.pending_credit),
+					lockVersion: newVersion,
+				},
+				hmacSecret,
+			);
+			await updateDenormalizedCache(tx, ctx.options.schema, destAccount.id, {
+				balance: balanceAfter,
+				creditBalance: newCreditBalance,
+				debitBalance: newDebitBalance,
+				pendingDebit: Number(destAccount.pending_debit),
+				pendingCredit: Number(destAccount.pending_credit),
+				version: newVersion,
+				status: destAccount.status,
+				checksum,
+			});
+		}
+
+		// Build response from in-memory values (no extra DB read needed)
+		const response: LedgerTransaction = rawToTransactionResponse(
+			{
+				id: megaResult.transactionId,
+				reference,
 				amount,
 				currency: acctCurrency,
-				isHotAccount: true,
-			}),
-			insertHotAccountEntry(tx, ctx.options.schema, {
-				systemAccountId: sourceSystemId,
-				amount,
-				entryType: "DEBIT",
-				transactionId: txnRecord.id,
-			}),
-		]);
-
-		const response = rawToTransactionResponse(
-			{ ...txnRecord, status: "posted", posted_at: new Date() },
+				description,
+				source_account_id: null,
+				destination_account_id: destAccount.id,
+				source_system_account_id: sourceSystemId,
+				destination_system_account_id: null,
+				correlation_id: correlationId,
+				is_reversal: false,
+				is_hold: false,
+				parent_id: null,
+				meta_data: fullMetadata,
+				created_at: megaResult.createdAt,
+				status: "posted",
+				posted_at: megaResult.createdAt,
+				committed_amount: null,
+				refunded_amount: 0,
+				hold_expires_at: null,
+				processing_at: null,
+				type: "credit",
+				ledger_id: ledgerId,
+				effective_date: megaResult.effectiveDate,
+			} as RawTransactionRow,
 			"credit",
 			acctCurrency,
 		);
-		await batchTransactionSideEffects({
-			tx,
-			ctx,
-			txnRecord,
-			correlationId,
-			reference,
-			category,
-			eventData: {
-				reference,
-				amount,
-				source: sourceSystemAccount,
-				destination: holderId,
-				category,
-			},
-			outboxEvents: [
-				{
-					topic: "ledger-account-credited",
-					payload: {
-						accountId: destAccount.id,
-						holderId,
-						holderType: destAccount.holder_type,
-						amount,
-						transactionId: txnRecord.id,
-						reference,
-						category,
-					},
-				},
-			],
-			logEntries: [{ accountId: destAccount.id, txnType: "credit", amount }],
-			idempotencyKey: params.idempotencyKey,
-			responseForIdempotency: response,
-		});
 
 		return response;
 	});
@@ -238,6 +308,8 @@ export async function debitAccount(
 		destinationSystemAccount?: string;
 		allowOverdraft?: boolean;
 		idempotencyKey?: string;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -252,16 +324,33 @@ export async function debitAccount(
 	} = params;
 
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
+	const ledgerId = getLedgerId(ctx);
+
+	// --- Batching fast path: delegate to batch engine if enabled ---
+	const batchEngine = (ctx as SummaContext & { batchEngine?: TransactionBatchEngine }).batchEngine;
+	if (ctx.options.advanced.enableBatching && batchEngine) {
+		return batchEngine.submit({
+			type: "debit",
+			holderId,
+			amount,
+			reference,
+			description,
+			category,
+			metadata,
+			systemAccount: destinationSystemAccount,
+			allowOverdraft,
+			idempotencyKey: params.idempotencyKey,
+		});
+	}
 
 	const hookParams = { type: "debit" as const, amount, reference, holderId, category, ctx };
 	await runBeforeTransactionHooks(ctx, hookParams);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		const t = createTableResolver(ctx.options.schema);
-
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
+			ledgerId,
 		});
 		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as LedgerTransaction;
@@ -270,6 +359,7 @@ export async function debitAccount(
 		// Get source account (FOR UPDATE to prevent stale balance reads)
 		const sourceAccount = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -292,112 +382,154 @@ export async function debitAccount(
 			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
 		}
 
-		// Get destination system account
+		// Get destination system account (cached — no DB hit after first call)
 		const destSystemId = await resolveSystemAccountInTx(
 			tx,
 			destinationSystemAccount,
 			ctx.options.schema,
+			ledgerId,
 		);
 
-		const acctCurrency = sourceAccount.currency;
 		const correlationId = randomUUID();
+		const acctCurrency = sourceAccount.currency;
 
-		// Create transaction record (IMMUTABLE — no status)
-		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_system_account_id, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING *`,
-			[
-				"debit",
-				reference,
-				amount,
-				acctCurrency,
-				description,
-				sourceAccount.id,
-				destSystemId,
-				correlationId,
-				JSON.stringify({ ...metadata, category }),
-			],
-		);
-		const txnRecord = txnRecordRows[0];
-		if (!txnRecord) throw SummaError.internal("Failed to insert debit transaction");
+		// Pre-compute balance update in-memory
+		const balanceBefore = Number(sourceAccount.balance);
+		const balanceAfter = balanceBefore - amount;
+		const newVersion = Number(sourceAccount.version) + 1;
+		const newCreditBalance = Number(sourceAccount.credit_balance);
+		const newDebitBalance = Number(sourceAccount.debit_balance) + amount;
+		const fullMetadata = { ...metadata, category };
 
-		// INSERT initial status (posted immediately, APPEND-ONLY)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[txnRecord.id, "posted"],
-		);
+		const eventData = {
+			reference,
+			amount,
+			source: holderId,
+			destination: destinationSystemAccount,
+			category,
+		};
 
-		// Debit source account + update balance (skipLock: already locked above)
-		await insertEntryAndUpdateBalance({
+		// Execute ALL writes in a single mega CTE (1 DB round-trip)
+		const megaResult = await executeMegaCTE({
 			tx,
-			transactionId: txnRecord.id,
-			accountId: sourceAccount.id,
-			entryType: "DEBIT",
+			schema: ctx.options.schema,
+			ledgerId,
+			hmacSecret: ctx.options.advanced.hmacSecret,
+
+			txnType: "debit",
+			reference,
 			amount,
 			currency: acctCurrency,
-			isHotAccount: false,
-			skipLock: true,
-			updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
+			description,
+			metadata: fullMetadata,
+			correlationId,
+
+			sourceAccountId: sourceAccount.id,
+			destinationAccountId: null,
+			sourceSystemAccountId: null,
+			destinationSystemAccountId: destSystemId,
+
+			userAccountId: sourceAccount.id,
+			userEntryType: "DEBIT",
+			balanceBefore,
+			balanceAfter,
+			newVersion,
+			newCreditBalance,
+			newDebitBalance,
+			pendingDebit: Number(sourceAccount.pending_debit),
+			pendingCredit: Number(sourceAccount.pending_credit),
+			accountStatus: sourceAccount.status,
+			freezeReason: sourceAccount.freeze_reason ?? null,
+			frozenAt: sourceAccount.frozen_at ?? null,
+			frozenBy: sourceAccount.frozen_by ?? null,
+			closedAt: sourceAccount.closed_at ?? null,
+			closedBy: sourceAccount.closed_by ?? null,
+			closureReason: sourceAccount.closure_reason ?? null,
+
+			systemAccountId: destSystemId,
+			systemEntryType: "CREDIT",
+
+			enableEventSourcing: ctx.options.advanced.enableEventSourcing !== false,
+			eventData,
+
+			outboxTopic: "ledger-account-debited",
+			outboxPayload: {
+				accountId: sourceAccount.id,
+				holderId,
+				holderType: sourceAccount.holder_type,
+				amount,
+				transactionId: "", // filled by CTE via new_txn.id
+				reference,
+				category,
+			},
+
+			velocityAccountId: sourceAccount.id,
+			velocityTxnType: "debit",
+
+			idempotencyKey: params.idempotencyKey,
+			idempotencyResultData: undefined, // set below after building response
+			idempotencyTTLSeconds: Math.ceil((ctx.options.advanced.idempotencyTTL ?? 86_400_000) / 1000),
+
+			effectiveDate: params.effectiveDate ?? null,
 		});
 
-		// Batch entry + hot account in parallel
-		await Promise.all([
-			insertEntryAndUpdateBalance({
-				tx,
-				transactionId: txnRecord.id,
-				systemAccountId: destSystemId,
-				entryType: "CREDIT",
+		// Update denormalized cache (separate query — trigger blocks CTE-based updates)
+		if (ctx.options.advanced.useDenormalizedBalance) {
+			const hmacSecret = ctx.options.advanced.hmacSecret;
+			const checksum = computeBalanceChecksum(
+				{
+					balance: balanceAfter,
+					creditBalance: newCreditBalance,
+					debitBalance: newDebitBalance,
+					pendingDebit: Number(sourceAccount.pending_debit),
+					pendingCredit: Number(sourceAccount.pending_credit),
+					lockVersion: newVersion,
+				},
+				hmacSecret,
+			);
+			await updateDenormalizedCache(tx, ctx.options.schema, sourceAccount.id, {
+				balance: balanceAfter,
+				creditBalance: newCreditBalance,
+				debitBalance: newDebitBalance,
+				pendingDebit: Number(sourceAccount.pending_debit),
+				pendingCredit: Number(sourceAccount.pending_credit),
+				version: newVersion,
+				status: sourceAccount.status,
+				checksum,
+			});
+		}
+
+		// Build response from in-memory values (no extra DB read needed)
+		const response: LedgerTransaction = rawToTransactionResponse(
+			{
+				id: megaResult.transactionId,
+				reference,
 				amount,
 				currency: acctCurrency,
-				isHotAccount: true,
-			}),
-			insertHotAccountEntry(tx, ctx.options.schema, {
-				systemAccountId: destSystemId,
-				amount,
-				entryType: "CREDIT",
-				transactionId: txnRecord.id,
-			}),
-		]);
-
-		const response = rawToTransactionResponse(
-			{ ...txnRecord, status: "posted", posted_at: new Date() },
+				description,
+				source_account_id: sourceAccount.id,
+				destination_account_id: null,
+				source_system_account_id: null,
+				destination_system_account_id: destSystemId,
+				correlation_id: correlationId,
+				is_reversal: false,
+				is_hold: false,
+				parent_id: null,
+				meta_data: fullMetadata,
+				created_at: megaResult.createdAt,
+				status: "posted",
+				posted_at: megaResult.createdAt,
+				committed_amount: null,
+				refunded_amount: 0,
+				hold_expires_at: null,
+				processing_at: null,
+				type: "debit",
+				ledger_id: ledgerId,
+				effective_date: megaResult.effectiveDate,
+			} as RawTransactionRow,
 			"debit",
 			acctCurrency,
 		);
-		await batchTransactionSideEffects({
-			tx,
-			ctx,
-			txnRecord,
-			correlationId,
-			reference,
-			category,
-			eventData: {
-				reference,
-				amount,
-				source: holderId,
-				destination: destinationSystemAccount,
-				category,
-			},
-			outboxEvents: [
-				{
-					topic: "ledger-account-debited",
-					payload: {
-						accountId: sourceAccount.id,
-						holderId,
-						holderType: sourceAccount.holder_type,
-						amount,
-						transactionId: txnRecord.id,
-						reference,
-						category,
-					},
-				},
-			],
-			logEntries: [{ accountId: sourceAccount.id, txnType: "debit", amount }],
-			idempotencyKey: params.idempotencyKey,
-			responseForIdempotency: response,
-		});
 
 		return response;
 	});
@@ -427,6 +559,8 @@ export async function transfer(
 		idempotencyKey?: string;
 		/** Exchange rate for cross-currency transfers (rate * 1_000_000 for 6 decimal precision). Required when source and destination currencies differ. */
 		exchangeRate?: number;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -440,6 +574,7 @@ export async function transfer(
 	} = params;
 
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
+	const ledgerId = getLedgerId(ctx);
 
 	if (sourceHolderId === destinationHolderId) {
 		throw SummaError.invalidArgument("Cannot transfer to the same account");
@@ -462,6 +597,7 @@ export async function transfer(
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
+			ledgerId,
 		});
 		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as LedgerTransaction;
@@ -471,8 +607,8 @@ export async function transfer(
 		// to prevent deadlocks when concurrent transfers go A->B and B->A.
 		const lookupRows = await tx.raw<Pick<RawAccountRow, "id" | "holder_id">>(
 			`SELECT id, holder_id FROM ${t("account_balance")}
-       WHERE holder_id IN ($1, $2)`,
-			[sourceHolderId, destinationHolderId],
+       WHERE holder_id IN ($1, $2) AND ledger_id = $3`,
+			[sourceHolderId, destinationHolderId, ledgerId],
 		);
 
 		const srcPreview = lookupRows.find((r) => r.holder_id === sourceHolderId);
@@ -483,13 +619,22 @@ export async function transfer(
 
 		// Lock both in deterministic ID order to prevent deadlocks.
 		// Lock immutable parents, then read latest version via LATERAL JOIN.
+		// In optimistic mode: skip locks, read without FOR UPDATE — rely on version constraint.
 		const [firstId, secondId] = [srcPreview.id, destPreview.id].sort();
-		const lockSuffix =
-			ctx.options.advanced.lockMode === "nowait" ? "FOR UPDATE NOWAIT" : "FOR UPDATE";
+		const isOptimistic = ctx.options.advanced.lockMode === "optimistic";
+		const lockSuffix = isOptimistic
+			? ""
+			: ctx.options.advanced.lockMode === "nowait"
+				? "FOR UPDATE NOWAIT"
+				: "FOR UPDATE";
 
-		// Lock both
-		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [firstId]);
-		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [secondId]);
+		// Lock both (skipped in optimistic mode)
+		if (!isOptimistic) {
+			await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [firstId]);
+			await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [
+				secondId,
+			]);
+		}
 
 		// Read combined rows (static + latest version)
 		const allRows = await tx.raw<RawAccountRow>(
@@ -576,8 +721,8 @@ export async function transfer(
 			? { ...metadata, category, exchangeRate: resolvedExchangeRate, crossCurrency: true }
 			: { ...metadata, category };
 		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, meta_data, ledger_id, effective_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, NOW()))
        RETURNING *`,
 			[
 				"transfer",
@@ -589,6 +734,8 @@ export async function transfer(
 				dest.id,
 				correlationId,
 				JSON.stringify(txnMeta),
+				ledgerId,
+				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRecordRows[0];
@@ -651,6 +798,7 @@ export async function transfer(
 			correlationId,
 			reference,
 			category,
+			ledgerId,
 			eventData: {
 				reference,
 				amount,
@@ -720,6 +868,8 @@ export async function multiTransfer(
 		category?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -733,6 +883,7 @@ export async function multiTransfer(
 	} = params;
 
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
+	const ledgerId = getLedgerId(ctx);
 
 	if (!destinations || destinations.length === 0) {
 		throw SummaError.invalidArgument("At least one destination is required");
@@ -754,6 +905,7 @@ export async function multiTransfer(
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
+			ledgerId,
 		});
 		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as LedgerTransaction;
@@ -762,6 +914,7 @@ export async function multiTransfer(
 		// Lock source account
 		const source = await resolveAccountForUpdate(
 			tx,
+			ledgerId,
 			sourceHolderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
@@ -789,8 +942,8 @@ export async function multiTransfer(
 
 		// Create transaction record (IMMUTABLE — no status)
 		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, correlation_id, meta_data, ledger_id, effective_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, NOW()))
        RETURNING *`,
 			[
 				"transfer",
@@ -801,6 +954,8 @@ export async function multiTransfer(
 				source.id,
 				correlationId,
 				JSON.stringify({ ...metadata, category, destinations }),
+				ledgerId,
+				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRecordRows[0];
@@ -886,6 +1041,7 @@ export async function multiTransfer(
 			correlationId,
 			reference,
 			category,
+			ledgerId,
 			eventData: {
 				reference,
 				amount,
@@ -918,16 +1074,16 @@ export async function getTransaction(
 	ctx: SummaContext,
 	transactionId: string,
 ): Promise<LedgerTransaction> {
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawTransactionRow>(
-		`${txnWithStatusSql(t)} WHERE tr.id = $1 LIMIT 1`,
-		[transactionId],
+	const rows = await ctx.readAdapter.raw<RawTransactionRow>(
+		`${txnWithStatusSql(t)} WHERE tr.id = $1 AND tr.ledger_id = $2 LIMIT 1`,
+		[transactionId, ledgerId],
 	);
 
 	const txn = rows[0];
 	if (!txn) throw SummaError.notFound("Transaction not found");
 
-	// Prefer the explicit type column; fall back to inference for legacy rows
 	const type = inferTransactionType(txn);
 
 	return rawToTransactionResponse(txn, type, txn.currency);
@@ -986,12 +1142,13 @@ export async function listAccountTransactions(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 
-	// First find the account
-	const accountRows = await ctx.adapter.raw<{ id: string }>(
-		`SELECT id FROM ${t("account_balance")} WHERE holder_id = $1 LIMIT 1`,
-		[params.holderId],
+	// First find the account (read-only — use replica)
+	const accountRows = await ctx.readAdapter.raw<{ id: string }>(
+		`SELECT id FROM ${t("account_balance")} WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
+		[params.holderId, ledgerId],
 	);
 
 	if (!accountRows[0]) throw SummaError.notFound("Account not found");
@@ -1114,7 +1271,7 @@ export async function listAccountTransactions(
 		pIdx += 2;
 		filterParams.push(perPage + 1);
 
-		const rows = await ctx.adapter.raw<RawTransactionRow>(
+		const rows = await ctx.readAdapter.raw<RawTransactionRow>(
 			`SELECT * FROM (
            ${unionQuery}
          ) combined
@@ -1135,14 +1292,14 @@ export async function listAccountTransactions(
 		return { transactions: data, hasMore, total: -1, nextCursor };
 	}
 
-	// Traditional OFFSET/LIMIT (backward compatible)
+	// OFFSET/LIMIT pagination
 	const page = Math.max(1, params.page ?? 1);
 	const offset = (page - 1) * perPage;
 
 	filterParams.push(perPage + 1);
 	filterParams.push(offset);
 
-	const rows = await ctx.adapter.raw<RawTransactionRow & { total_count: number }>(
+	const rows = await ctx.readAdapter.raw<RawTransactionRow & { total_count: number }>(
 		`SELECT *, COUNT(*) OVER()::int AS total_count FROM (
        ${unionQuery}
      ) combined
@@ -1178,6 +1335,7 @@ export async function refundTransaction(
 	},
 ): Promise<LedgerTransaction> {
 	const { transactionId, reason, amount: refundAmount } = params;
+	const ledgerId = getLedgerId(ctx);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
@@ -1214,6 +1372,7 @@ export async function refundTransaction(
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference: refundReference,
+			ledgerId,
 		});
 		if (idem.alreadyProcessed && isValidCachedResult(idem.cachedResult)) {
 			return idem.cachedResult as LedgerTransaction;
@@ -1232,8 +1391,8 @@ export async function refundTransaction(
 
 		// Create reversal transaction record (IMMUTABLE — no status)
 		const reversalRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
 			[
 				"correction",
@@ -1249,6 +1408,7 @@ export async function refundTransaction(
 				true,
 				correlationId,
 				JSON.stringify({ reason, originalTransactionId: transactionId }),
+				ledgerId,
 			],
 		);
 		const reversal = reversalRows[0];
@@ -1383,6 +1543,7 @@ export async function refundTransaction(
 			correlationId,
 			reference: reversal.reference,
 			category: "refund",
+			ledgerId,
 			eventType: TRANSACTION_EVENTS.REVERSED,
 			eventAggregateId: original.id,
 			eventData: {
@@ -1412,26 +1573,7 @@ export async function refundTransaction(
 // HELPERS
 // =============================================================================
 
-/**
- * Determines transaction type from stored `type` column, falling back to
- * inference from account IDs / metadata for legacy rows created before
- * the explicit type column was populated.
- */
+/** Read the transaction type from the stored `type` column. */
 function inferTransactionType(txn: RawTransactionRow): TransactionType {
-	// Prefer the explicit type column if present
-	if (txn.type && txn.type !== "") {
-		return txn.type as TransactionType;
-	}
-
-	// Legacy fallback: infer from metadata and account IDs
-	const meta = (txn.meta_data ?? {}) as Record<string, unknown>;
-	const metaType = meta.type as string | undefined;
-
-	if (metaType === "correction") return "correction";
-	if (metaType === "adjustment") return "adjustment";
-	if (metaType === "journal") return "journal";
-	if (txn.source_account_id && txn.destination_account_id) return "transfer";
-	if (txn.source_account_id && !!meta.destinations) return "transfer";
-	if (txn.source_account_id) return "debit";
-	return "credit";
+	return (txn.type ?? "credit") as TransactionType;
 }

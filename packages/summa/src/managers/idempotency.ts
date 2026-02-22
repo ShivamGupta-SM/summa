@@ -26,51 +26,78 @@ import { createTableResolver } from "@summa/core/db";
 export async function checkIdempotencyKeyInTx(
 	tx: SummaTransactionAdapter,
 	params: {
+		ledgerId: string;
 		idempotencyKey?: string;
 		reference: string;
 	},
 ): Promise<{ alreadyProcessed: boolean; cachedResult?: unknown }> {
 	const t = createTableResolver(tx.options?.schema ?? "summa");
-	// Check idempotency key first
+
 	if (params.idempotencyKey) {
-		const existingRows = await tx.raw<{
-			key: string;
-			reference: string;
-			result_data: unknown;
-			expires_at: string | Date;
+		// Combined CTE: check idempotency key + reference in a single round-trip
+		const rows = await tx.raw<{
+			idem_key: string | null;
+			idem_reference: string | null;
+			idem_result_data: unknown;
+			idem_expires_at: string | Date | null;
+			existing_txn_id: string | null;
 		}>(
-			`SELECT key, reference, result_data, expires_at
-       FROM ${t("idempotency_key")}
-       WHERE key = $1
-       LIMIT 1`,
-			[params.idempotencyKey],
+			`WITH idem AS (
+				SELECT key, reference, result_data, expires_at
+				FROM ${t("idempotency_key")}
+				WHERE ledger_id = $1 AND key = $2
+				LIMIT 1
+			),
+			ref_check AS (
+				SELECT id FROM ${t("transaction_record")}
+				WHERE ledger_id = $1 AND reference = $3
+				LIMIT 1
+			)
+			SELECT
+				idem.key AS idem_key,
+				idem.reference AS idem_reference,
+				idem.result_data AS idem_result_data,
+				idem.expires_at AS idem_expires_at,
+				ref_check.id AS existing_txn_id
+			FROM (SELECT 1) AS _
+			LEFT JOIN idem ON true
+			LEFT JOIN ref_check ON true`,
+			[params.ledgerId, params.idempotencyKey, params.reference],
 		);
 
-		const existing = existingRows[0];
-		if (existing) {
-			if (new Date(existing.expires_at) < new Date()) {
-				// Key expired -- skip it (cleanup handled by cron, not hot path)
-			} else {
-				// Key is valid -- return cached response regardless of reference
-				return {
-					alreadyProcessed: true,
-					cachedResult: existing.result_data,
-				};
+		const row = rows[0];
+		if (row) {
+			// Check idempotency key first
+			if (row.idem_key && row.idem_expires_at) {
+				if (new Date(row.idem_expires_at) >= new Date()) {
+					return {
+						alreadyProcessed: true,
+						cachedResult: row.idem_result_data,
+					};
+				}
+				// Key expired -- fall through to reference check
+			}
+
+			// Check reference (permanent duplicate detection)
+			if (row.existing_txn_id) {
+				throw SummaError.conflict(
+					`Transaction with reference '${params.reference}' already exists`,
+				);
 			}
 		}
+
+		return { alreadyProcessed: false };
 	}
 
-	// Check reference (permanent duplicate detection).
-	// A duplicate reference without a matching idempotency key is an error.
-	const existingTxRows = await tx.raw<Record<string, unknown>>(
-		`SELECT * FROM ${t("transaction_record")}
-     WHERE reference = $1
+	// No idempotency key — only check reference (single query, no CTE needed)
+	const existingTxRows = await tx.raw<{ id: string }>(
+		`SELECT id FROM ${t("transaction_record")}
+     WHERE ledger_id = $1 AND reference = $2
      LIMIT 1`,
-		[params.reference],
+		[params.ledgerId, params.reference],
 	);
 
-	const existingTx = existingTxRows[0];
-	if (existingTx) {
+	if (existingTxRows[0]) {
 		throw SummaError.conflict(`Transaction with reference '${params.reference}' already exists`);
 	}
 
@@ -97,6 +124,7 @@ export function isValidCachedResult(result: unknown): boolean {
 export async function saveIdempotencyKeyInTx(
 	tx: SummaTransactionAdapter,
 	params: {
+		ledgerId: string;
 		key: string;
 		reference: string;
 		resultEventId?: string;
@@ -107,13 +135,14 @@ export async function saveIdempotencyKeyInTx(
 	const t = createTableResolver(tx.options?.schema ?? "summa");
 	const ttlSeconds = Math.ceil((params.ttlMs ?? 86_400_000) / 1000);
 	await tx.raw(
-		`INSERT INTO ${t("idempotency_key")} (key, reference, result_event_id, result_data, expires_at)
-     VALUES ($1, $2, $3, $4, NOW() + INTERVAL '1 second' * $5)
-     ON CONFLICT (key) DO UPDATE
-     SET result_data = $4,
-         reference = $2,
-         expires_at = NOW() + INTERVAL '1 second' * $5`,
+		`INSERT INTO ${t("idempotency_key")} (ledger_id, key, reference, result_event_id, result_data, expires_at)
+     VALUES ($1, $2, $3, $4, $5, NOW() + INTERVAL '1 second' * $6)
+     ON CONFLICT (ledger_id, key) DO UPDATE
+     SET result_data = $5,
+         reference = $3,
+         expires_at = NOW() + INTERVAL '1 second' * $6`,
 		[
+			params.ledgerId,
 			params.key,
 			params.reference,
 			params.resultEventId ?? null,

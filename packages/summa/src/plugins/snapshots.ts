@@ -13,8 +13,9 @@
 //
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import type { SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -36,9 +37,42 @@ const BATCH_SIZE = 500;
 // PLUGIN FACTORY
 // =============================================================================
 
+// =============================================================================
+// SCHEMA
+// =============================================================================
+
+const snapshotSchema: Record<string, TableDefinition> = {
+	account_snapshot: {
+		columns: {
+			id: { type: "uuid", primaryKey: true, notNull: true },
+			account_id: { type: "uuid", notNull: true },
+			snapshot_date: { type: "text", notNull: true },
+			balance: { type: "bigint", notNull: true },
+			credit_balance: { type: "bigint", notNull: true, default: "0" },
+			debit_balance: { type: "bigint", notNull: true, default: "0" },
+			pending_credit: { type: "bigint", notNull: true, default: "0" },
+			pending_debit: { type: "bigint", notNull: true, default: "0" },
+			available_balance: { type: "bigint", notNull: true, default: "0" },
+			currency: { type: "text", notNull: true },
+			account_status: { type: "text", notNull: true, default: "'active'" },
+			checkpoint_hash: { type: "text" },
+			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+		indexes: [
+			{
+				name: "uq_account_snapshot_account_date",
+				columns: ["account_id", "snapshot_date"],
+				unique: true,
+			},
+		],
+	},
+};
+
 export function snapshots(): SummaPlugin {
 	return {
 		id: "snapshots",
+
+		schema: snapshotSchema,
 
 		workers: [
 			{
@@ -62,6 +96,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 	const today = new Date();
 	const snapshotDate = toDateString(today);
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 
 	ctx.logger.info("Daily snapshot starting", { date: snapshotDate });
 
@@ -71,9 +106,10 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 	}>(
 		`SELECT block_hash
 		 FROM ${t("block_checkpoint")}
+		 WHERE ledger_id = $1
 		 ORDER BY block_sequence DESC
 		 LIMIT 1`,
-		[],
+		[ledgerId],
 	);
 
 	const checkpointHash = blockRows[0]?.block_hash ?? null;
@@ -135,10 +171,11 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 			`SELECT id, holder_id, balance, credit_balance, debit_balance,
 			        pending_credit, pending_debit, currency, status
 			 FROM ${t("account_balance")}
-			 WHERE id > $1
+			 WHERE ledger_id = $1
+			   AND id > $2
 			 ORDER BY id ASC
-			 LIMIT $2`,
-			[lastAccountId, BATCH_SIZE],
+			 LIMIT $3`,
+			[ledgerId, lastAccountId, BATCH_SIZE],
 		);
 
 		if (accountBatch.length === 0) break;

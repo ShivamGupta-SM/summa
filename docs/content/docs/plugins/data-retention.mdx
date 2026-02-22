@@ -6,7 +6,7 @@ icon: Clock
 
 ## Overview
 
-The data retention plugin consolidates all data cleanup into a single, configurable policy. Instead of scattered cleanup workers in individual plugins (maintenance, audit-log, hot-accounts), this plugin provides a unified configuration point for operators to manage data lifecycle across the entire ledger.
+The data retention plugin manages data lifecycle for plugin-owned tables. Core cleanup (idempotency keys, worker leases) is handled by core workers automatically. This plugin provides configurable retention policies for audit logs, hot account entries, velocity logs, and FX quotes.
 
 ## Setup
 
@@ -19,42 +19,40 @@ const summa = createSumma({
   currency: "USD",
   plugins: [
     dataRetention({
-      idempotencyKeys: "24h",
-      processedOutbox: "7d",
-      hotAccountEntries: "24h",
       auditLogs: "7y",
+      hotAccountEntries: "24h",
       velocityLogs: "90d",
       fxQuotes: "30d",
-      events: "365d",
     }),
   ],
 });
 ```
 
+<Callout type="info">
+  Core-owned tables (idempotency keys, worker leases) are cleaned automatically by core workers. Processed event cleanup is handled by the outbox plugin. This plugin manages retention for plugin-owned tables only.
+</Callout>
+
 ## Configuration
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `idempotencyKeys` | `string` | `"24h"` | Retention for expired idempotency keys |
-| `processedOutbox` | `string` | `"7d"` | Retention for processed outbox entries |
-| `hotAccountEntries` | `string` | `"24h"` | Retention for flushed hot account entries |
+| `velocityLogs` | `string` | `"30d"` | Retention for velocity/rate-limit logs (always active) |
 | `auditLogs` | `string` | — | Retention for audit log entries |
-| `velocityLogs` | `string` | — | Retention for velocity limit log entries |
+| `hotAccountEntries` | `string` | — | Retention for flushed hot account entries |
 | `fxQuotes` | `string` | — | Retention for expired FX rate quotes |
-| `events` | `string` | — | Retention for event log entries |
 | `interval` | `string` | `"6h"` | How often the cleanup worker runs |
 
 Duration strings support: `"1h"`, `"24h"`, `"7d"`, `"30d"`, `"90d"`, `"365d"`, `"7y"`.
 
-Only configured policies are enforced — if a retention period is not set, that table is not cleaned up by this plugin.
+Only configured policies are enforced — if a retention period is not set, that table is not cleaned up by this plugin. The `velocityLogs` policy is always active with a default of `"30d"`.
 
 ## How It Works
 
 A single background worker runs on the configured `interval` (default: every 6 hours) and executes DELETE queries for each configured retention policy:
 
 ```sql
-DELETE FROM "summa"."idempotency_key"
-WHERE created_at < NOW() - INTERVAL '24 hours'
+DELETE FROM "summa"."rate_limit_log"
+WHERE created_at < NOW() - INTERVAL '30 days'
 ```
 
 The worker uses a distributed lease to prevent duplicate runs in multi-instance deployments.
@@ -70,12 +68,10 @@ curl http://localhost:3000/api/ledger/retention/status
 ```json
 {
   "policies": {
-    "idempotencyKeys": { "retention": "24h", "rowCount": 1523 },
-    "processedOutbox": { "retention": "7d", "rowCount": 89 },
-    "auditLogs": { "retention": "7y", "rowCount": 45230 }
+    "rate_limit_log": { "retention": "30d", "rowCount": 1523 },
+    "audit_log": { "retention": "7y", "rowCount": 45230 }
   },
-  "lastRun": "2026-02-21T04:00:00.000Z",
-  "nextRun": "2026-02-21T10:00:00.000Z"
+  "interval": "6h"
 }
 ```
 
@@ -83,7 +79,7 @@ curl http://localhost:3000/api/ledger/retention/status
 
 | Worker | Interval | Lease | Description |
 |--------|----------|:-----:|-------------|
-| `data-retention` | Configurable (default: 6h) | Yes | Runs all configured retention policies |
+| `data-retention-cleanup` | Configurable (default: 6h) | Yes | Runs all configured retention policies |
 
 ## API Endpoints
 
@@ -91,22 +87,30 @@ curl http://localhost:3000/api/ledger/retention/status
 |--------|------|-------------|
 | `GET` | `/retention/status` | Current retention status with per-table row counts |
 
-## Relationship to Other Plugins
+## Relationship to Core Workers & Outbox
 
-The data retention plugin is designed to **complement** the maintenance plugin, not replace it:
+This plugin only manages retention for **plugin-owned** tables. Other cleanup is handled by its respective owner:
 
-- **`maintenance()`** handles operational cleanup like expired locks and lease renewals
-- **`dataRetention()`** handles data lifecycle — how long to keep audit logs, events, quotes, etc.
+| Table | Cleaned by | Not this plugin |
+|-------|------------|:---:|
+| `idempotency_key` | [Core worker](/docs/configuration#core-workers) (`core:idempotency-cleanup`) | Yes |
+| `worker_lease` | [Core worker](/docs/configuration#core-workers) (`core:lease-cleanup`) | Yes |
+| `hold` (expiry) | [Core worker](/docs/configuration#core-workers) (`core:hold-expiry`) | Yes |
+| `outbox_event` | [Outbox plugin](/docs/plugins/outbox) (`outbox-cleanup`) | Yes |
+| `processed_event` | [Outbox plugin](/docs/plugins/outbox) (`outbox-cleanup`) | Yes |
+| `rate_limit_log` | **This plugin** (always, default: 30d) | — |
+| `audit_log` | **This plugin** (if `auditLogs` set) | — |
+| `hot_account_entry` | **This plugin** (if `hotAccountEntries` set) | — |
+| `fx_rate_quote` | **This plugin** (if `fxQuotes` set) | — |
 
-For production deployments, use both:
+The principle: **if core writes to a table, core cleans it up**. The outbox plugin owns `processed_event` because it populates that table during event delivery. This plugin handles the remaining plugin-owned tables.
 
 ```ts
 plugins: [
-  maintenance(),          // Operational cleanup
-  dataRetention({         // Data lifecycle
-    idempotencyKeys: "24h",
-    processedOutbox: "7d",
+  dataRetention({         // Data lifecycle for plugin tables
     auditLogs: "7y",
+    hotAccountEntries: "24h",
+    velocityLogs: "30d",
   }),
 ]
 ```

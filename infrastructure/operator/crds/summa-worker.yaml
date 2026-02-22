@@ -1,0 +1,246 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: summaworkers.summa.io
+  labels:
+    app.kubernetes.io/part-of: summa-operator
+spec:
+  group: summa.io
+  names:
+    kind: SummaWorker
+    listKind: SummaWorkerList
+    plural: summaworkers
+    singular: summaworker
+    shortNames:
+      - sw
+    categories:
+      - summa
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >
+            SummaWorker deploys background worker pods that process async tasks
+            for a SummaLedger instance (outbox, hot accounts, reconciliation, etc.).
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - ledgerRef
+                - workers
+              properties:
+                # ─── Ledger Reference ──────────────────────────────
+                ledgerRef:
+                  type: object
+                  required:
+                    - name
+                  description: Reference to the SummaLedger CR this worker pool serves.
+                  properties:
+                    name:
+                      type: string
+                      description: Name of the SummaLedger CR in the same namespace.
+
+                # ─── Container Image ───────────────────────────────
+                image:
+                  type: string
+                  description: >
+                    Container image override. If omitted, inherits from the referenced
+                    SummaLedger CR.
+                imagePullPolicy:
+                  type: string
+                  enum: [Always, IfNotPresent, Never]
+
+                # ─── Replicas ──────────────────────────────────────
+                replicas:
+                  type: integer
+                  default: 1
+                  minimum: 1
+                  description: >
+                    Number of worker replicas. Workers use distributed leases so
+                    multiple replicas safely compete for work.
+                autoscaling:
+                  type: object
+                  description: HPA configuration for worker pods.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    minReplicas:
+                      type: integer
+                      default: 1
+                      minimum: 1
+                    maxReplicas:
+                      type: integer
+                      default: 5
+                      minimum: 1
+                    targetCPUUtilization:
+                      type: integer
+                      default: 70
+                      minimum: 1
+                      maximum: 100
+
+                # ─── Worker Selection ──────────────────────────────
+                workers:
+                  type: array
+                  minItems: 1
+                  description: >
+                    List of worker IDs to run in this pool. Workers are contributed by
+                    plugins and the core system. Use "*" as a single entry to run all
+                    workers registered by enabled plugins.
+                  items:
+                    type: object
+                    required:
+                      - id
+                    properties:
+                      id:
+                        type: string
+                        description: >
+                          Worker identifier. Built-in workers include:
+                          outbox-publisher, outbox-gc, hot-account-processor,
+                          search-indexer, batch-processor, bank-auto-matcher,
+                          scheduled-processor, statement-generator, audit-log-cleanup,
+                          data-retention-cleanup, version-retention-worker,
+                          freeze-expiry, hash-snapshot-creator, daily-reconciliation,
+                          daily-snapshots, fx-quote-cleanup, budget-snapshot,
+                          approval-expiry, invoice-overdue-checker, accrual-processor,
+                          gl-reconciliation, dlq-auto-retry, api-key-cleanup,
+                          scheduled-backup, velocity-log-cleanup, batch-engine-shutdown.
+                          Use "*" to include all workers from enabled plugins.
+                      intervalOverride:
+                        type: string
+                        description: >
+                          Override the default polling interval for this worker.
+                          Format: Go-style duration (e.g. "5s", "1m", "30m", "1h").
+                      enabled:
+                        type: boolean
+                        default: true
+                        description: Set to false to disable this worker without removing it.
+
+                # ─── Resources ─────────────────────────────────────
+                resources:
+                  type: object
+                  description: Resource requests and limits for each worker pod.
+                  properties:
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: 250m
+                        memory:
+                          type: string
+                          default: 256Mi
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "1"
+                        memory:
+                          type: string
+                          default: 1Gi
+
+                # ─── Advanced ──────────────────────────────────────
+                podAnnotations:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                podLabels:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                nodeSelector:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                tolerations:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                affinity:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                terminationGracePeriodSeconds:
+                  type: integer
+                  default: 60
+                  description: >
+                    Grace period for worker shutdown. Workers should finish in-progress
+                    tasks within this window. Default is 60s (higher than server) to
+                    allow batch operations to complete.
+
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  enum: [Pending, Running, Degraded, Error]
+                replicas:
+                  type: integer
+                availableReplicas:
+                  type: integer
+                activeWorkers:
+                  type: array
+                  description: Workers currently running in this pool.
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      status:
+                        type: string
+                        enum: [Running, Idle, Error]
+                      lastRunAt:
+                        type: string
+                        format: date-time
+                      errorCount:
+                        type: integer
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
+      additionalPrinterColumns:
+        - name: Ledger
+          type: string
+          jsonPath: .spec.ledgerRef.name
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Replicas
+          type: integer
+          jsonPath: .status.replicas
+        - name: Workers
+          type: integer
+          jsonPath: .status.activeWorkers
+          priority: 1
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp

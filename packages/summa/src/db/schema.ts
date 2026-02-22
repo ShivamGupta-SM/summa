@@ -7,9 +7,24 @@ import type { SummaOptions, TableDefinition } from "@summa/core";
 
 // Core tables that are always present
 const CORE_TABLES: Record<string, TableDefinition> = {
+	// Ledger registry — each ledger is an isolated tenant namespace.
+	ledger: {
+		columns: {
+			id: { type: "uuid", primaryKey: true, notNull: true },
+			name: { type: "text", notNull: true },
+			metadata: { type: "jsonb" },
+			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+		indexes: [{ name: "uq_ledger_name", columns: ["name"], unique: true }],
+	},
 	ledgerEvent: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
 			aggregate_type: { type: "text", notNull: true },
 			aggregate_id: { type: "uuid", notNull: true },
 			event_type: { type: "text", notNull: true },
@@ -21,11 +36,15 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
-			{ name: "idx_ledger_event_aggregate", columns: ["aggregate_type", "aggregate_id"] },
-			{ name: "idx_ledger_event_correlation", columns: ["correlation_id"] },
+			{ name: "idx_ledger_event_ledger", columns: ["ledger_id"] },
+			{
+				name: "idx_ledger_event_aggregate",
+				columns: ["ledger_id", "aggregate_type", "aggregate_id"],
+			},
+			{ name: "idx_ledger_event_correlation", columns: ["ledger_id", "correlation_id"] },
 			{
 				name: "uq_ledger_event_sequence",
-				columns: ["aggregate_type", "aggregate_id", "sequence_number"],
+				columns: ["ledger_id", "aggregate_type", "aggregate_id", "sequence_number"],
 				unique: true,
 			},
 		],
@@ -35,6 +54,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 	accountBalance: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
 			holder_id: { type: "text", notNull: true },
 			holder_type: { type: "text", notNull: true, default: "'individual'" },
 			currency: { type: "text", notNull: true },
@@ -70,8 +94,13 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			cached_closure_reason: { type: "text" },
 		},
 		indexes: [
-			{ name: "uq_account_holder_currency", columns: ["holder_id", "currency"], unique: true },
-			{ name: "idx_account_code", columns: ["account_code"] },
+			{ name: "idx_account_ledger", columns: ["ledger_id"] },
+			{
+				name: "uq_account_holder_currency",
+				columns: ["ledger_id", "holder_id", "currency"],
+				unique: true,
+			},
+			{ name: "idx_account_code", columns: ["ledger_id", "account_code"] },
 			{ name: "idx_account_parent", columns: ["parent_account_id"] },
 		],
 	},
@@ -123,6 +152,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 	systemAccount: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
 			identifier: { type: "text", notNull: true },
 			account_id: {
 				type: "uuid",
@@ -133,7 +167,9 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			currency: { type: "text", notNull: true },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
-		indexes: [{ name: "uq_system_account_identifier", columns: ["identifier"], unique: true }],
+		indexes: [
+			{ name: "uq_system_account_identifier", columns: ["ledger_id", "identifier"], unique: true },
+		],
 	},
 	// APPEND-ONLY — each row is a balance snapshot for a system account.
 	systemAccountVersion: {
@@ -168,6 +204,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 	transactionRecord: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
 			type: { type: "text", notNull: true },
 			reference: { type: "text", notNull: true },
 			amount: { type: "bigint", notNull: true },
@@ -184,12 +225,16 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			is_reversal: { type: "boolean", notNull: true, default: "false" },
 			correlation_id: { type: "text" },
 			meta_data: { type: "jsonb" },
+			/** Effective date for backdated transactions. Defaults to created_at. */
+			effective_date: { type: "timestamp", notNull: true, default: "NOW()" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
-			{ name: "uq_transaction_reference", columns: ["reference"], unique: true },
+			{ name: "idx_transaction_ledger", columns: ["ledger_id"] },
+			{ name: "uq_transaction_reference", columns: ["ledger_id", "reference"], unique: true },
 			{ name: "idx_transaction_type", columns: ["type"] },
 			{ name: "idx_transaction_created", columns: ["created_at"] },
+			{ name: "idx_transaction_effective_date", columns: ["effective_date"] },
 			{ name: "idx_transaction_source", columns: ["source_account_id"] },
 			{ name: "idx_transaction_destination", columns: ["destination_account_id"] },
 			{ name: "idx_transaction_hold_expires", columns: ["hold_expires_at"] },
@@ -239,12 +284,15 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			entry_type: { type: "text", notNull: true },
 			amount: { type: "bigint", notNull: true },
 			balance_after: { type: "bigint", notNull: true },
+			/** Effective date for backdated entries. Defaults to created_at. */
+			effective_date: { type: "timestamp", notNull: true, default: "NOW()" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
 			{ name: "idx_entry_transaction", columns: ["transaction_id"] },
 			{ name: "idx_entry_account", columns: ["account_id"] },
 			{ name: "idx_entry_account_created", columns: ["account_id", "created_at"] },
+			{ name: "idx_entry_effective_date", columns: ["account_id", "effective_date"] },
 		],
 	},
 	// APPEND-ONLY — shared status history for all plugin workflow entities.
@@ -301,6 +349,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 	blockCheckpoint: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
 			block_sequence: { type: "bigint", notNull: true },
 			from_event_sequence: { type: "bigint", notNull: true },
 			to_event_sequence: { type: "bigint", notNull: true },
@@ -316,7 +369,7 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 		indexes: [
 			{
 				name: "uq_block_checkpoint_sequence",
-				columns: ["block_sequence"],
+				columns: ["ledger_id", "block_sequence"],
 				unique: true,
 			},
 			{ name: "idx_block_checkpoint_at", columns: ["block_at"] },
@@ -324,12 +377,20 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 	},
 	idempotencyKey: {
 		columns: {
-			key: { type: "text", primaryKey: true, notNull: true },
+			ledger_id: {
+				type: "uuid",
+				notNull: true,
+				references: { table: "ledger", column: "id" },
+			},
+			key: { type: "text", notNull: true },
 			response: { type: "jsonb", notNull: true },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 			expires_at: { type: "timestamp", notNull: true },
 		},
-		indexes: [{ name: "idx_idempotency_expires", columns: ["expires_at"] }],
+		indexes: [
+			{ name: "uq_idempotency_ledger_key", columns: ["ledger_id", "key"], unique: true },
+			{ name: "idx_idempotency_expires", columns: ["expires_at"] },
+		],
 	},
 	workerLease: {
 		columns: {

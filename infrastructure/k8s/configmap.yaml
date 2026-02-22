@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: summa-config
+  namespace: summa
+  labels:
+    app.kubernetes.io/name: summa
+data:
+  SUMMA_SCHEMA: "summa"
+  SUMMA_CURRENCY: "USD"
+  SUMMA_LOG_LEVEL: "info"
+  SUMMA_LOG_FORMAT: "json"
+  NODE_ENV: "production"
+  # PostgreSQL connection pool
+  SUMMA_POOL_MAX: "20"
+  SUMMA_POOL_MIN: "5"
+  SUMMA_POOL_IDLE_TIMEOUT: "30000"
+  # Worker settings
+  SUMMA_WORKER_ENABLED: "true"
+  # Search (Typesense)
+  TYPESENSE_HOST: "typesense.summa.svc.cluster.local"
+  TYPESENSE_PORT: "8108"
+  TYPESENSE_PROTOCOL: "http"
+  # Redis
+  REDIS_HOST: "redis.summa.svc.cluster.local"
+  REDIS_PORT: "6379"

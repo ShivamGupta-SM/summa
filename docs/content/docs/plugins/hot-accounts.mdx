@@ -23,6 +23,10 @@ const summa = createSumma({
 });
 ```
 
+<Callout type="warn" title="Required when using system accounts">
+  If you configure `systemAccounts` (e.g., `@World`, `@Fees`), Summa logs a startup warning if the hot accounts plugin is not registered. System accounts typically receive high transaction volume and benefit significantly from optimistic concurrency. While the warning is non-blocking, registering this plugin is strongly recommended for production deployments with system accounts.
+</Callout>
+
 ## Configuration
 
 ```ts
@@ -44,13 +48,46 @@ hotAccounts({
 3. A background worker periodically aggregates pending entries and applies the net balance change to the account
 4. The reconciliation plugin includes hot entries in its balance verification
 
-## Marking an Account as Hot
+## How Accounts Become Hot
+
+Hot account detection is **automatic**. When an account exceeds `advanced.hotAccountThreshold` transactions per minute (default: 1000), the core transaction pipeline routes subsequent writes through the `hot_account_entry` staging table instead of directly updating the account balance.
+
+No manual marking is needed — accounts transition to the hot path transparently based on traffic patterns.
+
+## Realtime Balance
+
+System account balances are updated every flush cycle (~30s). If you need the up-to-the-moment balance including unflushed hot entries, use `getRealtimeBalance()`:
 
 ```ts
-await summa.hotAccounts.mark({ accountId: account.id });
+import { getRealtimeBalance } from "summa/plugins";
+
+const balance = await getRealtimeBalance(summa.$context, "@Fees");
+console.log(balance.committedBalance);   // Last flushed balance
+console.log(balance.pendingDelta);       // SUM of unflushed hot entries
+console.log(balance.realtimeBalance);    // committedBalance + pendingDelta
+console.log(balance.pendingEntryCount);  // Number of unflushed entries
+console.log(balance.lastFlushAt);        // ISO timestamp of last flush (or null)
 ```
 
-Accounts receiving more than `advanced.hotAccountThreshold` transactions per minute are candidates for hot account treatment.
+This runs a single CTE query — no extra round-trips. The `realtimeBalance` field is what you'd see if all pending entries were flushed right now.
+
+Also available via API:
+
+```
+GET /system-accounts/:identifier/realtime-balance
+```
+
+### `RealtimeBalance` type
+
+```ts
+interface RealtimeBalance {
+  committedBalance: number;
+  pendingDelta: number;
+  realtimeBalance: number;
+  pendingEntryCount: number;
+  lastFlushAt: string | null;
+}
+```
 
 ## Querying Hot Account Stats
 

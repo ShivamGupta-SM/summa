@@ -1,0 +1,165 @@
+---
+title: Workers
+description: Background workers — core cleanup, plugin tasks, distributed leasing, and graceful shutdown.
+icon: Cog6Tooth
+---
+
+## Overview
+
+Summa runs background workers on a polling loop to handle cleanup, event delivery, reconciliation, and other periodic tasks. Workers are split into two categories:
+
+- **Core workers** — always run, regardless of plugins. Handle cleanup for tables that core writes to.
+- **Plugin workers** — only run when their plugin is registered.
+
+All workers start when you call `summa.workers.start()` and stop with `summa.workers.stop()`.
+
+```ts
+const server = app.listen(3000, async () => {
+  await summa.workers.start();
+});
+
+process.on("SIGTERM", async () => {
+  await summa.workers.stop();
+  server.close();
+});
+```
+
+## Core Workers
+
+Core workers handle cleanup for tables that core itself writes to. They run automatically — no plugin needed.
+
+| Worker | Default Interval | Lease | Description |
+|--------|:---:|:---:|-------------|
+| `core:hold-expiry` | `5m` | No | Expires holds past `hold_expires_at`. Uses `FOR UPDATE SKIP LOCKED` for safe concurrent execution |
+| `core:idempotency-cleanup` | `1h` | Yes | Removes expired idempotency keys based on `advanced.idempotencyTTL` |
+| `core:lease-cleanup` | `6h` | Yes | Removes stale worker leases from dead process instances |
+
+### Configuration
+
+Configure intervals or disable individual core workers via `coreWorkers`:
+
+```ts
+const summa = createSumma({
+  database: adapter,
+  coreWorkers: {
+    holdExpiry: { interval: "2m" },       // Faster hold expiry
+    idempotencyCleanup: { interval: "30m" },
+    leaseCleanup: false,                  // Disable (only if handled externally)
+  },
+});
+```
+
+Each option accepts `boolean | { interval?: string }`. Set to `false` to disable. All are enabled by default.
+
+## Plugin Workers
+
+Plugin workers only run when their plugin is registered. Each plugin page documents its workers. Here's a summary:
+
+| Plugin | Workers | Description |
+|--------|---------|-------------|
+| [`outbox`](/docs/plugins/outbox) | `outbox-processor` (5s), `outbox-cleanup` (6h), `webhook-delivery-processor` (5s), `webhook-delivery-cleanup` (1d) | Event delivery, outbox + processed_event cleanup, webhook delivery |
+| [`reconciliation`](/docs/plugins/reconciliation) | `daily-reconciliation` (1d), `fast-reconciliation` (1h) | Full and fast balance reconciliation |
+| [`snapshots`](/docs/plugins/snapshots) | `daily-snapshots` (1d) | Point-in-time balance snapshots |
+| [`hotAccounts`](/docs/plugins/hot-accounts) | `hot-account-processor` (30s), `hot-account-cleanup` (6h) | Aggregates staged entries, cleans processed entries |
+| [`velocityLimits`](/docs/plugins/velocity-limits) | `velocity-log-cleanup` (1d) | Cleans expired rate limit logs |
+| [`freezeExpiry`](/docs/plugins/freeze-expiry) | `freeze-expiry` (1m) | Unfreezes accounts past `frozen_until` |
+| [`scheduledTransactions`](/docs/plugins/scheduled-transactions) | `scheduled-processor` (1m) | Executes due scheduled transactions |
+| [`dlqManager`](/docs/plugins/dlq-manager) | `dlq-auto-retry` (30m) | Retries failed events from the DLQ |
+| [`dataRetention`](/docs/plugins/data-retention) | `data-retention-cleanup` (6h) | Purges old plugin-owned data per retention policies |
+| [`fxEngine`](/docs/plugins/fx-engine) | `fx-quote-cleanup` (5m) | Expires old FX quotes |
+| [`glSubLedger`](/docs/plugins/gl-sub-ledger) | `gl-reconciliation` (1h) | Reconciles sub-ledger against GL |
+| [`approvalWorkflow`](/docs/plugins/approval-workflow) | `approval-expiry` (5m) | Expires timed-out approval requests |
+| [`batchImport`](/docs/plugins/batch-import) | `batch-processor` (30s) | Processes staged batch imports |
+| [`accrualAccounting`](/docs/plugins/accrual-accounting) | `accrual-processor` (1d) | Posts due accrual entries |
+| [`versionRetention`](/docs/plugins/version-retention) | `version-retention-worker` (1h) | Prunes old `account_balance_version` rows |
+| [`search`](/docs/plugins/search) | `search-indexer` (3s), `search-queue-cleanup` (6h) | Indexes documents, cleans processed queue entries |
+| [`backup`](/docs/plugins/backup) | `scheduled-backup` (1d), `backup-cleanup` (1d) | Runs scheduled backups, removes old backup records |
+| [`statements`](/docs/plugins/statements) | `statement-generator` (5s) | Processes pending statement generation jobs |
+| [`auditLog`](/docs/plugins/audit-log) | `audit-log-cleanup` (1d) | Cleans old audit log entries |
+| [`apiKeys`](/docs/plugins/api-keys) | `api-key-cleanup` (1d) | Removes expired/revoked API keys |
+
+## Distributed Leasing
+
+In a multi-instance deployment (Kubernetes, ECS, etc.), workers with `leaseRequired: true` use a **distributed lease** to ensure only one instance runs the worker at a time.
+
+### How it works
+
+1. Each `SummaWorkerRunner` instance generates a unique `leaseHolder` UUID at startup
+2. Before executing a lease-required worker, the runner attempts an `INSERT ... ON CONFLICT` into the `worker_lease` table
+3. If the lease is already held by another instance (and hasn't expired), the insert is skipped and the worker doesn't run
+4. Lease duration is **2x the worker interval** — if an instance dies, its leases expire naturally
+5. On `stop()`, the runner releases all its held leases immediately
+
+```sql
+-- Lease acquisition (simplified)
+INSERT INTO "summa"."worker_lease" (worker_id, lease_holder, lease_until)
+VALUES ('outbox-processor', 'uuid-of-this-instance', '2026-02-22T12:00:00Z')
+ON CONFLICT (worker_id) DO UPDATE
+  SET lease_holder = EXCLUDED.lease_holder, lease_until = EXCLUDED.lease_until
+WHERE worker_lease.lease_until < NOW()
+```
+
+Workers **without** a lease (like `core:hold-expiry`) use `FOR UPDATE SKIP LOCKED` instead — every instance can run them concurrently without processing the same rows.
+
+## Interval & Jitter
+
+Worker intervals support `"5s"`, `"1m"`, `"30m"`, `"1h"`, `"1d"` format.
+
+A **±25% jitter** is applied to every interval to prevent thundering herd effects. For example, a `"1h"` worker actually runs every 45–75 minutes.
+
+```
+Effective delay = interval × random(0.75, 1.25)
+```
+
+## Graceful Shutdown
+
+`summa.workers.stop()` performs a clean shutdown:
+
+1. Clears all pending timers (no new executions scheduled)
+2. Waits up to **10 seconds** for currently running workers to finish
+3. Logs a warning if any workers haven't finished within the timeout
+4. Releases all held leases from the `worker_lease` table
+
+```ts
+async function shutdown() {
+  await summa.workers.stop();   // Waits for running workers
+  await disconnect();           // Redis cleanup
+  await close();                // Connection pool cleanup
+  server.close();
+  process.exit(0);
+}
+
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
+```
+
+## Cleanup Ownership
+
+Every table that Summa writes to has a clear cleanup owner. See [Configuration — Cleanup Ownership](/docs/configuration#cleanup-ownership) for the full table.
+
+The principle: **if core writes to a table, core cleans it up**. Plugin-owned tables are cleaned by their respective plugins.
+
+## Custom Workers
+
+Plugins can define custom workers by including a `workers` array in the plugin object:
+
+```ts
+const myPlugin: SummaPlugin = {
+  id: "my-plugin",
+  workers: [
+    {
+      id: "my-custom-worker",
+      description: "Does something periodically",
+      interval: "5m",
+      leaseRequired: true,
+      handler: async (ctx) => {
+        // Your logic here — ctx has full access to adapter, logger, options
+        const rows = await ctx.adapter.raw("SELECT ...", []);
+        ctx.logger.info("Custom worker ran", { processed: rows.length });
+      },
+    },
+  ],
+};
+```
+
+Worker IDs must be unique across all plugins. The `core:` prefix is reserved for core workers.

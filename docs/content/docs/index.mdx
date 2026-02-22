@@ -19,10 +19,11 @@ Every mutation in Summa produces an immutable event with a **SHA-256 hash chain*
 | **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
 | **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
 | **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
-| **High-traffic accounts** | Hot account pattern with optimistic concurrency (no row-level lock contention) |
+| **High-traffic accounts** | Hot account pattern, mega CTE combined writes, and TigerBeetle-inspired transaction batching for 100,000+ TPS |
 | **Network retries** | Built-in idempotency keys prevent duplicate transactions |
 | **Partial failures** | Two-phase holds: reserve first, commit or void later |
 | **Data inconsistency** | Automated reconciliation compares balances against entry records |
+| **Multi-tenancy** | Ledger-as-namespace isolation — each tenant gets its own accounts, transactions, and system accounts |
 
 ## Built Like a Steel Vault
 
@@ -126,8 +127,9 @@ Financial systems are high-value targets. Summa doesn't bolt security on as an a
 | Layer | Components |
 |-------|-----------|
 | **Your Application** | Your API routes, workers, cron jobs |
-| **Summa API** | `accounts` · `transactions` · `holds` · `events` · `limits` · `workers` |
-| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `holdExpiry` · `freezeExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `mnt` · `admin` · `openApi` · `observability` · `fx` · `accrual` · `reporting` · `retention` · `i18n` · `mcp` · `statements` · `periodClose` · `glSubLedger` · `approvalWorkflow` · `batchImport` |
+| **Summa API** | `ledgers` · `accounts` · `transactions` · `holds` · `events` · `limits` · `workers` |
+| **Core Workers** | `holdExpiry` · `idempotencyCleanup` · `leaseCleanup` |
+| **Plugin System** | `audit` · `reconciliation` · `snapshots` · `velocity` · `freezeExpiry` · `outbox` · `dlq` · `hot` · `scheduled` · `admin` · `openApi` · `observability` · `fx` · `accrual` · `reporting` · `retention` · `i18n` · `mcp` · `statements` · `periodClose` · `glSubLedger` · `approvalWorkflow` · `batchImport` · `batchEngine` · `identity` · `apiKeys` · `balanceMonitor` · `backup` · `search` · `dataRetention` · `versionRetention` |
 | **Database Adapters** | Drizzle · Prisma · Kysely · Memory |
 
 ## Key Features
@@ -142,8 +144,8 @@ Financial systems are high-value targets. Summa doesn't bolt security on as an a
   <Card title="Two-Phase Holds" href="/docs/holds">
     Reserve funds before settlement. Supports partial capture, void, expiry, and multi-destination splits.
   </Card>
-  <Card title="25 Built-in Plugins" href="/docs/plugins">
-    Audit log, reconciliation, snapshots, velocity limits, FX engine, accrual accounting, financial reporting, data retention, observability, i18n, MCP, and more.
+  <Card title="30 Built-in Plugins" href="/docs/plugins">
+    Audit log, reconciliation, snapshots, velocity limits, FX engine, accrual accounting, financial reporting, transaction batching, identity management, API keys, and more.
   </Card>
   <Card title="Idempotency" href="/docs/transactions#idempotency">
     Built-in idempotency key support. Safe retries with no double-posting, even under network failures.
@@ -154,8 +156,14 @@ Financial systems are high-value targets. Summa doesn't bolt security on as an a
   <Card title="Velocity Limits" href="/docs/plugins/velocity-limits">
     Configurable per-transaction, daily, and monthly limits with category-based segmentation.
   </Card>
+  <Card title="Multi-Tenancy" href="/docs/multi-tenancy">
+    Ledger-as-namespace isolation. Each tenant gets its own accounts, system accounts, and event chains.
+  </Card>
   <Card title="4 Database Adapters" href="/docs/adapters/drizzle">
     Drizzle ORM, Prisma, Kysely, or in-memory for testing. Bring your own ORM.
+  </Card>
+  <Card title="100,000+ TPS" href="/docs/scaling">
+    Mega CTE combined writes, TigerBeetle-inspired transaction batching, denormalized balance cache, and lock retry with backoff. Full HMAC integrity at every throughput level.
   </Card>
 </Cards>
 
@@ -259,6 +267,9 @@ const balance = await summa.accounts.getBalance("user_123");
   </Card>
   <Card title="Events" href="/docs/events">
     Event sourcing and hash chain integrity.
+  </Card>
+  <Card title="Multi-Tenancy" href="/docs/multi-tenancy">
+    Ledger-as-namespace tenant isolation.
   </Card>
   <Card title="Plugins" href="/docs/plugins">
     Extend with 25 built-in plugins.

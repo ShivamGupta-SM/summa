@@ -8,6 +8,11 @@ icon: GlobeAlt
 
 Summa provides a webhook system for notifying external services about ledger events. Webhooks use **HMAC-SHA256** signatures for payload verification, preventing tampering and replay attacks.
 
+> **This page documents `summa/webhooks`** — a standalone utility for **signing and verifying** webhook payloads. It does not send or receive webhooks on its own.
+>
+> Looking for something else?
+> - **Automatic HTTP delivery & event bus** → [Outbox plugin](/docs/plugins/outbox) (supports both publisher functions and managed webhook delivery)
+
 ## Setup
 
 ```ts
@@ -122,11 +127,26 @@ if (!isValid) {
 
 ## Using with the Outbox Plugin
 
-The outbox plugin provides reliable webhook delivery with at-least-once semantics:
+The outbox plugin has **built-in webhook delivery** — enable `webhooks` mode and users register endpoints via the API. Payloads are signed with HMAC-SHA256 automatically:
 
 ```ts
 import { outbox } from "summa/plugins";
 
+const summa = createSumma({
+  database: adapter,
+  plugins: [
+    outbox({
+      webhooks: {
+        signingSecret: process.env.WEBHOOK_SIGNING_SECRET!,
+      },
+    }),
+  ],
+});
+```
+
+You can also use the publisher mode with `summa/webhooks` for custom delivery logic:
+
+```ts
 const summa = createSumma({
   database: adapter,
   plugins: [
@@ -144,8 +164,6 @@ const summa = createSumma({
           body,
         });
       },
-      batchSize: 100,
-      maxRetries: 3,
     }),
   ],
 });

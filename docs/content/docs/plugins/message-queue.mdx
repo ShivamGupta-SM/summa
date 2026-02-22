@@ -1,0 +1,162 @@
+---
+title: Message Queue
+description: Redis Streams message bus for high-throughput event delivery.
+icon: InboxStack
+---
+
+## Overview
+
+The `@summa/message-queue` package provides a **Redis Streams-backed message bus** for high-throughput event delivery. It replaces the outbox polling pattern (20 msg/s) with push-based streaming (50K-100K msg/s) using Redis Streams — no new infrastructure required.
+
+The package provides a generic `MessageBus` interface with a Redis Streams implementation. It integrates directly with the outbox plugin via the `messageQueue` option or the `createStreamPublisher()` helper.
+
+## Installation
+
+```bash
+pnpm add @summa/message-queue
+```
+
+<Callout type="info" title="Requires Redis 5.0+">
+  Redis Streams is a built-in feature of Redis 5.0 and later. No additional Redis modules or configuration needed.
+</Callout>
+
+## Setup
+
+### With the outbox plugin (recommended)
+
+Pass the bus directly to the outbox plugin via `messageQueue`:
+
+```ts
+import { createSumma } from "summa";
+import { outbox } from "summa/plugins";
+import { createRedisStreamsBus } from "@summa/message-queue";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    outbox({ messageQueue: bus }),
+  ],
+});
+```
+
+You can also use `createStreamPublisher()` for more control over the stream publisher options:
+
+```ts
+import { outbox, createStreamPublisher } from "summa/plugins";
+
+outbox({
+  publisher: createStreamPublisher(bus, { maxLen: 200_000 }),
+})
+```
+
+### Standalone usage
+
+You can also use the message bus directly without the outbox plugin:
+
+```ts
+import { createRedisStreamsBus } from "@summa/message-queue";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const bus = createRedisStreamsBus({ client: redis });
+
+// Publish
+const id = await bus.publish("ledger-events", {
+  type: "TransactionPosted",
+  transactionId: "txn_123",
+  amount: 5000,
+});
+
+// Subscribe with consumer groups
+await bus.ensureGroup("ledger-events", "my-service");
+const handle = await bus.subscribe(
+  "ledger-events",
+  { group: "my-service", consumer: "worker-1" },
+  async (message) => {
+    console.log(message.payload);
+    // Message is auto-ACK'd on success
+  },
+);
+
+// Later: stop consuming
+await handle.stop();
+```
+
+## Configuration
+
+### `createRedisStreamsBus(options)`
+
+```ts
+createRedisStreamsBus({
+  client: redis,                       // ioredis client instance
+  keyPrefix: "summa:stream:",          // Key prefix for stream keys (default)
+})
+```
+
+### `createStreamPublisher(bus, options?)`
+
+```ts
+createStreamPublisher(bus, {
+  maxLen: 100_000,    // Approximate max stream length (MAXLEN ~). Default: 100,000
+})
+```
+
+### Consumer options
+
+```ts
+bus.subscribe("topic", {
+  group: "my-group",             // Consumer group name
+  consumer: "worker-1",          // Unique consumer name per process
+  batchSize: 100,                // Max messages per XREADGROUP (default: 100)
+  blockMs: 2000,                 // Block timeout in ms (default: 2000)
+  pendingClaimAfterMs: 30_000,   // Reclaim idle messages after this (default: 30s)
+}, handler);
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `group` | `string` | required | Consumer group name |
+| `consumer` | `string` | required | Consumer name (unique per process) |
+| `batchSize` | `number` | `100` | Max messages per poll |
+| `blockMs` | `number` | `2000` | XREADGROUP block timeout in ms |
+| `pendingClaimAfterMs` | `number` | `30000` | Reclaim idle pending messages after this duration |
+
+## How It Works
+
+### Publishing
+- `XADD` with `MAXLEN ~ {maxLen}` to cap stream size
+- Each message contains `payload` (JSON) and `publishedAt` (ISO timestamp)
+
+### Consuming
+- `XREADGROUP GROUP ... BLOCK ...` for new messages
+- `XACK` after successful handler execution
+- `XAUTOCLAIM` reclaims idle pending messages from crashed consumers
+- Failed messages stay in the Pending Entries List (PEL) and are retried
+
+### Consumer groups
+- `XGROUP CREATE ... $ MKSTREAM` — idempotent group creation
+- Each consumer in a group receives different messages (fan-out within the group)
+- Multiple groups on the same stream each receive all messages (fan-out across groups)
+
+## Comparison with Outbox Polling
+
+| Feature | Outbox polling | Redis Streams |
+|---------|:-:|:-:|
+| Throughput | ~20 msg/s | 50K-100K msg/s |
+| Latency | 5s (poll interval) | Sub-millisecond |
+| Delivery guarantee | At-least-once | At-least-once |
+| Infrastructure | PostgreSQL only | PostgreSQL + Redis |
+| Consumer groups | No | Yes |
+| Message replay | Limited (retention) | Yes (stream history) |
+
+## Health Check
+
+```ts
+const healthy = await bus.ping();
+// true if Redis is reachable
+```

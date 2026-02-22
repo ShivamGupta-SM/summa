@@ -44,6 +44,93 @@ export interface PartitionMaintenanceOptions {
 	workerInterval?: string;
 	/** PostgreSQL schema. Default: "summa" */
 	schema?: string;
+	/**
+	 * When true, partition detachment is blocked unless all events in the
+	 * partition's date range are covered by sealed block checkpoints.
+	 * Prevents accidental hash chain breakage. Default: true
+	 */
+	requireSealedBlocks?: boolean;
+	/**
+	 * Move detached partitions to this schema instead of leaving them as
+	 * standalone tables. Creates the schema if it doesn't exist.
+	 * Example: "summa_archive"
+	 */
+	archiveSchema?: string;
+}
+
+// =============================================================================
+// HASH CHAIN SAFETY CHECK
+// =============================================================================
+
+/**
+ * Check whether a partition covering [rangeFrom, rangeTo) can be safely detached
+ * without breaking hash chain integrity.
+ *
+ * Safe to detach when all ledger_event rows in the date range are covered by
+ * a sealed block_checkpoint (i.e., the max sequence_number in the range is <=
+ * the highest sealed checkpoint's end_sequence).
+ *
+ * Returns { safe: true } or { safe: false, reason, unsealed } with diagnostics.
+ */
+export async function canSafelyDetachPartition(
+	ctx: SummaContext,
+	rangeFrom: string,
+	rangeTo: string,
+): Promise<{ safe: boolean; reason?: string; unsealedCount?: number }> {
+	const t = createTableResolver(ctx.options.schema);
+
+	// Find the maximum event sequence in the partition's date range
+	const maxSeqRows = await ctx.adapter.raw<{ max_seq: number | null; cnt: number }>(
+		`SELECT MAX(sequence_number) AS max_seq, COUNT(*)::int AS cnt
+		 FROM ${t("ledger_event")}
+		 WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz`,
+		[rangeFrom, rangeTo],
+	);
+
+	const maxSeq = maxSeqRows[0]?.max_seq;
+	const eventCount = maxSeqRows[0]?.cnt ?? 0;
+
+	// No events in range — safe to detach
+	if (maxSeq == null || eventCount === 0) {
+		return { safe: true };
+	}
+
+	// Find the highest sealed checkpoint end_sequence
+	const checkpointRows = await ctx.adapter.raw<{ max_end: number | null }>(
+		`SELECT MAX(end_sequence) AS max_end
+		 FROM ${t("block_checkpoint")}
+		 WHERE sealed_at IS NOT NULL`,
+		[],
+	);
+
+	const maxSealedEnd = checkpointRows[0]?.max_end;
+
+	if (maxSealedEnd == null) {
+		return {
+			safe: false,
+			reason: "No sealed block checkpoints exist. Create checkpoints before detaching partitions.",
+			unsealedCount: eventCount,
+		};
+	}
+
+	if (maxSeq > maxSealedEnd) {
+		// Count events in range that are beyond the last sealed checkpoint
+		const unsealedRows = await ctx.adapter.raw<{ cnt: number }>(
+			`SELECT COUNT(*)::int AS cnt
+			 FROM ${t("ledger_event")}
+			 WHERE created_at >= $1::timestamptz AND created_at < $2::timestamptz
+			   AND sequence_number > $3`,
+			[rangeFrom, rangeTo, maxSealedEnd],
+		);
+
+		return {
+			safe: false,
+			reason: `Partition contains ${unsealedRows[0]?.cnt ?? 0} events beyond the last sealed checkpoint (sealed up to seq ${maxSealedEnd}, partition max seq ${maxSeq}). Run createBlockCheckpoint() first.`,
+			unsealedCount: unsealedRows[0]?.cnt ?? 0,
+		};
+	}
+
+	return { safe: true };
 }
 
 // =============================================================================
@@ -122,6 +209,8 @@ export function partitionMaintenance(options: PartitionMaintenanceOptions): Summ
 	const retainPartitions = options.retainPartitions ?? null;
 	const workerInterval = options.workerInterval ?? "1d";
 	const schema = options.schema ?? "summa";
+	const requireSealedBlocks = options.requireSealedBlocks ?? true;
+	const archiveSchema = options.archiveSchema ?? null;
 
 	return {
 		id: "partition-maintenance",
@@ -194,10 +283,44 @@ export function partitionMaintenance(options: PartitionMaintenanceOptions): Summ
 										[schema, `${tableName}_${range.suffix}`],
 									);
 									if (exists[0] && exists[0].cnt > 0) {
+										// Hash chain safety check: block detachment if events are not sealed
+										if (
+											requireSealedBlocks &&
+											(tableName === "ledger_event" ||
+												tableName === "entry_record" ||
+												tableName === "account_balance_version")
+										) {
+											const safety = await canSafelyDetachPartition(ctx, range.from, range.to);
+											if (!safety.safe) {
+												ctx.logger.warn("Partition detachment blocked by hash chain safety check", {
+													table: tableName,
+													partition: range.suffix,
+													reason: safety.reason,
+													unsealedCount: safety.unsealedCount,
+												});
+												continue;
+											}
+										}
+
 										await ctx.adapter.raw(
 											`ALTER TABLE ${t(tableName)} DETACH PARTITION ${partName}`,
 											[],
 										);
+
+										// Move to archive schema if configured
+										if (archiveSchema) {
+											await ctx.adapter.raw(`CREATE SCHEMA IF NOT EXISTS "${archiveSchema}"`, []);
+											await ctx.adapter.raw(
+												`ALTER TABLE ${partName} SET SCHEMA "${archiveSchema}"`,
+												[],
+											);
+											ctx.logger.info("Partition archived", {
+												table: tableName,
+												partition: range.suffix,
+												archiveSchema,
+											});
+										}
+
 										detached++;
 										ctx.logger.info("Partition detached", {
 											table: tableName,

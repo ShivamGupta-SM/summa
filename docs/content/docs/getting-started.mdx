@@ -105,6 +105,24 @@ Generates the Summa schema for your ORM, then uses its native migration tooling.
 
 <Step>
 
+### Create a ledger
+
+Every operation in Summa is scoped to a **ledger** — an isolated namespace for accounts, transactions, and system accounts.
+
+```ts
+const ledger = await summa.ledgers.create({
+  name: "My App",
+});
+
+console.log(ledger.id); // UUID — use this in all subsequent calls
+```
+
+Each ledger automatically gets its own set of system accounts (@World, @Fees, etc.). Pass the `ledgerId` in every request via the body or `X-Ledger-Id` header. See [Multi-Tenancy](/docs/multi-tenancy) for the full guide.
+
+</Step>
+
+<Step>
+
 ### Create your first account
 
 ```ts
@@ -178,7 +196,7 @@ console.log(balance.currency);         // "USD"
 
 ### Start background workers
 
-If you're using plugins with background tasks (hold expiry, outbox, reconciliation, etc.), start the worker system:
+Start the worker system to run core workers (hold expiry, idempotency cleanup) and plugin workers (outbox, reconciliation, etc.):
 
 ```ts
 await summa.workers.start();
@@ -244,6 +262,9 @@ The CLI auto-discovers config files named `summa.config.ts`, `summa.ts`, or `led
   </Card>
   <Card title="Events" href="/docs/events">
     Event sourcing, hash chain verification, aggregate events.
+  </Card>
+  <Card title="Multi-Tenancy" href="/docs/multi-tenancy">
+    Ledger-as-namespace isolation for multi-tenant deployments.
   </Card>
   <Card title="Plugins" href="/docs/plugins">
     All 25 built-in plugins with lifecycle hooks and workers.

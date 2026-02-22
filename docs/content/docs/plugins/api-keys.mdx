@@ -1,0 +1,120 @@
+---
+title: API Keys
+description: API key management with scoped permissions, rotation, and automatic validation.
+icon: Key
+---
+
+## Overview
+
+The API keys plugin provides full API key lifecycle management — creation, validation, rotation, and revocation. Keys are stored as **SHA-256 hashes** (never plaintext), support scoped permissions, and integrate as an `onRequest` interceptor for automatic authentication.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { apiKeys } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [apiKeys()],
+});
+```
+
+## Configuration
+
+```ts
+apiKeys({
+  prefix: "sk_live_",          // Key prefix format
+  scopes: ["read", "write", "admin"],  // Available permission scopes
+  revokedRetentionDays: 30,    // Days to keep revoked keys before cleanup
+  cleanupInterval: "1d",       // How often to purge old revoked keys
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `prefix` | `string` | `"sk_live_"` | Prefix for generated API keys |
+| `scopes` | `string[]` | `["read", "write", "admin"]` | Available permission scopes |
+| `revokedRetentionDays` | `number` | `30` | Days to retain revoked keys |
+| `cleanupInterval` | `string` | `"1d"` | Background cleanup worker interval |
+
+## How It Works
+
+### Key Format
+
+Generated keys follow the format `sk_live_{base64url_random}`. Only the SHA-256 hash is stored in the database — the plaintext key is returned **once** at creation time and cannot be retrieved again.
+
+### Request Authentication
+
+The plugin installs an `onRequest` interceptor that validates the `X-Api-Key` header on every incoming request:
+
+1. Extracts the key from the `X-Api-Key` header
+2. Computes its SHA-256 hash
+3. Looks up the hash in the `api_key` table
+4. Validates the key is not revoked or expired
+5. Updates `last_used_at` timestamp
+
+If validation fails, the request is rejected with a `401 Unauthorized` response.
+
+### Scopes
+
+Each key is created with one or more scopes that control what operations it can perform:
+
+- **read** — balance queries, account lookups, transaction history
+- **write** — credits, debits, transfers, holds
+- **admin** — account management, configuration, key management
+
+### Key Rotation
+
+Rotate a key to generate a new secret while preserving the key's metadata and permissions:
+
+```ts
+POST /api-keys/:id/rotate
+```
+
+The old key is immediately revoked and a new key is returned.
+
+## HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api-keys` | Create a new API key |
+| `GET` | `/api-keys` | List all API keys (hashes only) |
+| `DELETE` | `/api-keys/:id` | Revoke an API key |
+| `POST` | `/api-keys/:id/rotate` | Rotate (replace) an API key |
+| `POST` | `/api-keys/validate` | Validate a key and return its metadata |
+
+## Querying API Keys
+
+```ts
+import { listApiKeyRecords } from "summa/plugins";
+
+const keys = await listApiKeyRecords(summa.$context, {
+  limit: 50,
+  offset: 0,
+});
+
+for (const key of keys) {
+  console.log(key.id);          // Key ID
+  console.log(key.name);        // Human-readable name
+  console.log(key.scopes);      // ["read", "write"]
+  console.log(key.lastUsedAt);  // Last usage timestamp
+  console.log(key.expiresAt);   // Expiration date or null
+}
+```
+
+## Background Workers
+
+| Worker | Interval | Description |
+|--------|----------|-------------|
+| `api-key-cleanup` | `1d` | Purges revoked keys older than `revokedRetentionDays` |
+
+## Type Inference
+
+```ts
+import type { ApiKey } from "summa/plugins";
+
+type Key = typeof summa.$Infer.ApiKey;
+// { id, name, key_hash, scopes, expires_at, revoked_at, last_used_at, created_at }
+```

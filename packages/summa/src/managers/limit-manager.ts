@@ -173,6 +173,19 @@ export async function enforceLimits(
  * preventing TOCTOU races where two concurrent requests could both pass
  * the limit check before either commits.
  */
+/**
+ * In-memory cache for accounts with no limits. Avoids the account_limit SELECT
+ * on every transaction for accounts that have no limits (the common case).
+ * Key: accountId, Value: timestamp when cached (for TTL expiry).
+ */
+const noLimitsCache = new Map<string, number>();
+const NO_LIMITS_CACHE_TTL_MS = 60_000; // 60 seconds
+
+/** Clear the no-limits cache (useful for testing or after limit changes). */
+export function clearNoLimitsCache(): void {
+	noLimitsCache.clear();
+}
+
 export async function enforceLimitsWithAccountId(
 	tx: SummaTransactionAdapter,
 	params: {
@@ -191,6 +204,13 @@ export async function enforceLimitsWithAccountId(
 	}
 
 	const { accountId, amount, txnType, category } = params;
+
+	// Fast path: skip DB query if we recently confirmed this account has no limits
+	const cachedAt = noLimitsCache.get(accountId);
+	if (cachedAt && Date.now() - cachedAt < NO_LIMITS_CACHE_TTL_MS) {
+		return;
+	}
+
 	const t = createTableResolver(tx.options?.schema ?? "summa");
 
 	const limits = await tx.raw<RawLimitRow>(
@@ -199,7 +219,13 @@ export async function enforceLimitsWithAccountId(
 		[accountId],
 	);
 
-	if (limits.length === 0) return;
+	if (limits.length === 0) {
+		noLimitsCache.set(accountId, Date.now());
+		return;
+	}
+
+	// Account has limits — remove from no-limits cache (limits may have been added)
+	noLimitsCache.delete(accountId);
 
 	const now = new Date();
 	const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -403,7 +429,7 @@ export async function getLimits(
 	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, params.holderId);
 
-	const rows = await ctx.adapter.raw<RawLimitRow>(
+	const rows = await ctx.readAdapter.raw<RawLimitRow>(
 		`SELECT * FROM ${t("account_limit")} WHERE account_id = $1`,
 		[account.id],
 	);

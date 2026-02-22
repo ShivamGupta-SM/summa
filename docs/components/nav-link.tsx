@@ -28,7 +28,7 @@ export const NavLink = ({
 			<Link
 				href={href}
 				className={cn(
-					"flex items-center py-7 px-4 text-sm tracking-wider transition-colors duration-200",
+					"flex items-center py-7 px-4 text-base tracking-wider transition-colors duration-200",
 					"hover:text-foreground",
 					isActive ? "text-foreground" : "text-muted-foreground",
 				)}

@@ -89,10 +89,10 @@ const availablePlugins: PluginChoice[] = [
 		importName: "velocityLimits",
 	},
 	{
-		value: "holdExpiry",
-		label: "Hold Expiry",
-		hint: "automatic expiration of stale holds",
-		importName: "holdExpiry",
+		value: "expiry",
+		label: "Expiry",
+		hint: "auto-expire holds and auto-unfreeze accounts after TTL",
+		importName: "expiry",
 	},
 	{
 		value: "outbox",
@@ -123,6 +123,144 @@ const availablePlugins: PluginChoice[] = [
 		label: "Maintenance",
 		hint: "system maintenance & cleanup tasks",
 		importName: "maintenance",
+	},
+	{
+		value: "search",
+		label: "Search",
+		hint: "native PostgreSQL full-text search (zero dependencies)",
+		importName: "search",
+	},
+	{
+		value: "admin",
+		label: "Admin",
+		hint: "elevated admin endpoints with authorization and dashboard stats",
+		importName: "admin",
+	},
+	{
+		value: "openApi",
+		label: "OpenAPI",
+		hint: "auto-generated OpenAPI 3.1 specification at /openapi.json",
+		importName: "openApi",
+	},
+	{
+		value: "observability",
+		label: "Observability",
+		hint: "distributed tracing and Prometheus metrics via /metrics",
+		importName: "observability",
+	},
+	{
+		value: "statements",
+		label: "Statements",
+		hint: "account statement generation with JSON, CSV, and PDF export",
+		importName: "statements",
+	},
+	{
+		value: "periodClose",
+		label: "Period Close",
+		hint: "lock accounting periods to prevent backdated transactions",
+		importName: "periodClose",
+	},
+	{
+		value: "financialReporting",
+		label: "Financial Reporting",
+		hint: "trial balance, balance sheet, and income statement",
+		importName: "financialReporting",
+	},
+	{
+		value: "fxEngine",
+		label: "FX Engine",
+		hint: "auto-resolve exchange rates for cross-currency transfers",
+		importName: "fxEngine",
+	},
+	{
+		value: "glSubLedger",
+		label: "GL Sub-Ledger",
+		hint: "general ledger / sub-ledger separation with reconciliation",
+		importName: "glSubLedger",
+	},
+	{
+		value: "approvalWorkflow",
+		label: "Approval Workflow",
+		hint: "maker-checker dual authorization for sensitive transactions",
+		importName: "approvalWorkflow",
+	},
+	{
+		value: "batchImport",
+		label: "Batch Import",
+		hint: "bulk CSV/JSON transaction import with staged validation",
+		importName: "batchImport",
+	},
+	{
+		value: "accrualAccounting",
+		label: "Accrual Accounting",
+		hint: "revenue/expense recognition over time",
+		importName: "accrualAccounting",
+	},
+	{
+		value: "dataRetention",
+		label: "Data Retention",
+		hint: "unified data retention policies across all tables",
+		importName: "dataRetention",
+	},
+	{
+		value: "versionRetention",
+		label: "Version Retention",
+		hint: "archive and prune old account_balance_version rows",
+		importName: "versionRetention",
+	},
+	{
+		value: "i18n",
+		label: "Internationalization",
+		hint: "multi-locale error messages with Accept-Language detection",
+		importName: "i18n",
+	},
+	{
+		value: "mcp",
+		label: "MCP",
+		hint: "Model Context Protocol tools for AI agent access",
+		importName: "mcp",
+	},
+	{
+		value: "identity",
+		label: "Identity",
+		hint: "KYC identity management with AES-256-GCM PII tokenization",
+		importName: "identity",
+	},
+	{
+		value: "apiKeys",
+		label: "API Keys",
+		hint: "SHA-256 hashed API key management with scoped permissions",
+		importName: "apiKeys",
+	},
+	{
+		value: "balanceMonitor",
+		label: "Balance Monitor",
+		hint: "real-time condition-based balance alerts and threshold triggers",
+		importName: "balanceMonitor",
+	},
+	{
+		value: "backup",
+		label: "Backup",
+		hint: "automated PostgreSQL backups with local disk and S3 storage",
+		importName: "backup",
+	},
+	{
+		value: "batchEngine",
+		label: "Batch Engine",
+		hint: "TigerBeetle-inspired transaction batching for high throughput",
+		importName: "batchEngine",
+	},
+	{
+		value: "eventStorePartition",
+		label: "Event Store Partition",
+		hint: "PostgreSQL range partitioning for ledger_event with auto-maintenance",
+		importName: "eventStorePartition",
+	},
+	{
+		value: "verificationSnapshots",
+		label: "Verification Snapshots",
+		hint: "O(recent events) hash chain verification via per-aggregate snapshots",
+		importName: "verificationSnapshots",
 	},
 ];
 
@@ -238,10 +376,14 @@ function generateConfigTemplate(opts: {
 	}
 
 	if (opts.plugins.length > 0) {
-		const names = opts.plugins
-			.map((id) => availablePlugins.find((p) => p.value === id)?.importName ?? id)
-			.join(", ");
-		lines.push(`import { ${names} } from "summa/plugins";`);
+		const names = opts.plugins.map(
+			(id) => availablePlugins.find((p) => p.value === id)?.importName ?? id,
+		);
+		// Plugins that need extra imports
+		if (opts.plugins.includes("search") && !names.includes("pgSearchBackend")) {
+			names.push("pgSearchBackend");
+		}
+		lines.push(`import { ${names.join(", ")} } from "summa/plugins";`);
 	}
 
 	lines.push("");
@@ -290,9 +432,27 @@ function generateConfigTemplate(opts: {
 
 	if (opts.plugins.length > 0) {
 		const calls = opts.plugins
-			.map((id) => `${availablePlugins.find((p) => p.value === id)?.importName ?? id}()`)
-			.join(", ");
-		lines.push(`  plugins: [${calls}],`);
+			.map((id) => {
+				const name = availablePlugins.find((p) => p.value === id)?.importName ?? id;
+				switch (id) {
+					case "search":
+						return "search({ backend: pgSearchBackend() })";
+					case "admin":
+						return `admin({ authorize: (req) => req.headers?.["x-admin-key"] === process.env.ADMIN_KEY })`;
+					case "outbox":
+						return "outbox({ messageQueue: undefined /* TODO: pass a MessageBus (e.g. createRedisStreamsBus) or use publisher callback */ })";
+					case "identity":
+						return `identity({ encryptionKey: process.env.SUMMA_ENCRYPTION_KEY! })`;
+					case "eventStorePartition":
+						return `eventStorePartition({ interval: "monthly", createAhead: 3 })`;
+					case "verificationSnapshots":
+						return `verificationSnapshots({ snapshotInterval: "6h" })`;
+					default:
+						return `${name}()`;
+				}
+			})
+			.join(",\n    ");
+		lines.push(`  plugins: [\n    ${calls},\n  ],`);
 	} else {
 		lines.push("  plugins: [],");
 	}

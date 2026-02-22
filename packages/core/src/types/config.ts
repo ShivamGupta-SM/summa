@@ -2,9 +2,21 @@ import type { SummaAdapter } from "../db/adapter.js";
 import type { SecondaryStorage } from "../db/secondary-storage.js";
 import type { SummaPlugin } from "./plugin.js";
 
+export interface CoreWorkerOptions {
+	/** Hold expiry worker. Expires holds past their hold_expires_at date. Default: enabled, 5m interval */
+	holdExpiry?: boolean | { interval?: string };
+	/** Idempotency key cleanup worker. Removes expired keys. Default: enabled, 1h interval */
+	idempotencyCleanup?: boolean | { interval?: string };
+	/** Worker lease cleanup. Removes stale leases from dead instances. Default: enabled, 6h interval */
+	leaseCleanup?: boolean | { interval?: string };
+}
+
 export interface SummaOptions {
 	/** Database adapter instance or factory function */
 	database: SummaAdapter | (() => SummaAdapter);
+
+	/** Optional read replica adapter for read-only queries. Writes always go to primary. */
+	readDatabase?: SummaAdapter | (() => SummaAdapter);
 
 	/** Default currency code (default: "USD") */
 	currency?: string;
@@ -18,6 +30,9 @@ export interface SummaOptions {
 	/** Plugins to enable */
 	plugins?: SummaPlugin[];
 
+	/** Core background workers. All enabled by default. */
+	coreWorkers?: CoreWorkerOptions;
+
 	/** Advanced configuration */
 	advanced?: SummaAdvancedOptions;
 
@@ -29,6 +44,9 @@ export interface SummaOptions {
 
 	/** PostgreSQL schema name for all Summa tables. Default: "summa" */
 	schema?: string;
+
+	/** Default ledger ID. Used when requestContext.ledgerId is not set. */
+	ledgerId?: string;
 }
 
 export interface SystemAccountDefinition {
@@ -58,7 +76,7 @@ export interface SummaAdvancedOptions {
 
 	// --- Performance scaling options ---
 
-	/** Use denormalized balance columns on account_balance for O(1) reads. Default: false */
+	/** Use denormalized balance columns on account_balance for O(1) reads. Default: true */
 	useDenormalizedBalance?: boolean;
 	/** Number of retry attempts when a transaction fails due to lock contention. Default: 0 (no retry) */
 	lockRetryCount?: number;
@@ -66,8 +84,19 @@ export interface SummaAdvancedOptions {
 	lockRetryBaseDelayMs?: number;
 	/** Maximum delay in ms between lock retries. Default: 500 */
 	lockRetryMaxDelayMs?: number;
-	/** Lock acquisition mode. 'wait' blocks until lockTimeoutMs; 'nowait' fails immediately and retries. Default: 'wait' */
-	lockMode?: "wait" | "nowait";
+	/** Lock acquisition mode. 'wait' blocks until lockTimeoutMs; 'nowait' fails immediately and retries; 'optimistic' skips FOR UPDATE and retries on version conflict. Default: 'wait' */
+	lockMode?: "wait" | "nowait" | "optimistic";
+	/** Max retries for optimistic lock version conflicts. Only used when lockMode='optimistic'. Default: 3 */
+	optimisticRetryCount?: number;
+
+	// --- Transaction batching (Phase 3 performance) ---
+
+	/** Enable transaction batching for high-throughput mode. Default: false */
+	enableBatching?: boolean;
+	/** Max transactions per batch (only used when enableBatching=true). Default: 200 */
+	batchMaxSize?: number;
+	/** Max flush delay in ms before an incomplete batch is processed. Default: 5 */
+	batchFlushIntervalMs?: number;
 }
 
 export interface SummaLogger {

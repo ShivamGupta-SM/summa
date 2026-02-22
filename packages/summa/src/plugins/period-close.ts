@@ -10,10 +10,7 @@
 import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
 import { SummaError } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
-import {
-	initializeEntityStatus,
-	transitionEntityStatus,
-} from "../../infrastructure/entity-status.js";
+import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 
 // =============================================================================
 // TYPES

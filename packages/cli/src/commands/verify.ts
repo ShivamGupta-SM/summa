@@ -3,19 +3,43 @@ import { Command } from "commander";
 import pc from "picocolors";
 import { getConfig } from "../utils/get-config.js";
 
+/** Tables that MUST have immutability triggers installed. */
+const IMMUTABLE_TABLES = [
+	"account_balance",
+	"account_balance_version",
+	"transaction_record",
+	"transaction_status",
+	"entry_record",
+	"ledger_event",
+	"block_checkpoint",
+	"merkle_node",
+	"entity_status_log",
+	"system_account",
+	"system_account_version",
+];
+
 export const verifyCommand = new Command("verify")
 	.description("Verify ledger integrity")
 	.option("--chain", "Verify event hash chain integrity")
 	.option("--balances", "Verify double-entry balance integrity")
 	.option("--merkle", "Verify Merkle tree integrity for recent blocks")
+	.option("--triggers", "Verify immutability triggers are present on financial tables")
+	.option("--full", "Full audit — check ALL aggregates instead of sampling 50")
 	.option("--url <url>", "PostgreSQL connection URL (or set DATABASE_URL)")
 	.action(
-		async (options: { chain?: boolean; balances?: boolean; merkle?: boolean; url?: string }) => {
+		async (options: {
+			chain?: boolean;
+			balances?: boolean;
+			merkle?: boolean;
+			triggers?: boolean;
+			full?: boolean;
+			url?: string;
+		}) => {
 			const parent = verifyCommand.parent;
 			const cwd: string = parent?.opts().cwd ?? process.cwd();
 			const configFlag: string | undefined = parent?.opts().config;
 
-			const runAll = !options.chain && !options.balances && !options.merkle;
+			const runAll = !options.chain && !options.balances && !options.merkle && !options.triggers;
 
 			p.intro(pc.bgCyan(pc.black(" summa verify ")));
 
@@ -211,26 +235,35 @@ export const verifyCommand = new Command("verify")
 						}
 					}
 
-					// Verify event hash chain per aggregate (sample check)
+					// Verify event hash chain per aggregate
 					const s5 = p.spinner();
-					const sampleLimit = 50;
-					s5.start(`Sampling event hash chains (${sampleLimit} aggregates)...`);
+					const fullCheck = options.full === true;
+					const sampleLimit = fullCheck ? 0 : 50;
 
 					const aggregateTotalResult = await client.query(
 						`SELECT COUNT(DISTINCT (aggregate_type, aggregate_id)) as total FROM ${t("ledger_event")}`,
 					);
 					const totalAggregates = Number(aggregateTotalResult.rows[0]?.total ?? 0);
-					if (totalAggregates > sampleLimit) {
-						p.log.warn(
-							`Verifying ${sampleLimit} of ${totalAggregates} aggregates. This is a sample check, not a full audit.`,
+
+					if (fullCheck) {
+						s5.start(`Full event hash chain audit (${totalAggregates} aggregates)...`);
+					} else {
+						s5.start(
+							`Sampling event hash chains (${sampleLimit} of ${totalAggregates} aggregates)...`,
 						);
+						if (totalAggregates > sampleLimit) {
+							p.log.warn(
+								`Verifying ${sampleLimit} of ${totalAggregates} aggregates. Use ${pc.cyan("--full")} for a complete audit.`,
+							);
+						}
 					}
 
+					const limitClause = fullCheck ? "" : `LIMIT ${sampleLimit}`;
 					const aggregateResult = await client.query(`
 					SELECT DISTINCT aggregate_type, aggregate_id
 					FROM ${t("ledger_event")}
 					ORDER BY aggregate_type, aggregate_id
-					LIMIT ${sampleLimit}
+					${limitClause}
 				`);
 
 					let eventChainErrors = 0;
@@ -324,8 +357,8 @@ export const verifyCommand = new Command("verify")
 							while (level.length > 1) {
 								const nextLevel: string[] = [];
 								for (let i = 0; i < level.length; i += 2) {
-									const left = level[i]!;
-									const right = i + 1 < level.length ? level[i + 1]! : left;
+									const left = level[i] as string;
+									const right = i + 1 < level.length ? (level[i + 1] as string) : left;
 									nextLevel.push(
 										ch("sha256")
 											.update(left + right)
@@ -335,7 +368,7 @@ export const verifyCommand = new Command("verify")
 								level = nextLevel;
 							}
 							const computedRoot =
-								level.length > 0 ? level[0]! : ch("sha256").update("").digest("hex");
+								level.length > 0 ? (level[0] as string) : ch("sha256").update("").digest("hex");
 
 							if (computedRoot !== block.merkle_root) {
 								merkleErrors++;
@@ -387,6 +420,59 @@ export const verifyCommand = new Command("verify")
 						passed++;
 					} else {
 						s7.stop(`${pc.red("FAIL")} ${nodeCountErrors} block(s) with leaf count mismatch`);
+						failed++;
+					}
+				}
+
+				// ==================================================================
+				// IMMUTABILITY TRIGGER VERIFICATION
+				// ==================================================================
+				if (options.triggers || runAll) {
+					p.log.step(pc.bold("Immutability Trigger Verification"));
+
+					const s8 = p.spinner();
+					s8.start("Checking immutability triggers on financial tables...");
+
+					let missingTriggers = 0;
+					const checkedTables: string[] = [];
+
+					for (const tableName of IMMUTABLE_TABLES) {
+						// Check if the table exists first
+						const tableExists = await client.query(
+							`SELECT 1 FROM information_schema.tables WHERE table_schema = $1 AND table_name = $2`,
+							[schema, tableName],
+						);
+						if (tableExists.rows.length === 0) continue;
+
+						checkedTables.push(tableName);
+						const triggerName = `trg_immutable_${tableName}`;
+						const triggerResult = await client.query(
+							`SELECT 1 FROM information_schema.triggers WHERE trigger_schema = $1 AND event_object_table = $2 AND trigger_name = $3`,
+							[schema, tableName, triggerName],
+						);
+
+						if (triggerResult.rows.length === 0) {
+							missingTriggers++;
+							p.log.error(
+								`  ${pc.red("MISSING")} trigger ${pc.cyan(triggerName)} on ${pc.cyan(tableName)}`,
+							);
+						}
+					}
+
+					if (checkedTables.length === 0) {
+						s8.stop(
+							`${pc.yellow("SKIP")} No financial tables found ${pc.dim("(run migrate push first)")}`,
+						);
+						skipped++;
+					} else if (missingTriggers === 0) {
+						s8.stop(
+							`${pc.green("PASS")} ${checkedTables.length} table(s) have immutability triggers`,
+						);
+						passed++;
+					} else {
+						s8.stop(
+							`${pc.red("FAIL")} ${missingTriggers} table(s) missing immutability triggers — run ${pc.cyan("npx summa migrate push")} to fix`,
+						);
 						failed++;
 					}
 				}

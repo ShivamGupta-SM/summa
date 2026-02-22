@@ -16,10 +16,8 @@ import type { PluginApiResponse, PluginEndpoint, SummaContext, SummaPlugin } fro
 import { minorToDecimal } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 import PDFDocument from "pdfkit";
-import {
-	initializeEntityStatus,
-	transitionEntityStatus,
-} from "../../infrastructure/entity-status.js";
+import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -144,9 +142,10 @@ async function resolveAccount(
 	holderId: string,
 ): Promise<{ id: string; currency: string } | null> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{ id: string; currency: string }>(
-		`SELECT id, currency FROM ${t("account_balance")} WHERE holder_id = $1 LIMIT 1`,
-		[holderId],
+	const ledgerId = getLedgerId(ctx);
+	const rows = await ctx.readAdapter.raw<{ id: string; currency: string }>(
+		`SELECT id, currency FROM ${t("account_balance")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1`,
+		[ledgerId, holderId],
 	);
 	return rows[0] ?? null;
 }
@@ -164,7 +163,8 @@ async function queryEntries(
 	offset: number,
 ): Promise<RawEntryRow[]> {
 	const t = createTableResolver(ctx.options.schema);
-	return ctx.adapter.raw<RawEntryRow>(
+	const ledgerId = getLedgerId(ctx);
+	return ctx.readAdapter.raw<RawEntryRow>(
 		`SELECT
 			e.id            AS entry_id,
 			e.transaction_id,
@@ -178,12 +178,13 @@ async function queryEntries(
 			e.created_at
 		FROM ${t("entry_record")} e
 		JOIN ${t("transaction_record")} t ON t.id = e.transaction_id
-		WHERE e.account_id = $1
+		WHERE t.ledger_id = $6
+			AND e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz
 		ORDER BY e.created_at ASC, e.id ASC
 		LIMIT $4 OFFSET $5`,
-		[accountId, dateFrom, dateTo, limit, offset],
+		[accountId, dateFrom, dateTo, limit, offset, ledgerId],
 	);
 }
 
@@ -194,7 +195,7 @@ async function queryEntryCount(
 	dateTo: string,
 ): Promise<number> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawCountRow>(
+	const rows = await ctx.readAdapter.raw<RawCountRow>(
 		`SELECT COUNT(*)::int AS cnt
 		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
@@ -212,7 +213,7 @@ async function queryAggregates(
 	dateTo: string,
 ): Promise<RawSummaryRow> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawSummaryRow>(
+	const rows = await ctx.readAdapter.raw<RawSummaryRow>(
 		`SELECT
 			COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0)::bigint AS total_credits,
 			COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT'  THEN e.amount ELSE 0 END), 0)::bigint AS total_debits,
@@ -238,7 +239,7 @@ async function queryOpeningBalance(
 	dateFrom: string,
 ): Promise<number> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawBalanceRow>(
+	const rows = await ctx.readAdapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
 		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
@@ -258,7 +259,7 @@ async function queryClosingBalance(
 	openingBalance: number,
 ): Promise<number> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawBalanceRow>(
+	const rows = await ctx.readAdapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
 		FROM ${t("entry_record")} e
 		WHERE e.account_id = $1
@@ -620,6 +621,233 @@ export async function generateStatementPdf(
 
 		doc.end();
 	});
+}
+
+// =============================================================================
+// STREAMING GENERATORS — Memory-bounded for large statements
+// =============================================================================
+
+/**
+ * Stream a PDF statement as a Readable stream.
+ * PDFKit already extends Readable — we write to it incrementally
+ * and return it without collecting all chunks in memory.
+ */
+export async function generateStatementPdfStream(
+	ctx: SummaContext,
+	holderId: string,
+	options?: { dateFrom?: string; dateTo?: string },
+): Promise<InstanceType<typeof PDFDocument> | null> {
+	const account = await resolveAccount(ctx, holderId);
+	if (!account) return null;
+
+	const now = new Date().toISOString();
+	const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	const dateFrom = resolveDate(options?.dateFrom, thirtyDaysAgo);
+	const dateTo = resolveDate(options?.dateTo, now);
+	const currency = account.currency;
+
+	const [aggregates, openingBalance] = await Promise.all([
+		queryAggregates(ctx, account.id, dateFrom, dateTo),
+		queryOpeningBalance(ctx, account.id, dateFrom),
+	]);
+
+	const closingBalance = await queryClosingBalance(
+		ctx,
+		account.id,
+		dateFrom,
+		dateTo,
+		openingBalance,
+	);
+
+	const doc = new PDFDocument({ size: "A4", margin: 50 });
+	const fmt = (amount: number) => minorToDecimal(amount, currency);
+	const pageWidth = doc.page.width - 100;
+
+	// --- Header ---
+	doc.fontSize(20).font("Helvetica-Bold").text("Account Statement", { align: "center" });
+	doc.moveDown(0.5);
+	doc.fontSize(9).font("Helvetica").fillColor("#666666");
+	doc.text(`Holder: ${holderId}    Account: ${account.id}`, { align: "center" });
+	doc.text(`Period: ${dateFrom.slice(0, 10)} to ${dateTo.slice(0, 10)}    Currency: ${currency}`, {
+		align: "center",
+	});
+	doc.moveDown(1);
+
+	// --- Summary Box ---
+	const summaryY = doc.y;
+	doc.rect(50, summaryY, pageWidth, 70).fillAndStroke("#f8f9fa", "#e0e0e0");
+	doc.fillColor("#333333").fontSize(10).font("Helvetica-Bold");
+	doc.text("Opening Balance", 65, summaryY + 10);
+	doc.text("Closing Balance", 200, summaryY + 10);
+	doc.text("Total Credits", 335, summaryY + 10);
+	doc.text("Total Debits", 460, summaryY + 10);
+	doc.fontSize(12).font("Helvetica");
+	doc.text(fmt(openingBalance), 65, summaryY + 28);
+	doc.text(fmt(closingBalance), 200, summaryY + 28);
+	doc.fillColor("#16a34a").text(fmt(aggregates.total_credits), 335, summaryY + 28);
+	doc.fillColor("#dc2626").text(fmt(aggregates.total_debits), 460, summaryY + 28);
+	doc.fillColor("#666666").fontSize(8).font("Helvetica");
+	doc.text(
+		`Net Change: ${fmt(aggregates.total_credits - aggregates.total_debits)}    Transactions: ${aggregates.transaction_count}    Entries: ${aggregates.entry_count}`,
+		65,
+		summaryY + 50,
+	);
+	doc.y = summaryY + 80;
+
+	// --- Table Header ---
+	const COL = { date: 50, ref: 130, desc: 220, type: 340, amount: 390, balance: 470 };
+	function drawTableHeader() {
+		const y = doc.y;
+		doc.rect(50, y, pageWidth, 18).fill("#333333");
+		doc.fillColor("#ffffff").fontSize(8).font("Helvetica-Bold");
+		doc.text("Date", COL.date + 4, y + 4);
+		doc.text("Reference", COL.ref + 4, y + 4);
+		doc.text("Description", COL.desc + 4, y + 4);
+		doc.text("Type", COL.type + 4, y + 4);
+		doc.text("Amount", COL.amount + 4, y + 4);
+		doc.text("Balance After", COL.balance + 4, y + 4);
+		doc.fillColor("#333333").font("Helvetica");
+		doc.y = y + 20;
+	}
+	drawTableHeader();
+
+	// --- Stream entries in batches (no allEntries array in memory) ---
+	const BATCH_SIZE = 500;
+	let batchOffset = 0;
+	let rowIndex = 0;
+
+	const writeEntries = async () => {
+		while (true) {
+			const batch = await queryEntries(ctx, account.id, dateFrom, dateTo, BATCH_SIZE, batchOffset);
+			if (batch.length === 0) break;
+
+			for (const row of batch) {
+				const entry = mapEntryRow(row, currency);
+				if (doc.y > doc.page.height - 80) {
+					doc.addPage();
+					drawTableHeader();
+				}
+
+				const y = doc.y;
+				if (rowIndex % 2 === 0) {
+					doc.rect(50, y, pageWidth, 16).fill("#f8f9fa");
+				}
+
+				doc.fillColor("#333333").fontSize(7).font("Helvetica");
+				doc.text(entry.date.slice(0, 10), COL.date + 4, y + 4, { width: 76 });
+				doc.text(entry.transactionRef.slice(0, 14), COL.ref + 4, y + 4, { width: 86 });
+				doc.text((entry.description ?? "").slice(0, 18), COL.desc + 4, y + 4, { width: 116 });
+
+				const typeColor = entry.entryType === "CREDIT" ? "#16a34a" : "#dc2626";
+				doc.fillColor(typeColor).font("Helvetica-Bold");
+				doc.text(entry.entryType, COL.type + 4, y + 4, { width: 46 });
+
+				doc.fillColor("#333333").font("Helvetica");
+				doc.text(entry.amountDecimal, COL.amount + 4, y + 4, { width: 76 });
+				doc.text(
+					entry.balanceAfter != null ? fmt(entry.balanceAfter) : "-",
+					COL.balance + 4,
+					y + 4,
+					{ width: 76 },
+				);
+
+				doc.y = y + 16;
+				rowIndex++;
+			}
+
+			if (batch.length < BATCH_SIZE) break;
+			batchOffset += BATCH_SIZE;
+		}
+
+		// --- Footer ---
+		doc.moveDown(1);
+		doc.fillColor("#999999").fontSize(7).font("Helvetica");
+		doc.text(
+			`Generated on ${new Date().toISOString().slice(0, 10)} — Summa Financial Ledger`,
+			50,
+			doc.y,
+			{ align: "center" },
+		);
+		doc.end();
+	};
+
+	// Start writing entries asynchronously — doc is a Readable stream the caller can pipe
+	writeEntries().catch((err) => doc.destroy(err));
+
+	return doc;
+}
+
+/**
+ * Stream CSV rows as an async generator.
+ * Yields one string per row — caller can pipe to response without buffering.
+ */
+export async function* generateStatementCsvStream(
+	ctx: SummaContext,
+	holderId: string,
+	options?: { dateFrom?: string; dateTo?: string },
+): AsyncGenerator<string> {
+	const account = await resolveAccount(ctx, holderId);
+	if (!account) return;
+
+	const now = new Date().toISOString();
+	const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	const dateFrom = resolveDate(options?.dateFrom, thirtyDaysAgo);
+	const dateTo = resolveDate(options?.dateTo, now);
+	const currency = account.currency;
+
+	const [aggregates, openingBalance] = await Promise.all([
+		queryAggregates(ctx, account.id, dateFrom, dateTo),
+		queryOpeningBalance(ctx, account.id, dateFrom),
+	]);
+
+	const closingBalance = await queryClosingBalance(
+		ctx,
+		account.id,
+		dateFrom,
+		dateTo,
+		openingBalance,
+	);
+
+	// Yield header lines
+	yield "# Account Statement\n";
+	yield `# Holder ID: ${holderId}\n`;
+	yield `# Period: ${dateFrom} to ${dateTo}\n`;
+	yield `# Currency: ${currency}\n`;
+	yield `# Opening Balance: ${minorToDecimal(openingBalance, currency)}\n`;
+	yield `# Closing Balance: ${minorToDecimal(closingBalance, currency)}\n`;
+	yield `# Total Credits: ${minorToDecimal(aggregates.total_credits, currency)}\n`;
+	yield `# Total Debits: ${minorToDecimal(aggregates.total_debits, currency)}\n`;
+	yield `# Net Change: ${minorToDecimal(aggregates.total_credits - aggregates.total_debits, currency)}\n`;
+	yield `# Transactions: ${aggregates.transaction_count}\n`;
+	yield "#\n";
+	yield "Date,Transaction Ref,Description,Entry Type,Amount,Amount (Decimal),Currency,Balance Before,Balance After\n";
+
+	// Stream entries in batches
+	const BATCH_SIZE = 500;
+	let batchOffset = 0;
+
+	while (true) {
+		const batch = await queryEntries(ctx, account.id, dateFrom, dateTo, BATCH_SIZE, batchOffset);
+		if (batch.length === 0) break;
+
+		for (const row of batch) {
+			const entry = mapEntryRow(row, currency);
+			yield `${[
+				entry.date,
+				escapeCsvField(entry.transactionRef),
+				escapeCsvField(entry.description ?? ""),
+				entry.entryType,
+				String(entry.amount),
+				entry.amountDecimal,
+				entry.currency,
+				entry.balanceBefore != null ? String(entry.balanceBefore) : "",
+				entry.balanceAfter != null ? String(entry.balanceAfter) : "",
+			].join(",")}\n`;
+		}
+
+		if (batch.length < BATCH_SIZE) break;
+		batchOffset += BATCH_SIZE;
+	}
 }
 
 // =============================================================================
@@ -1022,8 +1250,8 @@ export function statements(options?: StatementOptions): SummaPlugin {
 					dateTo: req.query.dateTo,
 				};
 
-				// CSV and PDF via GET still work synchronously for backward compat,
-				// but users should prefer POST /:holderId/generate for large statements.
+				// Synchronous CSV/PDF — for large statements, use POST /:holderId/generate
+				// or the streaming functions (generateStatementPdfStream / generateStatementCsvStream).
 				if (format === "csv") {
 					const csv = await generateStatementCsv(ctx, holderId, dateOpts);
 					if (!csv) return json(404, { error: "Account not found" });

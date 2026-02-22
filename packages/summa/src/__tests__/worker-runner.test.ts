@@ -91,6 +91,10 @@ describe("SummaWorkerRunner", () => {
 		vi.restoreAllMocks();
 	});
 
+	// Core workers (hold-expiry, idempotency-cleanup, lease-cleanup) are always added
+	const CORE_WORKER_COUNT = 3;
+	const CORE_WORKER_IDS = ["core:hold-expiry", "core:idempotency-cleanup", "core:lease-cleanup"];
+
 	it("collects workers from plugins", () => {
 		const handler = vi.fn();
 		const plugin: SummaPlugin = {
@@ -102,12 +106,12 @@ describe("SummaWorkerRunner", () => {
 		const runner = new SummaWorkerRunner(ctx);
 		runner.start();
 
-		// The runner logs the worker count
+		// The runner logs the worker count (plugin workers + core workers)
 		expect(ctx.logger.info).toHaveBeenCalledWith(
 			"Starting worker runner",
 			expect.objectContaining({
-				workerCount: 1,
-				workers: ["test-worker"],
+				workerCount: 1 + CORE_WORKER_COUNT,
+				workers: expect.arrayContaining(["test-worker", ...CORE_WORKER_IDS]),
 			}),
 		);
 
@@ -115,12 +119,20 @@ describe("SummaWorkerRunner", () => {
 		runner.stop();
 	});
 
-	it("logs a message when no workers are registered", () => {
+	it("starts core workers even with no plugins", () => {
 		const ctx = createMockContext([]);
 		const runner = new SummaWorkerRunner(ctx);
 		runner.start();
 
-		expect(ctx.logger.info).toHaveBeenCalledWith("No plugin workers registered");
+		expect(ctx.logger.info).toHaveBeenCalledWith(
+			"Starting worker runner",
+			expect.objectContaining({
+				workerCount: CORE_WORKER_COUNT,
+				workers: expect.arrayContaining(CORE_WORKER_IDS),
+			}),
+		);
+
+		runner.stop();
 	});
 
 	it("throws if started twice", () => {
@@ -179,8 +191,8 @@ describe("SummaWorkerRunner", () => {
 		expect(ctx.logger.info).toHaveBeenCalledWith(
 			"Starting worker runner",
 			expect.objectContaining({
-				workerCount: 3,
-				workers: ["worker-a", "worker-b", "worker-c"],
+				workerCount: 3 + CORE_WORKER_COUNT,
+				workers: expect.arrayContaining(["worker-a", "worker-b", "worker-c", ...CORE_WORKER_IDS]),
 			}),
 		);
 
@@ -203,8 +215,8 @@ describe("SummaWorkerRunner", () => {
 		expect(ctx.logger.info).toHaveBeenCalledWith(
 			"Starting worker runner",
 			expect.objectContaining({
-				workerCount: 1,
-				workers: ["w1"],
+				workerCount: 1 + CORE_WORKER_COUNT,
+				workers: expect.arrayContaining(["w1", ...CORE_WORKER_IDS]),
 			}),
 		);
 

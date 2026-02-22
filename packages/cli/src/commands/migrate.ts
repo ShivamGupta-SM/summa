@@ -33,18 +33,24 @@ function pgType(col: ColumnDefinition): string {
 			return "JSONB";
 		case "serial":
 			return "SERIAL";
+		case "tsvector":
+			return "TSVECTOR";
 		default:
 			return "TEXT";
 	}
 }
 
-function columnSQL(colName: string, col: ColumnDefinition): string {
+function columnSQL(colName: string, col: ColumnDefinition, schema: string): string {
 	const parts = [colName, pgType(col)];
 	if (col.primaryKey) parts.push("PRIMARY KEY");
 	if (col.notNull && !col.primaryKey) parts.push("NOT NULL");
 	if (col.default) {
 		const def = col.default === "NOW()" ? "NOW()" : col.default;
 		parts.push(`DEFAULT ${def}`);
+	}
+	if (col.references) {
+		const refTable = qualifyTable(schema, toSnakeCase(col.references.table));
+		parts.push(`REFERENCES ${refTable}(${col.references.column})`);
 	}
 	return `  ${parts.join(" ")}`;
 }
@@ -60,7 +66,7 @@ function createTableSQL(tableName: string, def: TableDefinition, schema: string)
 	const colLines: string[] = [];
 
 	for (const [colName, col] of Object.entries(def.columns)) {
-		colLines.push(columnSQL(colName, col));
+		colLines.push(columnSQL(colName, col, schema));
 	}
 
 	let sql = `CREATE TABLE IF NOT EXISTS ${qualified} (\n${colLines.join(",\n")}\n);\n`;
@@ -69,8 +75,9 @@ function createTableSQL(tableName: string, def: TableDefinition, schema: string)
 		for (const idx of def.indexes) {
 			const cols = idx.columns.join(", ");
 			const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
+			const using = idx.using ? ` USING ${idx.using}` : "";
 			const qualifiedIdx = schema === "public" ? idx.name : `"${schema}".${idx.name}`;
-			sql += `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified} (${cols});\n`;
+			sql += `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified}${using} (${cols});\n`;
 		}
 	}
 
@@ -106,14 +113,40 @@ const IMMUTABLE_TABLES: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Tables that allow UPDATE on specific columns (e.g., denormalized cache columns).
+ * The trigger function checks that only allowed columns change; immutable columns
+ * (those NOT in this list) raise an exception if modified.
+ */
+const ACCOUNT_BALANCE_IMMUTABLE_COLUMNS = [
+	"id",
+	"ledger_id",
+	"holder_id",
+	"holder_type",
+	"currency",
+	"allow_overdraft",
+	"overdraft_limit",
+	"account_type",
+	"account_code",
+	"parent_account_id",
+	"normal_balance",
+	"indicator",
+	"name",
+	"metadata",
+	"created_at",
+] as const;
+
+/**
  * Generate SQL to create immutability enforcement triggers.
  * These triggers prevent UPDATE and DELETE on financial tables at the DB level,
  * serving as the last line of defense even if application code has bugs.
+ *
+ * account_balance uses a special trigger that allows UPDATE of cached_* columns
+ * (denormalized balance cache) while protecting all immutable columns.
  */
 function immutabilityTriggersSQL(schema: string): string {
 	const parts: string[] = [];
 
-	// Create the shared trigger function
+	// Create the shared trigger function (full immutability — no updates allowed)
 	parts.push(`
 CREATE OR REPLACE FUNCTION "${schema}".prevent_update_delete()
 RETURNS TRIGGER AS $$
@@ -123,12 +156,50 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;`);
 
+	// Create a column-aware trigger for account_balance that allows cached_* column updates
+	// but protects all immutable columns (id, holder_id, currency, etc.)
+	const colChecks = ACCOUNT_BALANCE_IMMUTABLE_COLUMNS.map(
+		(col) => `    OLD.${col} IS DISTINCT FROM NEW.${col}`,
+	).join(" OR\n");
+
+	parts.push(`
+CREATE OR REPLACE FUNCTION "${schema}".prevent_account_balance_mutation()
+RETURNS TRIGGER AS $$
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Table %.% is immutable — DELETE is not allowed', TG_TABLE_SCHEMA, TG_TABLE_NAME;
+    RETURN NULL;
+  END IF;
+  -- Allow UPDATE only if immutable columns are unchanged (cached_* columns may change)
+  IF
+${colChecks}
+  THEN
+    RAISE EXCEPTION 'Table %.% immutable columns cannot be modified — only cached_* columns may be updated', TG_TABLE_SCHEMA, TG_TABLE_NAME;
+    RETURN NULL;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;`);
+
 	// Create triggers for each immutable table
 	for (const tableName of IMMUTABLE_TABLES) {
 		const qualified = qualifyTable(schema, tableName);
 		const triggerName = `trg_immutable_${tableName}`;
 
-		parts.push(`
+		if (tableName === "account_balance") {
+			// Use column-aware trigger for account_balance
+			parts.push(`
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = '${schema}' AND table_name = '${tableName}') THEN
+    DROP TRIGGER IF EXISTS ${triggerName} ON ${qualified};
+    CREATE TRIGGER ${triggerName}
+      BEFORE UPDATE OR DELETE ON ${qualified}
+      FOR EACH ROW
+      EXECUTE FUNCTION "${schema}".prevent_account_balance_mutation();
+  END IF;
+END $$;`);
+		} else {
+			parts.push(`
 DO $$ BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = '${schema}' AND table_name = '${tableName}') THEN
     DROP TRIGGER IF EXISTS ${triggerName} ON ${qualified};
@@ -138,6 +209,7 @@ DO $$ BEGIN
       EXECUTE FUNCTION "${schema}".prevent_update_delete();
   END IF;
 END $$;`);
+		}
 	}
 
 	return parts.join("\n");
@@ -203,10 +275,11 @@ async function buildMigrationPlan(
 					if (!existingIdxNames.has(idx.name)) {
 						const cols = idx.columns.join(", ");
 						const kind = idx.unique ? "UNIQUE INDEX" : "INDEX";
+						const using = idx.using ? ` USING ${idx.using}` : "";
 						const qualified = qualifyTable(schema, sqlName);
 						const qualifiedIdx = schema === "public" ? idx.name : `"${schema}".${idx.name}`;
 						plan.indexesToCreate.push({
-							sql: `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified} (${cols});`,
+							sql: `CREATE ${kind} IF NOT EXISTS ${qualifiedIdx} ON ${qualified}${using} (${cols});`,
 							name: idx.name,
 						});
 					}
@@ -777,7 +850,11 @@ const rollbackSubCommand = new Command("rollback")
 
 				// Try to find the matching SQL file by hash
 				for (const file of migrationFiles) {
-					const content = readFileSync(resolve(migrationsDir, file), "utf-8");
+					// Normalize CRLF → LF to handle Windows line endings
+					const content = readFileSync(resolve(migrationsDir, file), "utf-8").replace(
+						/\r\n/g,
+						"\n",
+					);
 					if (content.includes(`Hash: ${row.hash}`)) {
 						const downMatch = content.split("-- Down\n");
 						if (downMatch.length > 1 && downMatch[1]) {

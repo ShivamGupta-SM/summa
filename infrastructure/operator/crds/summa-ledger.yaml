@@ -1,0 +1,434 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: summaledgers.summa.io
+  labels:
+    app.kubernetes.io/part-of: summa-operator
+spec:
+  group: summa.io
+  names:
+    kind: SummaLedger
+    listKind: SummaLedgerList
+    plural: summaledgers
+    singular: summaledger
+    shortNames:
+      - sl
+    categories:
+      - summa
+  scope: Namespaced
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: SummaLedger deploys a Summa ledger server with its backing services.
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              required:
+                - image
+                - database
+              properties:
+                # ─── Container Image ───────────────────────────────
+                image:
+                  type: string
+                  description: Container image for the Summa server (e.g. summa/server:1.0.0).
+                imagePullPolicy:
+                  type: string
+                  default: IfNotPresent
+                  enum: [Always, IfNotPresent, Never]
+                imagePullSecrets:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+
+                # ─── Replicas & Scaling ────────────────────────────
+                replicas:
+                  type: integer
+                  default: 2
+                  minimum: 1
+                  description: Number of Summa server replicas.
+                autoscaling:
+                  type: object
+                  description: HPA configuration for the server deployment.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    minReplicas:
+                      type: integer
+                      default: 2
+                      minimum: 1
+                    maxReplicas:
+                      type: integer
+                      default: 10
+                      minimum: 1
+                    targetCPUUtilization:
+                      type: integer
+                      default: 70
+                      minimum: 1
+                      maximum: 100
+                    targetMemoryUtilization:
+                      type: integer
+                      default: 80
+                      minimum: 1
+                      maximum: 100
+
+                # ─── Database ──────────────────────────────────────
+                database:
+                  type: object
+                  required:
+                    - secretRef
+                  description: PostgreSQL database connection configuration.
+                  properties:
+                    host:
+                      type: string
+                      description: Database hostname. If omitted, read from secretRef.
+                    port:
+                      type: integer
+                      default: 5432
+                    name:
+                      type: string
+                      default: summa
+                    sslMode:
+                      type: string
+                      default: require
+                      enum: [disable, allow, prefer, require, verify-ca, verify-full]
+                    secretRef:
+                      type: object
+                      required:
+                        - name
+                      description: Secret containing DATABASE_URL and SUMMA_HMAC_SECRET.
+                      properties:
+                        name:
+                          type: string
+                        databaseUrlKey:
+                          type: string
+                          default: DATABASE_URL
+                        hmacSecretKey:
+                          type: string
+                          default: SUMMA_HMAC_SECRET
+                        encryptionSecretKey:
+                          type: string
+                          default: SUMMA_ENCRYPTION_SECRET
+                    pool:
+                      type: object
+                      description: Connection pool settings.
+                      properties:
+                        maxConnections:
+                          type: integer
+                          default: 20
+                          minimum: 1
+                        minConnections:
+                          type: integer
+                          default: 5
+                          minimum: 0
+                        idleTimeoutMs:
+                          type: integer
+                          default: 30000
+
+                # ─── Ledger Configuration ──────────────────────────
+                config:
+                  type: object
+                  description: Summa runtime configuration.
+                  properties:
+                    schema:
+                      type: string
+                      default: summa
+                      description: PostgreSQL schema name for all Summa tables.
+                    currency:
+                      type: string
+                      default: USD
+                      description: Default currency (ISO 4217).
+                    logLevel:
+                      type: string
+                      default: info
+                      enum: [debug, info, warn, error]
+                    logFormat:
+                      type: string
+                      default: json
+                      enum: [json, text]
+                    nodeEnv:
+                      type: string
+                      default: production
+                      enum: [production, development]
+
+                # ─── Plugins ───────────────────────────────────────
+                plugins:
+                  type: array
+                  description: Plugins to enable. Each entry activates a built-in plugin by name with optional config.
+                  items:
+                    type: object
+                    required:
+                      - name
+                    properties:
+                      name:
+                        type: string
+                        description: >
+                          Built-in plugin identifier. Available: outbox, hot-accounts, search,
+                          audit-log, batch-import, bank-reconciliation, fx-engine, budgeting,
+                          approval-workflow, scheduled-transactions, statements, reconciliation,
+                          snapshots, ar-ap, backup, velocity-limits, api-keys, dlq-manager,
+                          data-retention, version-retention, freeze-expiry, hash-snapshot,
+                          gl-sub-ledger, accrual-accounting, financial-reporting, regulatory-reporting,
+                          tax-tracking, balance-monitor, identity, period-close, observability,
+                          batch-engine, i18n, mcp, open-api, admin.
+                      config:
+                        type: object
+                        description: Plugin-specific configuration (passed as plugin factory options).
+                        x-kubernetes-preserve-unknown-fields: true
+
+                # ─── Resources ─────────────────────────────────────
+                resources:
+                  type: object
+                  description: Resource requests and limits for each server pod.
+                  properties:
+                    requests:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: 250m
+                        memory:
+                          type: string
+                          default: 256Mi
+                    limits:
+                      type: object
+                      properties:
+                        cpu:
+                          type: string
+                          default: "1"
+                        memory:
+                          type: string
+                          default: 1Gi
+
+                # ─── Probes ────────────────────────────────────────
+                probes:
+                  type: object
+                  description: Health check configuration.
+                  properties:
+                    liveness:
+                      type: object
+                      properties:
+                        path:
+                          type: string
+                          default: /health
+                        initialDelaySeconds:
+                          type: integer
+                          default: 15
+                        periodSeconds:
+                          type: integer
+                          default: 10
+                        failureThreshold:
+                          type: integer
+                          default: 3
+                    readiness:
+                      type: object
+                      properties:
+                        path:
+                          type: string
+                          default: /ready
+                        initialDelaySeconds:
+                          type: integer
+                          default: 5
+                        periodSeconds:
+                          type: integer
+                          default: 5
+
+                # ─── Ingress ───────────────────────────────────────
+                ingress:
+                  type: object
+                  description: Ingress configuration for external access.
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    className:
+                      type: string
+                      default: nginx
+                    host:
+                      type: string
+                      description: Hostname for the ingress rule (e.g. ledger.example.com).
+                    tls:
+                      type: object
+                      properties:
+                        enabled:
+                          type: boolean
+                          default: true
+                        secretName:
+                          type: string
+                        clusterIssuer:
+                          type: string
+                          default: letsencrypt-prod
+                    annotations:
+                      type: object
+                      description: Additional ingress annotations (rate limiting, proxy settings).
+                      x-kubernetes-preserve-unknown-fields: true
+
+                # ─── Service ───────────────────────────────────────
+                service:
+                  type: object
+                  description: Kubernetes Service configuration.
+                  properties:
+                    type:
+                      type: string
+                      default: ClusterIP
+                      enum: [ClusterIP, LoadBalancer, NodePort]
+                    port:
+                      type: integer
+                      default: 80
+                    annotations:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+
+                # ─── Schema Migration ──────────────────────────────
+                migration:
+                  type: object
+                  description: Schema migration strategy on startup.
+                  properties:
+                    autoRun:
+                      type: boolean
+                      default: true
+                      description: Run `summa migrate push` on pod startup via init container.
+                    strategy:
+                      type: string
+                      default: push
+                      enum: [push, none]
+                      description: >
+                        "push" runs DDL diff automatically.
+                        "none" skips migration (user manages schema externally).
+
+                # ─── Backup ────────────────────────────────────────
+                backup:
+                  type: object
+                  description: Scheduled backup configuration (requires backup plugin).
+                  properties:
+                    enabled:
+                      type: boolean
+                      default: false
+                    schedule:
+                      type: string
+                      default: "0 2 * * *"
+                      description: Cron expression for backup frequency.
+                    storage:
+                      type: string
+                      enum: [s3, gcs, local]
+                    secretRef:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        description: Secret containing cloud storage credentials.
+
+                # ─── Advanced ──────────────────────────────────────
+                podAnnotations:
+                  type: object
+                  description: Annotations to add to server pods.
+                  x-kubernetes-preserve-unknown-fields: true
+                podLabels:
+                  type: object
+                  description: Labels to add to server pods.
+                  x-kubernetes-preserve-unknown-fields: true
+                nodeSelector:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                tolerations:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                affinity:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                serviceAccount:
+                  type: object
+                  properties:
+                    create:
+                      type: boolean
+                      default: true
+                    name:
+                      type: string
+                    annotations:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                terminationGracePeriodSeconds:
+                  type: integer
+                  default: 30
+
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: Current phase of the SummaLedger deployment.
+                  enum: [Pending, Migrating, Running, Degraded, Error]
+                replicas:
+                  type: integer
+                  description: Current number of ready server replicas.
+                availableReplicas:
+                  type: integer
+                version:
+                  type: string
+                  description: Currently deployed image tag.
+                migrationStatus:
+                  type: string
+                  enum: [Pending, Running, Completed, Failed, Skipped]
+                enabledPlugins:
+                  type: array
+                  items:
+                    type: string
+                  description: List of plugin IDs currently active.
+                conditions:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+                observedGeneration:
+                  type: integer
+                  format: int64
+      subresources:
+        status: {}
+        scale:
+          specReplicasPath: .spec.replicas
+          statusReplicasPath: .status.replicas
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Replicas
+          type: integer
+          jsonPath: .status.replicas
+        - name: Version
+          type: string
+          jsonPath: .status.version
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      # print-column for plugins count
+        - name: Plugins
+          type: integer
+          jsonPath: .status.enabledPlugins
+          priority: 1

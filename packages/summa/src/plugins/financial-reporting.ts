@@ -6,6 +6,7 @@
 
 import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -104,6 +105,7 @@ export async function getTrialBalance(
 	_params?: { asOfDate?: string; convertTo?: string; fxRates?: Record<string, number> },
 ): Promise<TrialBalance> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const convertTo =
 		_params?.convertTo ??
 		(ctx.options.functionalCurrency !== ctx.options.currency
@@ -114,9 +116,10 @@ export async function getTrialBalance(
 	const rows = await ctx.adapter.raw<RawReportRow>(
 		`SELECT id, account_code, holder_id, account_type, currency, debit_balance, credit_balance, balance
      FROM ${t("account_balance")}
-     WHERE account_type IS NOT NULL
+     WHERE ledger_id = $1
+       AND account_type IS NOT NULL
      ORDER BY account_code ASC NULLS LAST`,
-		[],
+		[ledgerId],
 	);
 
 	const accounts = rows.map((r) => rowToLineItem(r, convertTo, fxRates));
@@ -142,6 +145,7 @@ export async function getBalanceSheet(
 	_params?: { asOfDate?: string; convertTo?: string; fxRates?: Record<string, number> },
 ): Promise<BalanceSheet> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const convertTo =
 		_params?.convertTo ??
 		(ctx.options.functionalCurrency !== ctx.options.currency
@@ -152,9 +156,10 @@ export async function getBalanceSheet(
 	const rows = await ctx.adapter.raw<RawReportRow>(
 		`SELECT id, account_code, holder_id, account_type, currency, debit_balance, credit_balance, balance
      FROM ${t("account_balance")}
-     WHERE account_type IN ('asset', 'liability', 'equity')
+     WHERE ledger_id = $1
+       AND account_type IN ('asset', 'liability', 'equity')
      ORDER BY account_type, account_code ASC NULLS LAST`,
-		[],
+		[ledgerId],
 	);
 
 	const assets: AccountLineItem[] = [];
@@ -198,6 +203,7 @@ export async function getIncomeStatement(
 	},
 ): Promise<IncomeStatement> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const convertTo =
 		params.convertTo ??
 		(ctx.options.functionalCurrency !== ctx.options.currency
@@ -212,12 +218,13 @@ export async function getIncomeStatement(
             COALESCE(SUM(CASE WHEN er.entry_type = 'CREDIT' THEN er.amount ELSE -er.amount END), 0) as balance
      FROM ${t("account_balance")} ab
      JOIN ${t("entry_record")} er ON er.account_id = ab.id
-     WHERE ab.account_type IN ('revenue', 'expense')
+     WHERE ab.ledger_id = $3
+       AND ab.account_type IN ('revenue', 'expense')
        AND er.created_at >= $1::timestamptz
        AND er.created_at <= $2::timestamptz
      GROUP BY ab.id, ab.account_code, ab.holder_id, ab.account_type, ab.currency
      ORDER BY ab.account_type, ab.account_code ASC NULLS LAST`,
-		[params.dateFrom, params.dateTo],
+		[params.dateFrom, params.dateTo, ledgerId],
 	);
 
 	const revenue: AccountLineItem[] = [];

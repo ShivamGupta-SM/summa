@@ -14,9 +14,10 @@
 //
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
 
-import type { SummaContext, SummaPlugin } from "@summa/core";
+import type { SummaContext, SummaPlugin, TableDefinition } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 import { createBlockCheckpoint, verifyRecentBlocks } from "../infrastructure/hash-chain.js";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -29,6 +30,10 @@ export interface ReconciliationOptions {
 	fastReconciliationInterval?: string;
 	/** Callback invoked after each block checkpoint is created (for external anchoring). */
 	onBlockCheckpoint?: (anchor: BlockCheckpointAnchor) => Promise<void>;
+	/** Force Step 1 to scan all accounts regardless of watermark. Default: false */
+	forceFullScan?: boolean;
+	/** Run a full account scan every N incremental runs as safety net. Default: 7 */
+	fullScanEveryNRuns?: number;
 }
 
 export interface BlockCheckpointAnchor {
@@ -46,6 +51,7 @@ interface ReconciliationWatermark {
 	last_entry_created_at: string | null;
 	last_run_date: string | null;
 	last_mismatches: number;
+	incremental_run_count: number;
 }
 
 interface ReconciliationResult {
@@ -81,16 +87,56 @@ const BATCH_SIZE = 500;
 // PLUGIN FACTORY
 // =============================================================================
 
+// =============================================================================
+// SCHEMA
+// =============================================================================
+
+const reconciliationSchema: Record<string, TableDefinition> = {
+	reconciliation_result: {
+		columns: {
+			id: { type: "uuid", primaryKey: true, notNull: true },
+			run_date: { type: "text", notNull: true },
+			status: { type: "text", notNull: true },
+			total_mismatches: { type: "integer", notNull: true, default: "0" },
+			step0_result: { type: "jsonb" },
+			step0b_result: { type: "jsonb" },
+			step0c_result: { type: "jsonb" },
+			step1_result: { type: "jsonb" },
+			step2_result: { type: "jsonb" },
+			step3_result: { type: "jsonb" },
+			duration_ms: { type: "integer" },
+			mismatches: { type: "jsonb" },
+			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+		indexes: [
+			{ name: "idx_reconciliation_status", columns: ["status"] },
+			{ name: "uq_reconciliation_run_date", columns: ["run_date"], unique: true },
+		],
+	},
+	reconciliation_watermark: {
+		columns: {
+			id: { type: "integer", primaryKey: true },
+			last_entry_created_at: { type: "timestamp" },
+			last_run_date: { type: "text" },
+			last_mismatches: { type: "integer", default: "0" },
+			incremental_run_count: { type: "integer", default: "0" },
+			updated_at: { type: "timestamp", notNull: true, default: "NOW()" },
+		},
+	},
+};
+
 export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 	return {
 		id: "reconciliation",
+
+		schema: reconciliationSchema,
 
 		init: async (ctx: SummaContext) => {
 			const t = createTableResolver(ctx.options.schema);
 			// Create watermark row if it doesn't exist
 			await ctx.adapter.rawMutate(
-				`INSERT INTO ${t("reconciliation_watermark")} (id, last_entry_created_at, last_run_date, last_mismatches)
-				 VALUES (1, NULL, NULL, 0)
+				`INSERT INTO ${t("reconciliation_watermark")} (id, last_entry_created_at, last_run_date, last_mismatches, incremental_run_count)
+				 VALUES (1, NULL, NULL, 0, 0)
 				 ${ctx.dialect.onConflictDoNothing(["id"])}`,
 				[],
 			);
@@ -102,7 +148,7 @@ export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 				id: "daily-reconciliation",
 				description: "Verify event store vs projection consistency across all accounts",
 				handler: async (ctx: SummaContext) => {
-					await dailyReconciliation(ctx);
+					await dailyReconciliation(ctx, options);
 				},
 				interval: options?.reconciliationInterval ?? "1d",
 				leaseRequired: true,
@@ -111,7 +157,8 @@ export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 				id: "block-checkpoint",
 				description: "Create block checkpoint for hash chain integrity",
 				handler: async (ctx: SummaContext) => {
-					const result = await createBlockCheckpoint(ctx);
+					const ledgerId = getLedgerId(ctx);
+					const result = await createBlockCheckpoint(ctx, ledgerId);
 					if (result) {
 						ctx.logger.info("Block checkpoint created", {
 							blockHash: result.blockHash,
@@ -159,8 +206,12 @@ export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 // DAILY RECONCILIATION
 // =============================================================================
 
-async function dailyReconciliation(ctx: SummaContext): Promise<void> {
+async function dailyReconciliation(
+	ctx: SummaContext,
+	pluginOptions?: ReconciliationOptions,
+): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const startMs = Date.now();
 	const runDate = new Date().toISOString();
 	const mismatches: Mismatch[] = [];
@@ -169,7 +220,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 
 	// ---- Fetch watermark ----
 	const watermarkRows = await ctx.adapter.raw<ReconciliationWatermark>(
-		`SELECT id, last_entry_created_at, last_run_date, last_mismatches
+		`SELECT id, last_entry_created_at, last_run_date, last_mismatches, COALESCE(incremental_run_count, 0)::int AS incremental_run_count
 		 FROM ${t("reconciliation_watermark")}
 		 WHERE id = 1
 		 LIMIT 1`,
@@ -177,6 +228,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	);
 	const watermark = watermarkRows[0] ?? null;
 	const watermarkDate = watermark?.last_entry_created_at ?? null;
+	const incrementalRunCount = watermark?.incremental_run_count ?? 0;
 
 	// =========================================================================
 	// Step 0: Per-transaction double-entry balance check (incremental)
@@ -356,125 +408,244 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	// =========================================================================
 	// For each user account, the current balance should equal:
 	//   SUM(CREDIT entries) - SUM(DEBIT entries)
-	// We process in batches of BATCH_SIZE using keyset pagination on id.
+	//
+	// INCREMENTAL MODE: Only verify accounts that had entry activity since
+	// last watermark. A full scan runs every fullScanEveryNRuns as safety net.
 
 	let step1Checked = 0;
 	let step1Mismatches = 0;
-	let lastAccountId = "";
 
-	while (true) {
-		const accountBatch = await ctx.adapter.raw<{
-			id: string;
-			holder_id: string;
-			balance: number;
-			credit_balance: number;
-			debit_balance: number;
-		}>(
-			`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
-			 FROM ${t("account_balance")} a
-			 JOIN LATERAL (
-			   SELECT balance, credit_balance, debit_balance
-			   FROM ${t("account_balance_version")}
-			   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
-			 ) v ON true
-			 WHERE a.id > $1
-			 ORDER BY a.id ASC
-			 LIMIT $2`,
-			[lastAccountId, BATCH_SIZE],
-		);
+	const fullScanEveryN = pluginOptions?.fullScanEveryNRuns ?? 7;
+	const useIncremental =
+		!!watermarkDate && !pluginOptions?.forceFullScan && incrementalRunCount < fullScanEveryN;
 
-		if (accountBatch.length === 0) break;
-
-		// Collect account IDs for batch entry lookup
-		const accountIds = accountBatch.map((a) => a.id);
-
-		// Query entry totals for this batch of accounts
-		// Use ANY($1::uuid[]) for array parameter
-		const entryTotals = await ctx.adapter.raw<{
-			account_id: string;
-			total_credits: number;
-			total_debits: number;
-		}>(
-			`SELECT
-				e.account_id,
-				COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
-				COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
+	if (useIncremental) {
+		// --- INCREMENTAL: only verify accounts that had activity since watermark ---
+		const activeAccountRows = await ctx.adapter.raw<{ account_id: string }>(
+			`SELECT DISTINCT e.account_id
 			 FROM ${t("entry_record")} e
-			 WHERE e.account_id = ANY($1::uuid[])
-			   AND e.is_hot_account = false
-			 GROUP BY e.account_id`,
-			[accountIds],
+			 WHERE e.account_id IS NOT NULL
+			   AND e.created_at > $1
+			 ORDER BY e.account_id ASC`,
+			[watermarkDate],
 		);
 
-		// Build a lookup map
-		const totalsByAccountId = new Map<string, { total_credits: number; total_debits: number }>();
-		for (const et of entryTotals) {
-			totalsByAccountId.set(et.account_id, {
-				total_credits: Number(et.total_credits),
-				total_debits: Number(et.total_debits),
-			});
+		const activeAccountIds = activeAccountRows.map((r) => r.account_id);
+
+		// Process in batches of BATCH_SIZE
+		for (let i = 0; i < activeAccountIds.length; i += BATCH_SIZE) {
+			const batchIds = activeAccountIds.slice(i, i + BATCH_SIZE);
+
+			const accountBatch = await ctx.adapter.raw<{
+				id: string;
+				holder_id: string;
+				balance: number;
+				credit_balance: number;
+				debit_balance: number;
+			}>(
+				`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
+				 FROM ${t("account_balance")} a
+				 JOIN LATERAL (
+				   SELECT balance, credit_balance, debit_balance
+				   FROM ${t("account_balance_version")}
+				   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
+				 ) v ON true
+				 WHERE a.id = ANY($1::uuid[])`,
+				[batchIds],
+			);
+
+			const entryTotals = await ctx.adapter.raw<{
+				account_id: string;
+				total_credits: number;
+				total_debits: number;
+			}>(
+				`SELECT
+					e.account_id,
+					COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
+					COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
+				 FROM ${t("entry_record")} e
+				 WHERE e.account_id = ANY($1::uuid[])
+				   AND e.is_hot_account = false
+				 GROUP BY e.account_id`,
+				[batchIds],
+			);
+
+			const totalsByAccountId = new Map<string, { total_credits: number; total_debits: number }>();
+			for (const et of entryTotals) {
+				totalsByAccountId.set(et.account_id, {
+					total_credits: Number(et.total_credits),
+					total_debits: Number(et.total_debits),
+				});
+			}
+
+			for (const acct of accountBatch) {
+				step1Checked++;
+				const totals = totalsByAccountId.get(acct.id);
+				const entryCredits = totals?.total_credits ?? 0;
+				const entryDebits = totals?.total_debits ?? 0;
+				const expectedBalance = entryCredits - entryDebits;
+				const actualBalance = Number(acct.balance);
+
+				if (expectedBalance !== actualBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedBalance,
+							actualBalance,
+							entryCredits,
+							entryDebits,
+						},
+					});
+				}
+
+				const actualCreditBalance = Number(acct.credit_balance);
+				const actualDebitBalance = Number(acct.debit_balance);
+
+				if (entryCredits !== actualCreditBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_credit_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedCreditBalance: entryCredits,
+							actualCreditBalance,
+						},
+					});
+				}
+
+				if (entryDebits !== actualDebitBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_debit_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedDebitBalance: entryDebits,
+							actualDebitBalance,
+						},
+					});
+				}
+			}
 		}
+	} else {
+		// --- FULL SCAN: iterate all accounts via keyset pagination ---
+		let lastAccountId = "";
 
-		for (const acct of accountBatch) {
-			step1Checked++;
-			const totals = totalsByAccountId.get(acct.id);
-			const entryCredits = totals?.total_credits ?? 0;
-			const entryDebits = totals?.total_debits ?? 0;
-			const expectedBalance = entryCredits - entryDebits;
-			const actualBalance = Number(acct.balance);
+		while (true) {
+			const accountBatch = await ctx.adapter.raw<{
+				id: string;
+				holder_id: string;
+				balance: number;
+				credit_balance: number;
+				debit_balance: number;
+			}>(
+				`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
+				 FROM ${t("account_balance")} a
+				 JOIN LATERAL (
+				   SELECT balance, credit_balance, debit_balance
+				   FROM ${t("account_balance_version")}
+				   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
+				 ) v ON true
+				 WHERE a.ledger_id = $1
+				   AND a.id > $2
+				 ORDER BY a.id ASC
+				 LIMIT $3`,
+				[ledgerId, lastAccountId, BATCH_SIZE],
+			);
 
-			if (expectedBalance !== actualBalance) {
-				step1Mismatches++;
-				mismatches.push({
-					step: "step1_user_account_balance",
-					detail: {
-						accountId: acct.id,
-						holderId: acct.holder_id,
-						expectedBalance,
-						actualBalance,
-						entryCredits,
-						entryDebits,
-					},
+			if (accountBatch.length === 0) break;
+
+			const accountIds = accountBatch.map((a) => a.id);
+
+			const entryTotals = await ctx.adapter.raw<{
+				account_id: string;
+				total_credits: number;
+				total_debits: number;
+			}>(
+				`SELECT
+					e.account_id,
+					COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
+					COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
+				 FROM ${t("entry_record")} e
+				 WHERE e.account_id = ANY($1::uuid[])
+				   AND e.is_hot_account = false
+				 GROUP BY e.account_id`,
+				[accountIds],
+			);
+
+			const totalsByAccountId = new Map<string, { total_credits: number; total_debits: number }>();
+			for (const et of entryTotals) {
+				totalsByAccountId.set(et.account_id, {
+					total_credits: Number(et.total_credits),
+					total_debits: Number(et.total_debits),
 				});
 			}
 
-			// Also verify credit_balance and debit_balance projections
-			const actualCreditBalance = Number(acct.credit_balance);
-			const actualDebitBalance = Number(acct.debit_balance);
+			for (const acct of accountBatch) {
+				step1Checked++;
+				const totals = totalsByAccountId.get(acct.id);
+				const entryCredits = totals?.total_credits ?? 0;
+				const entryDebits = totals?.total_debits ?? 0;
+				const expectedBalance = entryCredits - entryDebits;
+				const actualBalance = Number(acct.balance);
 
-			if (entryCredits !== actualCreditBalance) {
-				step1Mismatches++;
-				mismatches.push({
-					step: "step1_user_account_credit_balance",
-					detail: {
-						accountId: acct.id,
-						holderId: acct.holder_id,
-						expectedCreditBalance: entryCredits,
-						actualCreditBalance,
-					},
-				});
+				if (expectedBalance !== actualBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedBalance,
+							actualBalance,
+							entryCredits,
+							entryDebits,
+						},
+					});
+				}
+
+				const actualCreditBalance = Number(acct.credit_balance);
+				const actualDebitBalance = Number(acct.debit_balance);
+
+				if (entryCredits !== actualCreditBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_credit_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedCreditBalance: entryCredits,
+							actualCreditBalance,
+						},
+					});
+				}
+
+				if (entryDebits !== actualDebitBalance) {
+					step1Mismatches++;
+					mismatches.push({
+						step: "step1_user_account_debit_balance",
+						detail: {
+							accountId: acct.id,
+							holderId: acct.holder_id,
+							expectedDebitBalance: entryDebits,
+							actualDebitBalance,
+						},
+					});
+				}
 			}
 
-			if (entryDebits !== actualDebitBalance) {
-				step1Mismatches++;
-				mismatches.push({
-					step: "step1_user_account_debit_balance",
-					detail: {
-						accountId: acct.id,
-						holderId: acct.holder_id,
-						expectedDebitBalance: entryDebits,
-						actualDebitBalance,
-					},
-				});
-			}
+			lastAccountId = accountBatch[accountBatch.length - 1]?.id ?? lastAccountId;
+			if (accountBatch.length < BATCH_SIZE) break;
 		}
-
-		lastAccountId = accountBatch[accountBatch.length - 1]?.id ?? lastAccountId;
-		if (accountBatch.length < BATCH_SIZE) break;
 	}
 
 	const step1Result = {
 		checked: true,
+		incremental: useIncremental,
 		accountsChecked: step1Checked,
 		mismatches: step1Mismatches,
 	};
@@ -492,7 +663,9 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	const systemAccounts = await ctx.adapter.raw<{
 		id: string;
 		identifier: string;
-	}>(`SELECT id, identifier FROM ${t("system_account")} ORDER BY id ASC`, []);
+	}>(`SELECT id, identifier FROM ${t("system_account")} WHERE ledger_id = $1 ORDER BY id ASC`, [
+		ledgerId,
+	]);
 
 	let step2Checked = 0;
 	let step2Mismatches = 0;
@@ -587,7 +760,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 	let step3Result: Record<string, unknown>;
 
 	try {
-		const blockResult = await verifyRecentBlocks(ctx);
+		const blockResult = await verifyRecentBlocks(ctx, ledgerId);
 
 		if (blockResult.blocksFailed > 0) {
 			for (const failure of blockResult.failures) {
@@ -633,13 +806,17 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 
 	const newWatermarkDate = latestEntryRows[0]?.max_created_at ?? watermarkDate;
 
+	// Reset incremental_run_count on full scan, increment on incremental
+	const newIncrementalCount = useIncremental ? incrementalRunCount + 1 : 0;
+
 	await ctx.adapter.rawMutate(
 		`UPDATE ${t("reconciliation_watermark")}
 		 SET last_entry_created_at = $1,
 		     last_run_date = $2,
-		     last_mismatches = $3
+		     last_mismatches = $3,
+		     incremental_run_count = $4
 		 WHERE id = 1`,
-		[newWatermarkDate, runDate, mismatches.length],
+		[newWatermarkDate, runDate, mismatches.length, newIncrementalCount],
 	);
 
 	// =========================================================================
@@ -712,6 +889,7 @@ async function dailyReconciliation(ctx: SummaContext): Promise<void> {
 
 async function fastReconciliation(ctx: SummaContext): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const startMs = Date.now();
 	const mismatches: Mismatch[] = [];
 
@@ -750,7 +928,11 @@ async function fastReconciliation(ctx: SummaContext): Promise<void> {
 
 	// Step 3: Block chain verification (last 2 hours)
 	try {
-		const blockResult = await verifyRecentBlocks(ctx, new Date(Date.now() - 2 * 60 * 60 * 1000));
+		const blockResult = await verifyRecentBlocks(
+			ctx,
+			ledgerId,
+			new Date(Date.now() - 2 * 60 * 60 * 1000),
+		);
 		for (const failure of blockResult.failures) {
 			mismatches.push({
 				step: "fast_step3_block_chain",

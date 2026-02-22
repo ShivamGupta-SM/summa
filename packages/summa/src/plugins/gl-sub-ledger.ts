@@ -5,6 +5,7 @@
 
 import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -56,6 +57,7 @@ export async function registerSubLedger(
 
 export async function getGlSummary(ctx: SummaContext, glAccountId: string): Promise<GlSummary> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const rows = await ctx.adapter.raw<{
 		total_balance: number;
 		total_credit: number;
@@ -69,8 +71,8 @@ export async function getGlSummary(ctx: SummaContext, glAccountId: string): Prom
        COUNT(*)::int as count
      FROM ${t("account_balance")} ab
      JOIN ${t("gl_sub_ledger_mapping")} m ON m.sub_ledger_account_id = ab.id
-     WHERE m.gl_account_id = $1`,
-		[glAccountId],
+     WHERE ab.ledger_id = $1 AND m.gl_account_id = $2`,
+		[ledgerId, glAccountId],
 	);
 
 	const row = rows[0];
@@ -88,8 +90,13 @@ export async function reconcile(
 	glAccountId?: string,
 ): Promise<ReconciliationResult[]> {
 	const t = createTableResolver(ctx.options.schema);
-	const filter = glAccountId ? `WHERE m.gl_account_id = $1` : "";
-	const params = glAccountId ? [glAccountId] : [];
+	const ledgerId = getLedgerId(ctx);
+	const params: unknown[] = [ledgerId];
+	let filter = `WHERE gl.ledger_id = $1 AND sub.ledger_id = $1`;
+	if (glAccountId) {
+		params.push(glAccountId);
+		filter += ` AND m.gl_account_id = $2`;
+	}
 
 	const rows = await ctx.adapter.raw<{
 		gl_account_id: string;

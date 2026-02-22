@@ -36,6 +36,12 @@ import {
 	TableCellsIcon,
 	CpuChipIcon,
 	LanguageIcon,
+	FingerPrintIcon,
+	KeyIcon,
+	BellAlertIcon,
+	MagnifyingGlassIcon,
+	ArrowPathIcon,
+	ChartBarSquareIcon,
 } from "@heroicons/react/24/solid";
 import type { ComponentType, ReactElement } from "react";
 import { createElement } from "react";
@@ -261,6 +267,13 @@ const iconMap: Record<
 	ArrowUpTray: ArrowUpTrayIcon,
 	CurrencyDollar: CurrencyDollarIcon,
 	Layers: Square3Stack3DIcon,
+	// New enterprise plugins
+	FingerPrint: FingerPrintIcon,
+	Key: KeyIcon,
+	BellAlert: BellAlertIcon,
+	MagnifyingGlass: MagnifyingGlassIcon,
+	ArrowPath: ArrowPathIcon,
+	ChartBarSquare: ChartBarSquareIcon,
 	// Frameworks — actual brand logos
 	Express: ExpressIcon,
 	Fastify: FastifyIcon,

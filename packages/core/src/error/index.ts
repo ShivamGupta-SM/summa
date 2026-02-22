@@ -98,4 +98,11 @@ export class SummaError extends Error {
 	static rateLimited(message = "Rate limit exceeded", cause?: unknown) {
 		return new SummaError("RATE_LIMITED", message, { cause, status: 429 });
 	}
+
+	static optimisticLockConflict(
+		message = "Optimistic lock conflict: version already exists",
+		cause?: unknown,
+	) {
+		return new SummaError("OPTIMISTIC_LOCK_CONFLICT", message, { cause, status: 409 });
+	}
 }

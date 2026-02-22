@@ -13,10 +13,8 @@ import type {
 } from "@summa/core";
 import { SummaError } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
-import {
-	initializeEntityStatus,
-	transitionEntityStatus,
-} from "../../infrastructure/entity-status.js";
+import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 import { creditAccount, debitAccount, transfer } from "../managers/transaction-manager.js";
 
 // =============================================================================
@@ -204,6 +202,7 @@ export async function createBatch(
 	options?: BatchImportOptions,
 ): Promise<ImportBatch> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	let items: Record<string, unknown>[];
 
 	if (params.format === "csv") {
@@ -231,10 +230,10 @@ export async function createBatch(
 
 	// Insert batch record (no status or mutable counter columns)
 	const batchRows = await ctx.adapter.raw<RawBatchRow>(
-		`INSERT INTO ${t("import_batch")} (name, format, total_items, created_by)
-     VALUES ($1, $2, $3, $4)
+		`INSERT INTO ${t("import_batch")} (ledger_id, name, format, total_items, created_by)
+     VALUES ($1, $2, $3, $4, $5)
      RETURNING *`,
-		[params.name, params.format, items.length, params.createdBy ?? null],
+		[ledgerId, params.name, params.format, items.length, params.createdBy ?? null],
 	);
 	const batch = batchRows[0];
 	if (!batch) throw SummaError.internal("Failed to create import batch");
@@ -283,14 +282,15 @@ export async function listBatches(
 	params?: { status?: BatchStatus; page?: number; perPage?: number },
 ): Promise<{ batches: ImportBatch[]; hasMore: boolean; total: number }> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const page = Math.max(1, params?.page ?? 1);
 	const perPage = Math.min(params?.perPage ?? 20, 100);
 	const offset = (page - 1) * perPage;
 
 	const lateralJoin = statusLateralJoin(t, "import_batch", "b", "s");
-	const conditions: string[] = [];
-	const queryParams: unknown[] = [];
-	let paramIdx = 1;
+	const conditions: string[] = [`b.ledger_id = $${1}`];
+	const queryParams: unknown[] = [ledgerId];
+	let paramIdx = 2;
 
 	if (params?.status) {
 		conditions.push(`s.current_status = $${paramIdx++}`);
@@ -328,13 +328,14 @@ export async function listBatches(
 
 export async function getBatchStatus(ctx: SummaContext, batchId: string): Promise<ImportBatch> {
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 	const lateralJoin = statusLateralJoin(t, "import_batch", "b", "s");
 	const rows = await ctx.adapter.raw<RawBatchWithStatusRow>(
 		`SELECT b.*, s.current_status, s.status_metadata
      FROM ${t("import_batch")} b
      JOIN ${lateralJoin}
-     WHERE b.id = $1`,
-		[batchId],
+     WHERE b.ledger_id = $1 AND b.id = $2`,
+		[ledgerId, batchId],
 	);
 	const row = rows[0];
 	if (!row) throw SummaError.notFound("Batch not found");
@@ -438,7 +439,7 @@ export async function postBatch(
 ): Promise<ImportBatch> {
 	const t = createTableResolver(ctx.options.schema);
 	const mode = params.mode ?? "continue_on_error";
-	const batch = await getBatchStatus(ctx, params.batchId);
+	const batch = await getBatchStatus(ctx, params.batchId); // getBatchStatus already filters by ledger_id
 
 	if (batch.status !== "validated") {
 		throw SummaError.conflict(`Batch must be validated before posting (current: ${batch.status})`);
@@ -655,14 +656,15 @@ export function batchImport(options?: BatchImportOptions): SummaPlugin {
 				leaseRequired: true,
 				handler: async (ctx) => {
 					const t = createTableResolver(ctx.options.schema);
+					const ledgerId = getLedgerId(ctx);
 					const lateralJoin = statusLateralJoin(t, "import_batch", "b", "s");
 					const batches = await ctx.adapter.raw<RawBatchWithStatusRow>(
 						`SELECT b.*, s.current_status, s.status_metadata
              FROM ${t("import_batch")} b
              JOIN ${lateralJoin}
-             WHERE s.current_status = 'posting'
+             WHERE b.ledger_id = $1 AND s.current_status = 'posting'
              LIMIT 5`,
-						[],
+						[ledgerId],
 					);
 					for (const batch of batches) {
 						try {

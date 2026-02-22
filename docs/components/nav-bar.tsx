@@ -67,8 +67,8 @@ export const Navbar = () => {
 						href="/"
 						className="flex items-center gap-2.5 py-7 text-foreground shrink-0 transition-colors"
 					>
-						<Logo className="size-5" />
-						<span className="text-sm font-medium tracking-widest uppercase select-none">Summa</span>
+						<Logo className="size-7" />
+						<span className="text-base font-medium tracking-widest uppercase select-none">Summa</span>
 					</Link>
 					<div className="flex items-center gap-1">
 						<ul className="navbar:flex items-center hidden">
@@ -84,8 +84,8 @@ export const Navbar = () => {
 							>
 								<svg
 									xmlns="http://www.w3.org/2000/svg"
-									width="1.2em"
-									height="1.2em"
+									width="1.4em"
+									height="1.4em"
 									viewBox="0 0 496 512"
 									aria-hidden="true"
 								>

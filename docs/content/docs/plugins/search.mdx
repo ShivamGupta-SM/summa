@@ -1,0 +1,258 @@
+---
+title: Full-Text Search
+description: Native PostgreSQL full-text search with optional Typesense and Meilisearch backends.
+icon: MagnifyingGlass
+---
+
+## Overview
+
+The search plugin adds full-text search across accounts, transactions, and identities using pluggable backends. Ships with a **native PostgreSQL** backend (zero external dependencies), plus **Typesense** and **Meilisearch** for high-volume deployments. Documents are indexed asynchronously via a queue, with batch reindexing support for initial data loads.
+
+## Setup
+
+### With PostgreSQL (Recommended)
+
+Zero-dependency — uses PostgreSQL's built-in `tsvector` + GIN indexes. No external services required.
+
+```ts
+import { createSumma } from "summa";
+import { search, pgSearchBackend } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    search({
+      backend: pgSearchBackend(),
+    }),
+  ],
+});
+```
+
+Configure the backend with optional trigram support for fuzzy matching:
+
+```ts
+pgSearchBackend({
+  language: "english",           // Text search config (default: "english")
+  enableTrigram: true,           // Enable pg_trgm fuzzy fallback (default: false)
+  trigramThreshold: 0.3,         // Similarity threshold 0.0-1.0 (default: 0.3)
+  externalSearchThreshold: 5_000_000, // Recommend external search above this doc count
+  partialIndexes: [              // Create partial GIN indexes for common filters
+    { collection: "transactions", field: "type" },
+    { collection: "accounts", field: "status" },
+  ],
+})
+```
+
+### With Typesense
+
+For sub-millisecond latency at scale with dedicated search infrastructure:
+
+```ts
+import { createSumma } from "summa";
+import { search, typesenseBackend } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    search({
+      backend: typesenseBackend({
+        host: "localhost",
+        port: 8108,
+        apiKey: process.env.TYPESENSE_API_KEY!,
+        protocol: "http",
+      }),
+    }),
+  ],
+});
+```
+
+### With Meilisearch
+
+```ts
+import { search, meilisearchBackend } from "summa/plugins";
+
+search({
+  backend: meilisearchBackend({
+    host: "http://localhost:7700",
+    apiKey: process.env.MEILI_MASTER_KEY!,
+  }),
+})
+```
+
+## Configuration
+
+```ts
+search({
+  backend: typesenseBackend({ ... }),
+  indexerInterval: "3s",       // Queue processing interval
+  cleanupInterval: "6h",      // Queue cleanup interval
+  batchSize: 100,              // Documents per indexing batch
+  reindexPageSize: 500,        // Records per page during reindexing
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `backend` | `SearchBackend` | **Required** | Search backend implementation |
+| `indexerInterval` | `string` | `"3s"` | Queue processing worker interval |
+| `cleanupInterval` | `string` | `"6h"` | Processed queue entry cleanup interval |
+| `batchSize` | `number` | `100` | Documents per indexing batch |
+| `reindexPageSize` | `number` | `500` | Records per page during full reindex |
+
+### `pgSearchBackend` Options
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `language` | `string` | `"english"` | PostgreSQL text search configuration |
+| `enableTrigram` | `boolean` | `false` | Enable `pg_trgm` trigram indexes for fuzzy search fallback |
+| `trigramThreshold` | `number` | `0.3` | Similarity threshold for trigram matching (0.0–1.0) |
+| `partialIndexes` | `Array<{ collection, field }>` | — | Create partial GIN indexes for common filter patterns |
+| `externalSearchThreshold` | `number` | `5000000` | Document count at which the `/search/health` endpoint recommends switching to Typesense/Meilisearch |
+
+### Trigram Fuzzy Search
+
+When `enableTrigram: true`, the PG backend creates `pg_trgm` GIN indexes on searchable fields and uses them as a fuzzy fallback:
+
+1. The primary search runs using `tsvector` (fast, ranked full-text)
+2. If `tsvector` returns 0 results AND `enableTrigram` is enabled, a fallback query using `similarity()` runs with the configured `trigramThreshold`
+3. This catches typos and partial matches that `tsvector` misses (e.g., "jhn" matches "john")
+
+Requires the `pg_trgm` extension — Summa creates it automatically with `CREATE EXTENSION IF NOT EXISTS pg_trgm`.
+
+### Search Health
+
+The `/search/health` endpoint returns document counts per collection and flags when the PG backend is approaching its practical limit:
+
+```
+GET /search/health
+```
+
+```json
+{
+  "backend": "postgresql",
+  "collections": {
+    "accounts": { "documentCount": 150000 },
+    "transactions": { "documentCount": 4800000 }
+  },
+  "recommendation": null
+}
+```
+
+When any collection exceeds `externalSearchThreshold`, the response includes a recommendation to migrate to Typesense or Meilisearch.
+
+## How It Works
+
+### Automatic Indexing
+
+The plugin uses `afterTransaction` and `afterAccountCreate` hooks to automatically queue documents for indexing whenever accounts or transactions are created or modified.
+
+Documents flow through a three-stage pipeline:
+
+1. **Hook fires** → record is inserted into `search_index_queue`
+2. **Indexer worker** (every 3s) → picks up pending queue entries and sends them to the search backend
+3. **Cleanup worker** (every 6h) → purges processed queue entries
+
+### Search Collections
+
+Three collections are auto-created on plugin initialization:
+
+| Collection | Indexed Fields |
+|------------|---------------|
+| `accounts` | holderId, holderType, currency, status, metadata |
+| `transactions` | type, holderId, destinationHolderId, amount, reference, description, status |
+| `identities` | firstName, lastName, email, phone, city, country |
+
+### Searching
+
+```bash
+# Single collection search
+POST /search
+{
+  "collection": "transactions",
+  "query": "invoice payment",
+  "filters": { "type": "credit" },
+  "limit": 20,
+  "offset": 0
+}
+
+# Multi-collection search
+POST /search/multi
+{
+  "searches": [
+    { "collection": "accounts", "query": "acme" },
+    { "collection": "transactions", "query": "invoice" }
+  ]
+}
+```
+
+### Batch Reindexing
+
+Trigger a full reindex to backfill existing data into the search backend:
+
+```bash
+POST /search/reindex
+{
+  "collection": "transactions"
+}
+```
+
+Reindexing uses **keyset pagination** for memory efficiency and tracks progress in the `search_reindex_status` table. Check progress:
+
+```bash
+GET /search/reindex/status
+```
+
+## HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/search` | Search a single collection |
+| `POST` | `/search/multi` | Search multiple collections |
+| `POST` | `/search/reindex` | Trigger full reindex for a collection |
+| `GET` | `/search/reindex/status` | Check reindex progress |
+
+## Background Workers
+
+| Worker | Interval | Description |
+|--------|----------|-------------|
+| `search-indexer` | `3s` | Processes queued documents and sends to search backend |
+| `search-queue-cleanup` | `6h` | Purges processed queue entries |
+
+## Backend Comparison
+
+| Backend | Dependencies | Latency | Best For |
+|---------|-------------|---------|----------|
+| `pgSearchBackend()` | None (PostgreSQL built-in) | 2-10ms | Most deployments, simplicity, no PII syncing concerns |
+| `typesenseBackend()` | Typesense server | sub-ms | High-volume search, typo tolerance, faceted navigation |
+| `meilisearchBackend()` | Meilisearch server | sub-ms | Developer experience, typo tolerance |
+
+## Custom Search Backend
+
+Implement the `SearchBackend` interface to use any search engine:
+
+```ts
+interface SearchBackend {
+  initialize(collections: SearchCollectionConfig[]): Promise<void>;
+  index(collection: string, document: Record<string, unknown>): Promise<void>;
+  indexBatch(collection: string, documents: Record<string, unknown>[]): Promise<void>;
+  search(collection: string, query: SearchQuery): Promise<SearchResult>;
+  delete(collection: string, documentId: string): Promise<void>;
+  multiSearch?(queries: Array<{ collection: string; query: SearchQuery }>): Promise<SearchResult[]>;
+  /** Optional: receives SummaContext for backends that need DB access */
+  setContext?(ctx: SummaContext): void;
+}
+```
+
+## Type Inference
+
+```ts
+import type { SearchResult, ReindexStatus } from "summa/plugins";
+
+type Result = typeof summa.$Infer.SearchResult;
+// { hits, found, page, totalPages, facetCounts? }
+
+type Reindex = typeof summa.$Infer.ReindexStatus;
+// { collection, status, totalDocuments, indexedDocuments, startedAt, completedAt, errorMessage }
+```

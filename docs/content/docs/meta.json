@@ -9,6 +9,8 @@
 		"transactions",
 		"holds",
 		"events",
+		"workers",
+		"multi-tenancy",
 		"---Adapters---",
 		"...adapters",
 		"---Frameworks---",

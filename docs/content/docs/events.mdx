@@ -213,6 +213,43 @@ console.log(result.brokenAtVersion); // version where chain broke (if invalid)
 
 The verification re-computes every hash from the event data and checks that each `hash` matches the next event's `prevHash`.
 
+### Checkpoint-Aware Verification
+
+`verifyHashChain()` scans every event from the beginning — O(all events). For ledgers with millions of events, use the checkpoint-aware variant that skips events already covered by sealed block checkpoints:
+
+```ts
+import { verifyHashChainFromCheckpoint } from "summa/infrastructure";
+
+const result = await verifyHashChainFromCheckpoint(
+  ctx,
+  "account",
+  accountId,
+  ledgerId,
+);
+
+console.log(result.valid);                // true if chain is intact
+console.log(result.eventCount);           // events actually scanned
+console.log(result.skippedViaCheckpoint); // events skipped (already sealed)
+console.log(result.brokenAtVersion);      // version where chain broke (if invalid)
+```
+
+This finds the latest sealed `block_checkpoint`, gets the last event hash it covers, and verifies only events after that point. Falls back to a full scan if no checkpoints exist.
+
+The reconciliation plugin uses this automatically for Step 5 (hash chain verification).
+
+### `getLatestSealedSequence`
+
+Get the highest event sequence number covered by a sealed block checkpoint:
+
+```ts
+import { getLatestSealedSequence } from "summa/infrastructure";
+
+const seq = await getLatestSealedSequence(ctx, ledgerId);
+// Returns 0 if no checkpoints exist
+```
+
+Useful for determining how much of the event log is "sealed" and safe for partition detachment.
+
 ## CLI Verification
 
 The CLI provides comprehensive integrity checks:

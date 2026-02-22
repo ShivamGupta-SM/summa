@@ -71,8 +71,8 @@ function getPathAliases(cwd: string): Record<string, string> | null {
 
 	try {
 		const raw = readFileSync(tsconfigPath, "utf-8");
-		// Strip single-line comments for JSON.parse compatibility
-		const stripped = raw.replace(/\/\/.*$/gm, "");
+		// Strip comments for JSON.parse compatibility (single-line and multi-line)
+		const stripped = raw.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 		const tsconfig = JSON.parse(stripped);
 		const paths = tsconfig?.compilerOptions?.paths;
 		if (!paths || typeof paths !== "object") return null;
@@ -112,7 +112,7 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
 			configFile,
 			cwd,
 			dotenv: {
-				fileName: [".env", ".env.local"],
+				fileName: [".env", ".env.local", ".env.development", ".env.production"],
 			},
 			rcFile: false,
 			packageJson: false,
@@ -126,7 +126,10 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
 		if (!options) return null;
 
 		return { options, configFile };
-	} catch {
+	} catch (error) {
+		// Surface config parse errors so users can debug, instead of silently failing
+		const message = error instanceof Error ? error.message : String(error);
+		process.stderr.write(`summa: failed to load config from ${configFile}: ${message}\n`);
 		return null;
 	}
 }

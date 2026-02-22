@@ -15,6 +15,7 @@ import {
 	isValidCachedResult,
 	saveIdempotencyKeyInTx,
 } from "./idempotency.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import type { RawTransactionRow } from "./raw-types.js";
 import { processJournalLegs, rawToTransactionResponse } from "./sql-helpers.js";
 
@@ -30,6 +31,8 @@ export async function journalEntry(
 		description?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const { entries, reference, description = "", metadata = {} } = params;
@@ -60,11 +63,14 @@ export async function journalEntry(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
+
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 
 		// Idempotency check
 		const idem = await checkIdempotencyKeyInTx(tx, {
+			ledgerId,
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
@@ -77,8 +83,8 @@ export async function journalEntry(
 		// Create journal transaction record
 		// source_account_id and destination_account_id are null for journal entries
 		const txnRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, status, amount, currency, description, correlation_id, meta_data, posted_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+			`INSERT INTO ${t("transaction_record")} (type, reference, status, amount, currency, description, correlation_id, meta_data, posted_at, ledger_id, effective_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, COALESCE($10::timestamptz, NOW()))
        RETURNING *`,
 			[
 				"journal",
@@ -93,12 +99,22 @@ export async function journalEntry(
 					type: "journal",
 					entries,
 				}),
+				ledgerId,
+				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRows[0]!;
 
 		// Process each leg
-		await processJournalLegs(tx, ctx, txnRecord, entries, ctx.options.currency, "journal");
+		await processJournalLegs(
+			tx,
+			ctx,
+			txnRecord,
+			entries,
+			ctx.options.currency,
+			"journal",
+			ledgerId,
+		);
 
 		// Event store
 		await appendEvent(
@@ -115,6 +131,7 @@ export async function journalEntry(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		const response = rawToTransactionResponse(txnRecord, "journal", ctx.options.currency);
@@ -122,6 +139,7 @@ export async function journalEntry(
 		// Save idempotency key
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
+				ledgerId,
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,

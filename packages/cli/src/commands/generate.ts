@@ -37,6 +37,8 @@ const DRIZZLE_TYPE_MAP: Record<string, string> = {
 	timestamp: 'timestamp("$COL", { withTimezone: true })',
 	jsonb: 'jsonb("$COL")',
 	serial: 'serial("$COL")',
+	tsvector:
+		'customType<{ data: string; driverData: string }>({ dataType: () => "TSVECTOR" })("$COL")',
 };
 
 function generateDrizzleColumn(colName: string, col: ColumnDefinition): string {
@@ -48,6 +50,9 @@ function generateDrizzleColumn(colName: string, col: ColumnDefinition): string {
 	if (col.notNull) line += ".notNull()";
 	if (col.default === "NOW()") line += ".defaultNow()";
 	else if (col.default) line += `.default(${col.default})`;
+	if (col.references) {
+		line += `.references(() => ${col.references.table}.${col.references.column})`;
+	}
 
 	return `${line},`;
 }
@@ -120,6 +125,9 @@ function generateDrizzleSchema(tables: Record<string, TableDefinition>, schema: 
 				case "serial":
 					imports.add("serial");
 					break;
+				case "tsvector":
+					imports.add("customType");
+					break;
 			}
 		}
 	}
@@ -158,6 +166,7 @@ const PRISMA_TYPE_MAP: Record<string, string> = {
 	timestamp: "DateTime @default(now()) @db.Timestamptz",
 	jsonb: "Json",
 	serial: "Int @default(autoincrement())",
+	tsvector: 'Unsupported("tsvector")',
 };
 
 function generatePrismaModel(name: string, def: TableDefinition, schema: string): string {
@@ -175,6 +184,17 @@ function generatePrismaModel(name: string, def: TableDefinition, schema: string)
 		const decorators = [pk, ...typeParts.slice(1).map((d) => ` ${d}`)].join("");
 
 		lines.push(`  ${colName} ${prismaType}${decorators}`);
+
+		// Add relation field for foreign keys
+		if (col.references) {
+			const refTable = capitalize(col.references.table);
+			const relationField = colName.replace(/_id$/, "");
+			if (relationField !== colName) {
+				lines.push(
+					`  ${relationField} ${refTable}? @relation(fields: [${colName}], references: [${col.references.column}])`,
+				);
+			}
+		}
 	}
 
 	if (def.indexes && def.indexes.length > 0) {
@@ -243,6 +263,7 @@ const KYSELY_TYPE_MAP: Record<string, string> = {
 	timestamp: "Date",
 	jsonb: "unknown",
 	serial: "number",
+	tsvector: "string",
 };
 
 function generateKyselyInterface(name: string, def: TableDefinition): string {
@@ -253,6 +274,9 @@ function generateKyselyInterface(name: string, def: TableDefinition): string {
 	for (const [colName, col] of Object.entries(def.columns)) {
 		const tsType = KYSELY_TYPE_MAP[col.type] ?? "unknown";
 		const optional = col.notNull ? "" : " | null";
+		if (col.references) {
+			lines.push(`  /** FK → ${col.references.table}.${col.references.column} */`);
+		}
 		lines.push(`  ${colName}: ${tsType}${optional};`);
 	}
 

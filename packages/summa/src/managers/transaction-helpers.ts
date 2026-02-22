@@ -4,12 +4,10 @@
 // Extracted from transaction-manager.ts to reduce duplication across
 // credit, debit, transfer, and refund operations.
 
-import { randomUUID } from "node:crypto";
 import type { SummaContext, SummaTransactionAdapter } from "@summa/core";
 import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 import { appendEvent } from "../infrastructure/event-store.js";
-import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { saveIdempotencyKeyInTx } from "./idempotency.js";
 import { logTransactionInTx } from "./limit-manager.js";
 import type { RawAccountRow, RawTransactionRow } from "./raw-types.js";
@@ -48,26 +46,44 @@ export function assertAccountActive(account: Pick<RawAccountRow, "status">, labe
 }
 
 // =============================================================================
-// SYSTEM ACCOUNT LOOKUP
+// SYSTEM ACCOUNT LOOKUP (with in-memory cache)
 // =============================================================================
 
 /**
+ * In-memory cache for system account IDs. System accounts are immutable after
+ * creation, so we can cache them indefinitely. Key: "ledgerId:identifier".
+ */
+const systemAccountCache = new Map<string, string>();
+
+/** Clear the system account cache (useful for testing). */
+export function clearSystemAccountCache(): void {
+	systemAccountCache.clear();
+}
+
+/**
  * Looks up a system account by identifier within a transaction.
+ * Results are cached in-memory since system accounts are immutable.
  * Throws SummaError.notFound if not found.
  */
 export async function resolveSystemAccountInTx(
 	tx: SummaTransactionAdapter,
 	identifier: string,
 	schema: string,
+	ledgerId: string,
 ): Promise<string> {
+	const cacheKey = `${ledgerId}:${identifier}`;
+	const cached = systemAccountCache.get(cacheKey);
+	if (cached) return cached;
+
 	const t = createTableResolver(schema);
 	const rows = await tx.raw<{ id: string }>(
-		`SELECT id FROM ${t("system_account")} WHERE identifier = $1 LIMIT 1`,
-		[identifier],
+		`SELECT id FROM ${t("system_account")} WHERE ledger_id = $1 AND identifier = $2 LIMIT 1`,
+		[ledgerId, identifier],
 	);
 	if (!rows[0]) {
 		throw SummaError.notFound(`System account not found: ${identifier}`);
 	}
+	systemAccountCache.set(cacheKey, rows[0].id);
 	return rows[0].id;
 }
 
@@ -125,6 +141,7 @@ export function insertOutboxEvent(
 export interface TransactionSideEffectParams {
 	tx: SummaTransactionAdapter;
 	ctx: SummaContext;
+	ledgerId: string;
 	txnRecord: RawTransactionRow;
 	correlationId: string;
 	reference: string;
@@ -164,14 +181,10 @@ export async function batchTransactionSideEffects(
 
 	// Outbox events — multi-row INSERT when multiple events
 	if (params.outboxEvents.length === 1) {
-		promises.push(
-			insertOutboxEvent(
-				tx,
-				ctx.options.schema,
-				params.outboxEvents[0].topic,
-				params.outboxEvents[0].payload,
-			),
-		);
+		const [evt] = params.outboxEvents;
+		if (evt) {
+			promises.push(insertOutboxEvent(tx, ctx.options.schema, evt.topic, evt.payload));
+		}
 	} else if (params.outboxEvents.length > 1) {
 		promises.push(batchInsertOutboxEvents(tx, t, params.outboxEvents));
 	}
@@ -190,22 +203,26 @@ export async function batchTransactionSideEffects(
 				},
 				ctx.options.schema,
 				ctx.options.advanced.hmacSecret,
+				params.ledgerId,
 			),
 		);
 	}
 
 	// Velocity tracking logs — multi-row INSERT when multiple entries
 	if (params.logEntries.length === 1) {
-		promises.push(
-			logTransactionInTx(tx, {
-				accountId: params.logEntries[0].accountId,
-				ledgerTxnId: txnRecord.id,
-				txnType: params.logEntries[0].txnType,
-				amount: params.logEntries[0].amount,
-				category,
-				reference,
-			}),
-		);
+		const [entry] = params.logEntries;
+		if (entry) {
+			promises.push(
+				logTransactionInTx(tx, {
+					accountId: entry.accountId,
+					ledgerTxnId: txnRecord.id,
+					txnType: entry.txnType,
+					amount: entry.amount,
+					category,
+					reference,
+				}),
+			);
+		}
 	} else if (params.logEntries.length > 1) {
 		promises.push(
 			batchLogTransactions(tx, t, txnRecord.id, category, reference, params.logEntries),
@@ -216,6 +233,7 @@ export async function batchTransactionSideEffects(
 	if (params.idempotencyKey) {
 		promises.push(
 			saveIdempotencyKeyInTx(tx, {
+				ledgerId: params.ledgerId,
 				key: params.idempotencyKey,
 				reference,
 				resultData: params.responseForIdempotency,
@@ -242,9 +260,10 @@ function batchInsertOutboxEvents(
 	const valueClauses: string[] = [];
 	const allParams: unknown[] = [];
 	for (let i = 0; i < events.length; i++) {
+		const evt = events[i] as (typeof events)[number];
 		const base = i * 2;
 		valueClauses.push(`($${base + 1}, $${base + 2})`);
-		allParams.push(events[i].topic, JSON.stringify(events[i].payload));
+		allParams.push(evt.topic, JSON.stringify(evt.payload));
 	}
 	return tx.raw(
 		`INSERT INTO ${t("outbox")} (topic, payload) VALUES ${valueClauses.join(", ")}`,
@@ -266,18 +285,12 @@ function batchLogTransactions(
 	const valueClauses: string[] = [];
 	const allParams: unknown[] = [];
 	for (let i = 0; i < entries.length; i++) {
+		const entry = entries[i] as (typeof entries)[number];
 		const base = i * 6;
 		valueClauses.push(
 			`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6})`,
 		);
-		allParams.push(
-			entries[i].accountId,
-			ledgerTxnId,
-			entries[i].txnType,
-			entries[i].amount,
-			category,
-			reference,
-		);
+		allParams.push(entry.accountId, ledgerTxnId, entry.txnType, entry.amount, category, reference);
 	}
 	return tx.raw(
 		`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference) VALUES ${valueClauses.join(", ")}`,

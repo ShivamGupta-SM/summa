@@ -7,6 +7,7 @@
 
 import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
+import { getLedgerId } from "../managers/ledger-helpers.js";
 
 // =============================================================================
 // OPTIONS
@@ -140,6 +141,7 @@ async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Pro
 	// so that FOR UPDATE SKIP LOCKED locks are held through the entire processing.
 	const { dialect } = ctx;
 	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
 
 	let totalProcessed = 0;
 
@@ -175,9 +177,10 @@ async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Pro
 
 				// INSERT new system_account_version row (APPEND-ONLY — replaces UPDATE system_account)
 				// Lock the immutable system_account parent, read latest version, insert new version.
-				await tx.raw(`SELECT id FROM ${t("system_account")} WHERE id = $1 FOR UPDATE`, [
-					group.account_id,
-				]);
+				await tx.raw(
+					`SELECT id FROM ${t("system_account")} WHERE id = $1 AND ledger_id = $2 FOR UPDATE`,
+					[group.account_id, ledgerId],
+				);
 				const versionRows = await tx.raw<{
 					version: number;
 					balance: number;
@@ -248,6 +251,78 @@ async function cleanupProcessedHotEntries(
 	);
 
 	return deleted;
+}
+
+// =============================================================================
+// GET HOT ACCOUNT STATS
+// =============================================================================
+
+// =============================================================================
+// GET REALTIME BALANCE (committed + pending)
+// =============================================================================
+
+export interface RealtimeBalance {
+	committedBalance: number;
+	pendingDelta: number;
+	realtimeBalance: number;
+	pendingEntryCount: number;
+	lastFlushAt: string | null;
+}
+
+/**
+ * Get the realtime balance for a system account, including pending hot entries.
+ * Returns committed_balance + SUM(pending hot_account_entry amounts).
+ * This eliminates the 30s stale window between batch flushes.
+ */
+export async function getRealtimeBalance(
+	ctx: SummaContext,
+	systemAccountIdentifier: string,
+): Promise<RealtimeBalance> {
+	const t = createTableResolver(ctx.options.schema);
+	const ledgerId = getLedgerId(ctx);
+
+	// Single query: committed balance from latest system_account_version + pending hot entries sum
+	const rows = await ctx.adapter.raw<{
+		committed_balance: number | null;
+		pending_delta: number | null;
+		pending_count: number;
+		last_flush_at: string | null;
+	}>(
+		`SELECT
+			v.balance AS committed_balance,
+			h.pending_delta,
+			COALESCE(h.pending_count, 0)::int AS pending_count,
+			v.created_at::text AS last_flush_at
+		 FROM ${t("system_account")} sa
+		 LEFT JOIN LATERAL (
+			 SELECT balance, created_at
+			 FROM ${t("system_account_version")}
+			 WHERE account_id = sa.id ORDER BY version DESC LIMIT 1
+		 ) v ON true
+		 LEFT JOIN LATERAL (
+			 SELECT SUM(amount)::bigint AS pending_delta, COUNT(*)::int AS pending_count
+			 FROM ${t("hot_account_entry")}
+			 WHERE account_id = sa.id AND status = 'pending'
+		 ) h ON true
+		 WHERE sa.ledger_id = $1 AND sa.identifier = $2`,
+		[ledgerId, systemAccountIdentifier],
+	);
+
+	const row = rows[0];
+	if (!row) {
+		throw new Error(`System account ${systemAccountIdentifier} not found in ledger ${ledgerId}`);
+	}
+
+	const committed = Number(row.committed_balance ?? 0);
+	const pending = Number(row.pending_delta ?? 0);
+
+	return {
+		committedBalance: committed,
+		pendingDelta: pending,
+		realtimeBalance: committed + pending,
+		pendingEntryCount: Number(row.pending_count),
+		lastFlushAt: row.last_flush_at,
+	};
 }
 
 // =============================================================================

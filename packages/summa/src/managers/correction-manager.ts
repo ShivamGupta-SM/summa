@@ -24,6 +24,7 @@ import {
 	isValidCachedResult,
 	saveIdempotencyKeyInTx,
 } from "./idempotency.js";
+import { getLedgerId } from "./ledger-helpers.js";
 import type { RawTransactionRow } from "./raw-types.js";
 import { processJournalLegs, rawToTransactionResponse, txnWithStatusSql } from "./sql-helpers.js";
 
@@ -71,12 +72,15 @@ export async function correctTransaction(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
+
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 		const correctionReference = params.reference ?? `correction_${transactionId}`;
 
 		// Idempotency check
 		const idem = await checkIdempotencyKeyInTx(tx, {
+			ledgerId,
 			idempotencyKey: params.idempotencyKey,
 			reference: correctionReference,
 		});
@@ -86,8 +90,8 @@ export async function correctTransaction(
 
 		// Lock original transaction + read latest status
 		const originalRows = await tx.raw<RawTransactionRow>(
-			`${txnWithStatusSql(t)} WHERE tr.id = $1 FOR UPDATE OF tr`,
-			[transactionId],
+			`${txnWithStatusSql(t)} WHERE tr.id = $1 AND tr.ledger_id = $2 FOR UPDATE OF tr`,
+			[transactionId, ledgerId],
 		);
 
 		const original = originalRows[0];
@@ -117,8 +121,8 @@ export async function correctTransaction(
 
 		// Create reversal transaction record (IMMUTABLE — no status)
 		const reversalRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING *`,
 			[
 				"correction",
@@ -134,6 +138,7 @@ export async function correctTransaction(
 				true,
 				correlationId,
 				JSON.stringify({ reason, correctionOf: transactionId, type: "correction" }),
+				ledgerId,
 			],
 		);
 		const reversal = reversalRows[0];
@@ -157,8 +162,8 @@ export async function correctTransaction(
 
 		// === STEP 2: Post correcting entries ===
 		const correctionRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, parent_id, is_reversal, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
 			[
 				"correction",
@@ -175,6 +180,7 @@ export async function correctTransaction(
 					type: "correction",
 					entries: correctionEntries,
 				}),
+				ledgerId,
 			],
 		);
 		const correction = correctionRows[0];
@@ -195,6 +201,7 @@ export async function correctTransaction(
 			correctionEntries,
 			original.currency,
 			"adjustment",
+			ledgerId,
 		);
 
 		// Event store: mark original as corrected
@@ -213,6 +220,7 @@ export async function correctTransaction(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Event for reversal transaction
@@ -230,6 +238,7 @@ export async function correctTransaction(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		// Event for correction transaction
@@ -247,6 +256,7 @@ export async function correctTransaction(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		const reversalResponse = rawToTransactionResponse(
@@ -263,6 +273,7 @@ export async function correctTransaction(
 		// Save idempotency key
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
+				ledgerId,
 				key: params.idempotencyKey,
 				reference: correctionReference,
 				resultData: { reversal: reversalResponse, correction: correctionResponse },
@@ -294,6 +305,8 @@ export async function adjustmentEntry(
 		description?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
+		/** Effective date for backdated transactions. Defaults to NOW(). */
+		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
 	const { entries, reference, adjustmentType, description = "", metadata = {} } = params;
@@ -336,11 +349,14 @@ export async function adjustmentEntry(
 		);
 	}
 
+	const ledgerId = getLedgerId(ctx);
+
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 
 		// Idempotency check
 		const idem = await checkIdempotencyKeyInTx(tx, {
+			ledgerId,
 			idempotencyKey: params.idempotencyKey,
 			reference,
 		});
@@ -352,8 +368,8 @@ export async function adjustmentEntry(
 
 		// Create adjustment transaction record (IMMUTABLE — no status)
 		const txnRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, correlation_id, meta_data)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, correlation_id, meta_data, ledger_id, effective_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()))
        RETURNING *`,
 			[
 				"adjustment",
@@ -368,6 +384,8 @@ export async function adjustmentEntry(
 					type: "adjustment",
 					entries,
 				}),
+				ledgerId,
+				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRows[0];
@@ -381,7 +399,15 @@ export async function adjustmentEntry(
 		);
 
 		// Process each leg
-		await processJournalLegs(tx, ctx, txnRecord, entries, ctx.options.currency, "adjustment");
+		await processJournalLegs(
+			tx,
+			ctx,
+			txnRecord,
+			entries,
+			ctx.options.currency,
+			"adjustment",
+			ledgerId,
+		);
 
 		// Event store
 		await appendEvent(
@@ -399,6 +425,7 @@ export async function adjustmentEntry(
 			},
 			ctx.options.schema,
 			ctx.options.advanced.hmacSecret,
+			ledgerId,
 		);
 
 		const response = rawToTransactionResponse(
@@ -410,6 +437,7 @@ export async function adjustmentEntry(
 		// Save idempotency key
 		if (params.idempotencyKey) {
 			await saveIdempotencyKeyInTx(tx, {
+				ledgerId,
 				key: params.idempotencyKey,
 				reference,
 				resultData: response,

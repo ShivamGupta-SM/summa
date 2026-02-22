@@ -15,7 +15,7 @@ import { createTableResolver } from "@summa/core/db";
  * Ensure all system accounts exist. Safe to call multiple times (idempotent).
  * Reads the system account definitions from ctx.options.systemAccounts.
  */
-export async function initializeSystemAccounts(ctx: SummaContext): Promise<void> {
+export async function initializeSystemAccounts(ctx: SummaContext, ledgerId: string): Promise<void> {
 	const { adapter, options, logger, dialect } = ctx;
 	const t = createTableResolver(ctx.options.schema);
 
@@ -25,19 +25,19 @@ export async function initializeSystemAccounts(ctx: SummaContext): Promise<void>
 	for (const [key, identifier] of entries) {
 		// Use ON CONFLICT to handle concurrent replicas racing to create the same account
 		const rows = await adapter.raw<{ id: string }>(
-			`INSERT INTO ${t("system_account")} (identifier, name, allow_overdraft, currency)
-       VALUES ($1, $2, $3, $4)
-       ${dialect.onConflictDoNothing(["identifier"])}
+			`INSERT INTO ${t("system_account")} (ledger_id, identifier, name, allow_overdraft, currency)
+       VALUES ($1, $2, $3, $4, $5)
+       ${dialect.onConflictDoNothing(["ledger_id", "identifier"])}
        ${dialect.returning(["id"])}`,
-			[identifier, `System Account: ${key}`, true, options.currency],
+			[ledgerId, identifier, `System Account: ${key}`, true, options.currency],
 		);
 
 		if (rows.length > 0) {
-			logger.info("System account created", { identifier });
+			logger.info("System account created", { ledgerId, identifier });
 		}
 	}
 
-	logger.info("System accounts initialized", { count: entries.length });
+	logger.info("System accounts initialized", { ledgerId, count: entries.length });
 }
 
 // =============================================================================
@@ -50,6 +50,7 @@ export async function initializeSystemAccounts(ctx: SummaContext): Promise<void>
 export async function getSystemAccount(
 	ctx: SummaContext,
 	identifier: string,
+	ledgerId: string,
 ): Promise<{
 	id: string;
 	identifier: string;
@@ -67,9 +68,9 @@ export async function getSystemAccount(
 	}>(
 		`SELECT id, identifier, name, allow_overdraft, currency
      FROM ${t("system_account")}
-     WHERE identifier = $1
+     WHERE ledger_id = $1 AND identifier = $2
      LIMIT 1`,
-		[identifier],
+		[ledgerId, identifier],
 	);
 
 	const row = rows[0];

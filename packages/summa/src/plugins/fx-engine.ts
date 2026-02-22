@@ -5,11 +5,7 @@
 import type { PluginApiRequest, PluginApiResponse, SummaContext, SummaPlugin } from "@summa/core";
 import { SummaError } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
-import {
-	getEntityStatus,
-	initializeEntityStatus,
-	transitionEntityStatus,
-} from "../../infrastructure/entity-status.js";
+import { initializeEntityStatus, transitionEntityStatus } from "../infrastructure/entity-status.js";
 
 // =============================================================================
 // TYPES
@@ -373,7 +369,7 @@ export function fxEngine(options: FxEngineOptions): SummaPlugin {
 				method: "POST",
 				path: "/fx/quote/:id/use",
 				handler: async (req: PluginApiRequest, ctx: SummaContext) => {
-					const quoteId = req.params.id;
+					const quoteId = req.params.id ?? "";
 					const t = createTableResolver(ctx.options.schema);
 
 					// Fetch quote with current status via LATERAL JOIN to entity_status_log

@@ -36,11 +36,12 @@ export interface AccountingEquationResult {
 export async function getAccountsByType(
 	ctx: SummaContext,
 	accountType: AccountType,
+	ledgerId: string,
 ): Promise<Account[]> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE account_type = $1 ORDER BY account_code ASC NULLS LAST`,
-		[accountType],
+	const rows = await ctx.readAdapter.raw<RawAccountRow>(
+		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND account_type = $2 ORDER BY account_code ASC NULLS LAST`,
+		[ledgerId, accountType],
 	);
 	return rows.map(rawRowToAccount);
 }
@@ -51,11 +52,12 @@ export async function getAccountsByType(
 export async function getChildAccounts(
 	ctx: SummaContext,
 	parentAccountId: string,
+	ledgerId: string,
 ): Promise<Account[]> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE parent_account_id = $1 ORDER BY account_code ASC NULLS LAST`,
-		[parentAccountId],
+	const rows = await ctx.readAdapter.raw<RawAccountRow>(
+		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND parent_account_id = $2 ORDER BY account_code ASC NULLS LAST`,
+		[ledgerId, parentAccountId],
 	);
 	return rows.map(rawRowToAccount);
 }
@@ -67,13 +69,14 @@ export async function getChildAccounts(
  */
 export async function getAccountHierarchy(
 	ctx: SummaContext,
+	ledgerId: string,
 	rootAccountId?: string,
 ): Promise<AccountNode[]> {
 	const t = createTableResolver(ctx.options.schema);
 	// Fetch all accounts that have an account_type (i.e., are part of the CoA)
-	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE account_type IS NOT NULL ORDER BY account_code ASC NULLS LAST`,
-		[],
+	const rows = await ctx.readAdapter.raw<RawAccountRow>(
+		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND account_type IS NOT NULL ORDER BY account_code ASC NULLS LAST`,
+		[ledgerId],
 	);
 
 	const accounts = rows.map(rawRowToAccount);
@@ -111,14 +114,15 @@ export async function getAccountHierarchy(
  */
 export async function validateAccountingEquation(
 	ctx: SummaContext,
+	ledgerId: string,
 ): Promise<AccountingEquationResult> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{ account_type: string; total: number }>(
+	const rows = await ctx.readAdapter.raw<{ account_type: string; total: number }>(
 		`SELECT account_type, SUM(balance) as total
      FROM ${t("account_balance")}
-     WHERE account_type IN ('asset', 'liability', 'equity')
+     WHERE ledger_id = $1 AND account_type IN ('asset', 'liability', 'equity')
      GROUP BY account_type`,
-		[],
+		[ledgerId],
 	);
 
 	let assets = 0;
@@ -173,6 +177,6 @@ function rawRowToAccount(row: RawAccountRow): Account {
 		closureReason: row.closure_reason ?? null,
 		metadata: (row.metadata ?? {}) as Record<string, unknown>,
 		createdAt: new Date(row.created_at),
-		updatedAt: new Date(row.updated_at),
+		updatedAt: new Date(row.created_at),
 	};
 }

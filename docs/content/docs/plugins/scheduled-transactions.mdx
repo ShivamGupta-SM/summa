@@ -6,7 +6,7 @@ icon: CalendarDays
 
 ## Overview
 
-The scheduled transactions plugin allows you to schedule transactions for future execution, supporting one-time scheduled payments and recurring patterns.
+The scheduled transactions plugin allows you to schedule transactions for future execution, supporting one-time scheduled payments and recurring patterns. It provides a typed creation API and a background worker that automatically executes due transactions.
 
 ## Setup
 
@@ -37,24 +37,131 @@ scheduledTransactions({
 | `batchSize` | `number` | `100` | Transactions processed per worker batch |
 | `maxBatchesPerRun` | `number` | `50` | Maximum batches processed per worker execution |
 
-## Scheduling a Transaction
+## Creating Scheduled Transactions
 
 ```ts
-await summa.scheduled.create({
-  sourceHolderId: "user_123",
-  destinationHolderId: "landlord",
+import { createScheduledTransaction } from "summa/plugins";
+
+const ctx = await summa.$context;
+
+// One-time scheduled transfer
+const scheduled = await createScheduledTransaction(ctx, {
+  sourceIdentifier: "user_123",
+  destinationIdentifier: "landlord_456",
   amount: 1500_00,
-  reference: "rent-feb",
-  scheduledAt: new Date("2025-02-01"),
+  currency: "USD",
+  scheduledFor: "2026-03-01T00:00:00Z",
+  reference: "rent-march-2026",
 });
+
+console.log(scheduled.id);     // UUID
+console.log(scheduled.status); // "scheduled"
+```
+
+Or via the HTTP API:
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/scheduled-transactions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "sourceIdentifier": "user_123",
+    "destinationIdentifier": "landlord_456",
+    "amount": 150000,
+    "currency": "USD",
+    "scheduledFor": "2026-03-01T00:00:00Z",
+    "reference": "rent-march-2026"
+  }'
+```
+
+### Recurring Transactions
+
+Pass `recurrence` to create a recurring schedule:
+
+```ts
+// Monthly rent — max 12 executions
+const recurring = await createScheduledTransaction(ctx, {
+  sourceIdentifier: "user_123",
+  destinationIdentifier: "landlord_456",
+  amount: 1500_00,
+  currency: "USD",
+  scheduledFor: "2026-03-01T00:00:00Z",
+  reference: "rent-recurring",
+  recurrence: {
+    intervalMs: 30 * 24 * 60 * 60 * 1000, // ~30 days
+    maxExecutions: 12,
+  },
+});
+```
+
+### Identifier Routing
+
+The worker routes transactions based on identifier prefixes:
+
+| Source | Destination | Operation |
+|--------|------------|-----------|
+| `@World` (system) | `user_123` (user) | `creditAccount` |
+| `user_123` (user) | `@Fees` (system) | `debitAccount` |
+| `user_123` (user) | `landlord_456` (user) | `transfer` |
+
+System accounts are prefixed with `@`. Everything else is treated as a holder ID.
+
+## Querying
+
+```ts
+import { getScheduledTransaction, listScheduledTransactions } from "summa/plugins";
+
+// Get by ID
+const tx = await getScheduledTransaction(ctx, scheduled.id);
+
+// List all scheduled (pending) transactions
+const pending = await listScheduledTransactions(ctx, {
+  status: "scheduled",
+  limit: 20,
+});
+
+// Filter by source
+const userTxns = await listScheduledTransactions(ctx, {
+  sourceIdentifier: "user_123",
+});
+```
+
+Or via the HTTP API:
+
+```bash
+# Get by ID
+curl http://localhost:3000/api/ledger/scheduled-transactions/:id
+
+# List with filters
+curl "http://localhost:3000/api/ledger/scheduled-transactions?status=scheduled&limit=20"
+```
+
+## Cancelling
+
+Only transactions in `scheduled` status can be cancelled:
+
+```ts
+import { cancelScheduledTransaction } from "summa/plugins";
+
+const cancelled = await cancelScheduledTransaction(ctx, scheduled.id, "No longer needed");
+console.log(cancelled.status); // "cancelled"
+```
+
+Or via the HTTP API:
+
+```bash
+curl -X POST http://localhost:3000/api/ledger/scheduled-transactions/:id/cancel \
+  -H "Content-Type: application/json" \
+  -d '{ "reason": "No longer needed" }'
 ```
 
 ## How It Works
 
-1. Scheduled transactions are stored with a `scheduledAt` timestamp
-2. A background worker (`"scheduled-processor"`, interval: `"1m"`, lease-protected) checks for transactions whose `scheduledAt` time has passed
-3. Due transactions are executed as regular credits, debits, or transfers based on source/destination identifiers
-4. Failed transactions are retried up to `maxRetries` times, then permanently marked as failed
+1. `createScheduledTransaction()` inserts a row into `scheduled_transaction` and initializes its status in `entity_status_log`
+2. A background worker (`scheduled-processor`, interval: `1m`, lease-protected) polls for transactions whose `next_execution_at` has passed and status is `scheduled`
+3. Each transaction goes through a **3-phase process**: lock + mark processing → execute financial operation → mark completed/rescheduled
+4. Status transitions are tracked via `entity_status_log` (append-only)
+5. Failed transactions are retried up to `maxRetries` times, then permanently marked as `failed`
+6. Recurring transactions compute the next execution date and transition back to `scheduled`
 
 ## Events
 
@@ -62,16 +169,36 @@ The plugin emits events to the [event log](/docs/events) when transactions are p
 
 | Event | When |
 |-------|------|
-| `ScheduledTransactionCreated` | A new scheduled transaction is registered |
-| `ScheduledTransactionExecuted` | A scheduled transaction is successfully executed |
-| `ScheduledTransactionFailed` | A scheduled transaction execution fails |
-| `ScheduledTransactionCancelled` | A scheduled transaction is cancelled |
-| `ScheduledTransactionRetrying` | A failed transaction is being retried |
-| `ScheduledTransactionExhausted` | All retry attempts have been exhausted |
+| `ScheduledTransactionCreated` | A new scheduled transaction is created |
+| `ScheduledTransactionProcessing` | Execution has started (row locked) |
+| `ScheduledTransactionCompleted` | Execution succeeded (one-time or final recurring) |
+| `ScheduledTransactionRescheduled` | Recurring transaction rescheduled for next execution |
+| `ScheduledTransactionFailed` | All retry attempts exhausted — permanently failed |
+| `ScheduledTransactionCancelled` | Manually cancelled |
 
-<Callout type="info" title="Management API">
-  The scheduled transactions plugin currently provides creation via `summa.scheduled.create()` and automated execution via the background worker. Listing, querying, and cancelling scheduled transactions can be done through the [admin plugin](/docs/plugins/admin) endpoints or by querying the `scheduled_transaction` table directly.
-</Callout>
+## Background Workers
+
+| Worker | Interval | Lease | Description |
+|--------|----------|:-----:|-------------|
+| `scheduled-processor` | 1m | Yes | Executes due scheduled transactions in batches |
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/scheduled-transactions` | Create a scheduled transaction |
+| `GET` | `/scheduled-transactions/:id` | Get a scheduled transaction by ID |
+| `GET` | `/scheduled-transactions` | List scheduled transactions (with filters) |
+| `POST` | `/scheduled-transactions/:id/cancel` | Cancel a scheduled transaction |
+
+## Type Inference
+
+```ts
+type ScheduledTx = typeof summa.$Infer.ScheduledTransaction;
+// { id, reference, amount, currency, sourceIdentifier, destinationIdentifier,
+//   scheduledFor, recurrence, status, executionCount, retryCount,
+//   lastExecutedAt, nextExecutionAt, createdAt }
+```
 
 ## Use Cases
 

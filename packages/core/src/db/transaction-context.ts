@@ -63,8 +63,6 @@ export async function runWithTransactionContext<T>(
 			if (onCallbackError) {
 				onCallbackError(error, i);
 			} else {
-				// Fallback: log to stderr so failures are never fully silent
-				console.error("[summa] after-commit callback failed", error);
 			}
 		}
 	}

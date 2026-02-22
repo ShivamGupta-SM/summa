@@ -70,6 +70,7 @@ export interface RawTransactionStaticRow {
 	correlation_id: string;
 	meta_data: Record<string, unknown> | null;
 	created_at: string | Date;
+	effective_date: string | Date | null;
 }
 
 /** Status state from transaction_status (append-only) */

@@ -26,7 +26,10 @@ export async function withTransactionTimeout<T>(
 	options?: { statementTimeoutMs?: number; lockTimeoutMs?: number },
 ): Promise<T> {
 	const { advanced } = ctx.options;
-	const retryCount = advanced.lockRetryCount;
+	// In optimistic mode, use optimisticRetryCount (default 3) for version conflict retries.
+	// In pessimistic modes, use lockRetryCount (default 0).
+	const retryCount =
+		advanced.lockMode === "optimistic" ? advanced.optimisticRetryCount : advanced.lockRetryCount;
 	const baseDelay = advanced.lockRetryBaseDelayMs;
 	const maxDelay = advanced.lockRetryMaxDelayMs;
 
@@ -110,10 +113,14 @@ function isRetryableError(err: unknown): boolean {
 	// Check for lock timeout messages
 	if (msg.includes("lock timeout") || msg.includes("canceling statement due to lock timeout"))
 		return true;
+	// Unique constraint violation (23505) — retryable in optimistic lock mode
+	// when two transactions race to insert the same account_balance_version
+	if (msg.includes("23505") || msg.includes("unique_violation") || msg.includes("duplicate key"))
+		return true;
 	// Check for code property on error (common in pg drivers)
 	if ("code" in err) {
 		const code = (err as { code: string }).code;
-		if (code === "55P03" || code === "40001" || code === "40P01") return true;
+		if (code === "55P03" || code === "40001" || code === "40P01" || code === "23505") return true;
 	}
 	return false;
 }
@@ -152,6 +159,7 @@ function verifyEventHash(
  * @param params - Event parameters
  * @param schema - PostgreSQL schema name
  * @param hmacSecret - HMAC secret for tamper-proof hashing (null = plain SHA-256)
+ * @param ledgerId - Ledger ID for multi-tenant isolation
  * @returns The stored event with computed fields
  */
 const MAX_VERSION_RETRIES = 3;
@@ -161,6 +169,7 @@ export async function appendEvent(
 	params: AppendEventParams,
 	schema = "public",
 	hmacSecret: string | null = null,
+	ledgerId?: string,
 ): Promise<StoredEvent> {
 	const t = createTableResolver(schema);
 	const correlationId = params.correlationId ?? randomUUID();
@@ -177,11 +186,12 @@ export async function appendEvent(
 		}>(
 			`SELECT aggregate_version, hash
        FROM ${t("ledger_event")}
-       WHERE aggregate_type = $1
-         AND aggregate_id = $2
+       WHERE ledger_id = $1
+         AND aggregate_type = $2
+         AND aggregate_id = $3
        ORDER BY aggregate_version DESC
        LIMIT 1`,
-			[params.aggregateType, params.aggregateId],
+			[ledgerId ?? null, params.aggregateType, params.aggregateId],
 		);
 
 		const latestEvent = latestRows[0];
@@ -209,11 +219,12 @@ export async function appendEvent(
 				prev_hash: string | null;
 				created_at: string | Date;
 			}>(
-				`INSERT INTO ${t("ledger_event")} (id, aggregate_type, aggregate_id, aggregate_version, event_type, event_data, correlation_id, hash, prev_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+				`INSERT INTO ${t("ledger_event")} (id, ledger_id, aggregate_type, aggregate_id, aggregate_version, event_type, event_data, correlation_id, hash, prev_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING *`,
 				[
 					eventId,
+					ledgerId ?? null,
 					params.aggregateType,
 					params.aggregateId,
 					aggregateVersion,
@@ -270,6 +281,7 @@ export async function getEvents(
 	ctx: SummaContext,
 	aggregateType: string,
 	aggregateId: string,
+	ledgerId: string,
 ): Promise<StoredEvent[]> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
@@ -286,10 +298,11 @@ export async function getEvents(
 		created_at: string | Date;
 	}>(
 		`SELECT * FROM ${t("ledger_event")}
-     WHERE aggregate_type = $1
-       AND aggregate_id = $2
+     WHERE ledger_id = $1
+       AND aggregate_type = $2
+       AND aggregate_id = $3
      ORDER BY aggregate_version ASC`,
-		[aggregateType, aggregateId],
+		[ledgerId, aggregateType, aggregateId],
 	);
 
 	const events = rows.map(rowToStoredEvent);
@@ -314,6 +327,7 @@ export async function getLatestEvent(
 	ctx: SummaContext,
 	aggregateType: string,
 	aggregateId: string,
+	ledgerId: string,
 ): Promise<StoredEvent | null> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
@@ -330,11 +344,12 @@ export async function getLatestEvent(
 		created_at: string | Date;
 	}>(
 		`SELECT * FROM ${t("ledger_event")}
-     WHERE aggregate_type = $1
-       AND aggregate_id = $2
+     WHERE ledger_id = $1
+       AND aggregate_type = $2
+       AND aggregate_id = $3
      ORDER BY aggregate_version DESC
      LIMIT 1`,
-		[aggregateType, aggregateId],
+		[ledgerId, aggregateType, aggregateId],
 	);
 
 	const row = rows[0];
@@ -356,6 +371,7 @@ export async function getLatestEvent(
 export async function getEventsByCorrelation(
 	ctx: SummaContext,
 	correlationId: string,
+	ledgerId: string,
 ): Promise<StoredEvent[]> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{
@@ -372,9 +388,10 @@ export async function getEventsByCorrelation(
 		created_at: string | Date;
 	}>(
 		`SELECT * FROM ${t("ledger_event")}
-     WHERE correlation_id = $1
+     WHERE ledger_id = $1
+       AND correlation_id = $2
      ORDER BY sequence_number ASC`,
-		[correlationId],
+		[ledgerId, correlationId],
 	);
 
 	const events = rows.map(rowToStoredEvent);

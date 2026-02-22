@@ -1,12 +1,12 @@
 // =============================================================================
-// WORKER RUNNER -- Background worker infrastructure for Summa plugins
+// WORKER RUNNER -- Background worker infrastructure for Summa
 // =============================================================================
-// Collects SummaWorkerDefinition entries from all registered plugins and runs
-// them on a polling loop.  Supports distributed leasing so that only one
-// process in a cluster executes lease-required workers at a time.
+// Runs core workers (hold expiry, idempotency cleanup, lease cleanup) and
+// plugin-contributed workers on a polling loop.  Supports distributed leasing
+// so that only one process in a cluster executes lease-required workers.
 
 import { randomUUID } from "node:crypto";
-import type { SummaContext, SummaWorkerDefinition } from "@summa/core";
+import type { CoreWorkerOptions, SummaContext, SummaWorkerDefinition } from "@summa/core";
 import { createTableResolver } from "@summa/core/db";
 
 // =============================================================================
@@ -86,8 +86,12 @@ export class SummaWorkerRunner {
 		}
 		this.started = true;
 
-		// Collect worker definitions from all plugins
-		const definitions: SummaWorkerDefinition[] = [];
+		// 1. Core workers (always run, regardless of plugins)
+		const definitions: SummaWorkerDefinition[] = [
+			...this.buildCoreWorkers(this.ctx.options.coreWorkers),
+		];
+
+		// 2. Plugin workers
 		for (const plugin of this.ctx.plugins) {
 			if (plugin.workers) {
 				for (const worker of plugin.workers) {
@@ -97,7 +101,7 @@ export class SummaWorkerRunner {
 		}
 
 		if (definitions.length === 0) {
-			this.ctx.logger.info("No plugin workers registered");
+			this.ctx.logger.info("No workers registered");
 			return;
 		}
 
@@ -118,6 +122,73 @@ export class SummaWorkerRunner {
 			this.workers.push(runningWorker);
 			this.scheduleNext(runningWorker);
 		}
+	}
+
+	// ---------------------------------------------------------------------------
+	// CORE WORKERS
+	// ---------------------------------------------------------------------------
+
+	private buildCoreWorkers(cfg?: CoreWorkerOptions): SummaWorkerDefinition[] {
+		const workers: SummaWorkerDefinition[] = [];
+
+		// Hold expiry — expires holds past their hold_expires_at date
+		const holdExpiryCfg = cfg?.holdExpiry ?? true;
+		if (holdExpiryCfg !== false) {
+			const interval = typeof holdExpiryCfg === "object" ? (holdExpiryCfg.interval ?? "5m") : "5m";
+			workers.push({
+				id: "core:hold-expiry",
+				description: "Core: expire holds past their hold_expires_at date",
+				interval,
+				leaseRequired: false,
+				handler: async (ctx) => {
+					const { expireHolds } = await import("../managers/hold-manager.js");
+					const result = await expireHolds(ctx);
+					if (result.expired > 0) {
+						ctx.logger.info("Core: expired holds", { count: result.expired });
+					}
+				},
+			});
+		}
+
+		// Idempotency key cleanup — removes expired keys
+		const idempCfg = cfg?.idempotencyCleanup ?? true;
+		if (idempCfg !== false) {
+			const interval = typeof idempCfg === "object" ? (idempCfg.interval ?? "1h") : "1h";
+			workers.push({
+				id: "core:idempotency-cleanup",
+				description: "Core: remove expired idempotency keys",
+				interval,
+				leaseRequired: true,
+				handler: async (ctx) => {
+					const { cleanupExpiredKeys } = await import("../managers/idempotency.js");
+					await cleanupExpiredKeys(ctx);
+				},
+			});
+		}
+
+		// Worker lease cleanup — removes stale leases from dead instances
+		const leaseCfg = cfg?.leaseCleanup ?? true;
+		if (leaseCfg !== false) {
+			const interval = typeof leaseCfg === "object" ? (leaseCfg.interval ?? "6h") : "6h";
+			workers.push({
+				id: "core:lease-cleanup",
+				description: "Core: remove stale worker leases from dead instances",
+				interval,
+				leaseRequired: true,
+				handler: async (ctx) => {
+					const t = createTableResolver(ctx.options.schema);
+					const deleted = await ctx.adapter.rawMutate(
+						`DELETE FROM ${t("worker_lease")} WHERE lease_until < ${ctx.dialect.now()} - ${ctx.dialect.interval("1 hour")}`,
+						[],
+					);
+					if (deleted > 0) {
+						ctx.logger.info("Core: cleaned stale worker leases", { count: deleted });
+					}
+				},
+			});
+		}
+
+		return workers;
 	}
 
 	// ---------------------------------------------------------------------------

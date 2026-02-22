@@ -1,0 +1,144 @@
+---
+title: Identity Management
+description: KYC identity management with PII tokenization for secure customer data handling.
+icon: FingerPrint
+---
+
+## Overview
+
+The identity plugin provides full customer identity management with **AES-256-GCM PII tokenization**. Store customer details, link identities to accounts, and automatically encrypt sensitive fields like names, emails, and addresses — all within your ledger's database.
+
+## Setup
+
+```ts
+import { createSumma } from "summa";
+import { identity } from "summa/plugins";
+
+const summa = createSumma({
+  database: adapter,
+  currency: "USD",
+  plugins: [
+    identity({
+      encryptionKey: process.env.PII_ENCRYPTION_KEY!, // 32-byte hex key
+    }),
+  ],
+});
+```
+
+## Configuration
+
+```ts
+identity({
+  encryptionKey: "your-32-byte-hex-encryption-key",
+  autoTokenize: true,        // Auto-tokenize on identity creation
+  tokenizedFields: [         // Which fields to encrypt
+    "first_name", "last_name", "email", "phone",
+    "street", "city", "state", "postal_code", "country",
+  ],
+})
+```
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `encryptionKey` | `string` | **Required** | 32-byte hex key for AES-256-GCM encryption |
+| `autoTokenize` | `boolean` | `true` | Automatically tokenize PII on identity creation |
+| `tokenizedFields` | `string[]` | All PII fields | Which fields to tokenize |
+
+## How It Works
+
+### Identity CRUD
+
+The plugin exposes full CRUD operations for customer identities:
+
+- **Create** — `POST /identities` creates a new identity record
+- **Get** — `GET /identities/:id` retrieves an identity by ID
+- **Update** — `PUT /identities/:id` updates identity fields
+- **Delete** — `DELETE /identities/:id` soft-deletes an identity
+- **List** — `GET /identities` lists identities with pagination
+
+### PII Tokenization
+
+Sensitive fields are encrypted using **AES-256-GCM** with a unique IV per token:
+
+```ts
+// Tokenize specific fields
+POST /identities/:id/tokenize
+{
+  "fields": ["email", "phone"]
+}
+
+// Detokenize to retrieve original values
+POST /identities/:id/detokenize
+{
+  "fields": ["email", "phone"]
+}
+```
+
+Each tokenized field is stored in the `identity_token` table with:
+- **field** — which field was tokenized (e.g., `email`)
+- **token** — the encrypted ciphertext
+- **iv** — unique initialization vector for decryption
+
+### Account Linking
+
+Link identities to ledger accounts to associate customer data with financial records:
+
+```ts
+POST /identities/:id/link
+{
+  "holderId": "user_123"
+}
+```
+
+The linked identity ID is stored in the account's metadata via `jsonb_set`.
+
+### Auto-Tokenization Hook
+
+When `autoTokenize` is enabled, the plugin uses an `operationHooks.after` hook on `account.create` to automatically tokenize PII fields for newly created identities.
+
+## Querying Identities
+
+```ts
+import { getIdentity, listIdentities } from "summa/plugins";
+
+// Get a single identity
+const identity = await getIdentity(summa.$context, { id: "ident_abc123" });
+
+// List identities with pagination
+const identities = await listIdentities(summa.$context, {
+  limit: 50,
+  offset: 0,
+});
+```
+
+## HTTP Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/identities` | Create a new identity |
+| `GET` | `/identities/:id` | Get identity by ID |
+| `PUT` | `/identities/:id` | Update identity fields |
+| `DELETE` | `/identities/:id` | Soft-delete an identity |
+| `GET` | `/identities` | List identities (paginated) |
+| `POST` | `/identities/:id/tokenize` | Tokenize PII fields |
+| `POST` | `/identities/:id/detokenize` | Detokenize PII fields |
+| `POST` | `/identities/:id/link` | Link identity to an account |
+
+## Type Inference
+
+```ts
+import type { Identity, TokenizedFieldInfo } from "summa/plugins";
+
+type Ident = typeof summa.$Infer.Identity;
+// { id, type, first_name, last_name, email, phone, street, city, state, postal_code, country, metadata, created_at, updated_at }
+
+type Token = typeof summa.$Infer.TokenizedFieldInfo;
+// { id, identity_id, field, token, iv, created_at }
+```
+
+## Database Tables
+
+| Table | Description |
+|-------|-------------|
+| `identity` | Core identity records with PII fields |
+| `identity_token` | Encrypted PII tokens with per-field AES-256-GCM ciphertext |

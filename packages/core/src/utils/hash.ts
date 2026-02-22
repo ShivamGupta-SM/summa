@@ -27,7 +27,7 @@ export interface MerkleProof {
  *
  * When `secret` is provided, uses HMAC-SHA256 for tamper-proof hashing —
  * an attacker with DB access cannot recompute valid hashes without the key.
- * Without `secret`, falls back to plain SHA-256 (backwards-compatible).
+ * Without `secret`, uses plain SHA-256.
  *
  * Uses deterministic (sorted-key) serialization to ensure consistency
  * after JSONB round-trips through PostgreSQL.
