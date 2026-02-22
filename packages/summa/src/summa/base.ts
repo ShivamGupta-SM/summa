@@ -264,7 +264,7 @@ export interface Summa<TInfer = Record<string, never>> {
 		verifyExternalAnchor: (
 			blockSequence: number,
 			externalBlockHash: string,
-		) => Promise<{ valid: boolean; storedHash: string; merkleRoot: string | null }>;
+		) => Promise<{ valid: boolean; storedBlockHash: string; storedMerkleRoot: string | null }>;
 		/** Generate a Merkle proof for a specific event (O(log n) siblings). */
 		generateProof: (
 			eventId: string,

@@ -772,7 +772,8 @@ export async function generateStatementPdfStream(
 	};
 
 	// Start writing entries asynchronously — doc is a Readable stream the caller can pipe
-	writeEntries().catch((err) => doc.destroy(err));
+	// biome-ignore lint/suspicious/noExplicitAny: PDFDocument extends Readable which has destroy()
+	writeEntries().catch((err) => (doc as any).destroy(err));
 
 	return doc;
 }
