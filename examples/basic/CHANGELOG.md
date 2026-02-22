@@ -1,5 +1,14 @@
 # @summa-ledger/example-basic
 
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`b193535`](https://github.com/summa-ledger/summa/commit/b1935355c527c5ec9e7dd479cc721dd8bf8b5e9f)]:
+  - @summa-ledger/summa@0.2.2
+  - @summa-ledger/core@0.2.2
+  - @summa-ledger/memory-adapter@0.2.2
+
 ## 0.0.2
 
 ### Patch Changes
