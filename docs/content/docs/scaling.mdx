@@ -413,7 +413,7 @@ if (!result.safe) {
 
 ### Transaction Batching (Batch Engine)
 
-For the highest throughput, enable the `batchEngine()` plugin. Inspired by [TigerBeetle's](https://tigerbeetle.com/) batching architecture, it buffers incoming transactions and processes them in a single database transaction using multi-row `UNNEST` INSERTs — amortizing per-transaction overhead across the entire batch.
+For the highest throughput, enable the `batchEngine()` plugin. It buffers incoming transactions and processes them in a single database transaction using multi-row `UNNEST` INSERTs — amortizing per-transaction overhead across the entire batch.
 
 ```ts
 import { batchEngine } from "@summa-ledger/summa/plugins";

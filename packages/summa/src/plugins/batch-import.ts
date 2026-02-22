@@ -19,6 +19,7 @@ import {
 	creditAccount,
 	debitAccount,
 	forceDebit,
+	forceTransfer,
 	transfer,
 } from "../managers/transaction-manager.js";
 
@@ -619,6 +620,17 @@ async function executeBatchItem(
 				destinationHolderId: String(data.destinationHolderId),
 				amount,
 				reference,
+				description,
+				category,
+				idempotencyKey,
+			});
+		case "force_transfer":
+			return forceTransfer(ctx, {
+				sourceHolderId: String(data.sourceHolderId),
+				destinationHolderId: String(data.destinationHolderId),
+				amount,
+				reference,
+				reason: String(data.reason ?? "batch force transfer"),
 				description,
 				category,
 				idempotencyKey,

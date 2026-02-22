@@ -4,14 +4,12 @@
 // Uses raw SQL via drizzle-orm's `sql` template for all operations.
 // CRUD logic is shared via buildSqlAdapterMethods from @summa-ledger/core/db.
 
-import {
-	buildSqlAdapterMethods,
-	postgresDialect,
-	type SqlExecutor,
-	type SummaAdapter,
-	type SummaAdapterOptions,
-	type SummaTransactionAdapter,
+import type {
+	SummaAdapter,
+	SummaAdapterOptions,
+	SummaTransactionAdapter,
 } from "@summa-ledger/core/db";
+import { buildSqlAdapterMethods, postgresDialect, type SqlExecutor } from "@summa-ledger/core/sql";
 import { type SQL, sql } from "drizzle-orm";
 
 /**

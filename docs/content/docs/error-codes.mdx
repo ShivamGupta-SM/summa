@@ -29,7 +29,7 @@ try {
 
 ## Error Codes
 
-Every error code is classified as either **transient** or **deterministic** — inspired by [TigerBeetle's error classification](https://docs.tigerbeetle.com/). This tells clients whether retrying (with a new idempotency key) could succeed.
+Every error code is classified as either **transient** or **deterministic**. This tells clients whether retrying (with a new idempotency key) could succeed.
 
 - **Transient**: The condition may change — balance may increase, account may unfreeze, rate limit may reset. Client should retry with a **new** idempotency key.
 - **Deterministic**: The condition is permanent — validation error, closed account, duplicate. Retrying will always fail.
@@ -69,7 +69,7 @@ try {
 } catch (error) {
   if (!(error instanceof SummaError)) throw error;
 
-  // TigerBeetle-inspired: use the transient flag to decide retry behavior
+  // Use the transient flag to decide retry behavior
   if (error.transient) {
     // Condition may change — safe to retry with a NEW idempotency key
     // e.g., INSUFFICIENT_BALANCE, ACCOUNT_FROZEN, RATE_LIMITED
@@ -102,7 +102,7 @@ try {
 
 ### Idempotency & Field-by-Field Validation
 
-Summa performs **field-by-field validation** on idempotent retries — inspired by TigerBeetle's `create_transfer_exists()` which returns specific errors like `exists_with_different_amount`. When a cached result exists, the original request fields are compared against the retry. If any field differs, the error message tells you exactly which field changed.
+Summa performs **field-by-field validation** on idempotent retries. When a cached result exists, the original request fields are compared against the retry. If any field differs, the error message tells you exactly which field changed.
 
 ```ts
 // First attempt

@@ -95,7 +95,7 @@ const txn = await summa.transactions.debit({
 
 ### Balancing Debit
 
-A **balancing debit** automatically caps the amount to the account's available balance — inspired by [TigerBeetle's `balancing_debit` flag](https://docs.tigerbeetle.com/). If the account has less than the requested amount, the transaction succeeds with the available balance instead of failing with `INSUFFICIENT_BALANCE`.
+A **balancing debit** automatically caps the amount to the account's available balance. If the account has less than the requested amount, the transaction succeeds with the available balance instead of failing with `INSUFFICIENT_BALANCE`.
 
 <Tabs items={["Balancing Debit", "Balancing Transfer"]}>
 <Tab value="Balancing Debit">
@@ -161,7 +161,7 @@ const txn = await summa.transactions.forceDebit({
     holderId: { type: "string", description: "Holder ID of the account to debit.", required: true },
     amount: { type: "number", description: "Amount in smallest currency units.", required: true },
     reference: { type: "string", description: "Business reference.", required: true },
-    reason: { type: "string", description: "Mandatory reason for the forced debit (stored in metadata as _forceDebitReason).", required: true },
+    reason: { type: "string", description: "Mandatory reason for the forced debit (stored in metadata as `forceReason`).", required: true },
     destinationSystemAccount: { type: "string", description: "System account to receive the funds.", default: "@World" },
     idempotencyKey: { type: "string", description: "Idempotency key for safe retries." },
   }}
@@ -169,6 +169,37 @@ const txn = await summa.transactions.forceDebit({
 
 <Callout type="warn" title="Use with caution">
   `forceDebit` can push an account balance arbitrarily negative. Restrict access to this operation in your application — it should only be used by trusted system processes, not exposed to end users.
+</Callout>
+
+### Force Transfer
+
+A privileged transfer that **bypasses all balance and overdraft checks** on the source account. Use for clawbacks, regulatory seizures, or inter-account forced moves where the transfer must succeed regardless of source balance.
+
+```ts
+const txn = await summa.transactions.forceTransfer({
+  sourceHolderId: "merchant_1",
+  destinationHolderId: "escrow_account",
+  amount: 1000_00,
+  reference: "clawback-001",
+  reason: "Regulatory seizure — compliance order #456",
+  idempotencyKey: "clawback_001",
+});
+```
+
+<TypeTable
+  type={{
+    sourceHolderId: { type: "string", description: "Holder ID of the source account.", required: true },
+    destinationHolderId: { type: "string", description: "Holder ID of the destination account.", required: true },
+    amount: { type: "number", description: "Amount in smallest currency units.", required: true },
+    reference: { type: "string", description: "Business reference.", required: true },
+    reason: { type: "string", description: "Mandatory reason for the forced transfer (stored in metadata as `forceReason`).", required: true },
+    exchangeRate: { type: "number", description: "Exchange rate for cross-currency transfers (rate × 1,000,000)." },
+    idempotencyKey: { type: "string", description: "Idempotency key for safe retries." },
+  }}
+/>
+
+<Callout type="warn" title="Use with caution">
+  `forceTransfer` can push the source account balance arbitrarily negative. Restrict access to this operation — it should only be used by trusted system processes.
 </Callout>
 
 ### Refunds

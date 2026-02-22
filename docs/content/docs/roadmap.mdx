@@ -6,7 +6,7 @@ icon: Map
 
 ## Overview
 
-This document describes Summa's immutability architecture. Core financial tables use an **append-only design** — every state change creates a new row instead of updating in place. This matches the immutability guarantees of purpose-built financial databases like TigerBeetle, while retaining the flexibility of PostgreSQL.
+This document describes Summa's immutability architecture. Core financial tables use an **append-only design** — every state change creates a new row instead of updating in place. This matches the immutability guarantees of purpose-built financial databases, while retaining the flexibility of PostgreSQL.
 
 Each section describes the design rationale, implementation approach, and impact.
 
@@ -394,30 +394,28 @@ These tables will not receive immutability enforcement. Attempting to make them 
 
 ---
 
-## Industry Comparison
+## Integrity Features
 
-How Summa's architecture compares to other financial ledger systems:
+Summa's financial integrity guarantees at a glance:
 
-| Feature | TigerBeetle | Formance | Blnk | Summa |
-|---------|:-:|:-:|:-:|:-:|
-| Transfers immutable | Yes | Yes | Yes | **Yes** |
-| Balance append-only | Derived from transfers | Computed on read | No (mutable) | **Yes** (version table) |
-| Status tracking | New transfer record | N/A | Separate record | **Append-only log** |
-| Corrections | Reverse transfer | Reverse posting | Reverse entry | **New status row** |
-| DB-level enforcement | Custom DBMS | Immutable log | None | **Triggers + RLS** |
-| Cryptographic proof | Hash chain | Immutable log | None | **Merkle tree** |
-| Individual event proof | N/A | N/A | N/A | **O(log n)** |
-| Transient error classification | Yes | No | No | **Yes** |
-| Field-by-field idempotency | Yes | No | No | **Yes** |
-| Balancing debit/transfer | Yes | No | No | **Yes** |
+| Feature | Summa |
+|---------|-------|
+| Transfers immutable | **Yes** — append-only, no UPDATE/DELETE |
+| Balance append-only | **Yes** — versioned snapshots per change |
+| Status tracking | **Append-only log** — full lifecycle history |
+| Corrections | **New status row** — original preserved |
+| DB-level enforcement | **Triggers + RLS** — three layers of protection |
+| Cryptographic proof | **Merkle tree** — SHA-256 block checkpoints |
+| Individual event proof | **O(log n)** — compact inclusion proofs |
+| Transient error classification | **Yes** — every error classified as retryable or permanent |
+| Field-by-field idempotency | **Yes** — mismatch tells you exactly which field changed |
+| Balancing debit/transfer | **Yes** — auto-cap to available balance |
 
 <Callout type="info" title="Design Philosophy">
-  TigerBeetle achieves immutability by building a custom database where UPDATE and DELETE operations simply don't exist. Summa achieves the same guarantee on PostgreSQL through a combination of append-only table design, database triggers, row-level security, and cryptographic verification — making it the most secure approach possible on a general-purpose database.
+  Purpose-built financial databases achieve immutability by removing UPDATE and DELETE entirely. Summa achieves the same guarantee on PostgreSQL through a combination of append-only table design, database triggers, row-level security, and cryptographic verification — making it the most secure approach possible on a general-purpose database.
 </Callout>
 
-### TigerBeetle-Inspired Features
-
-The following features are directly inspired by TigerBeetle's design patterns:
+### Financial Safety Features
 
 - **Transient error classification** — Every error code is classified as transient or deterministic. Clients use `error.transient` to decide retry behavior. See [Error Codes](/docs/error-codes).
 - **Field-by-field idempotency** — Idempotent retries validate all request fields (amount, holderId, currency, etc.) against the original. Mismatches return the specific field name. See [Error Codes — Idempotency](/docs/error-codes#idempotency--field-by-field-validation).

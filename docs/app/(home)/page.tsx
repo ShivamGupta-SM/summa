@@ -226,7 +226,7 @@ const plugins = [
 	{ name: "Balance Monitor", description: "Real-time condition-based balance alerts and threshold triggers", icon: ChartBarSquareIcon },
 	{ name: "Backup", description: "Automated PostgreSQL backups with local disk and S3 storage", icon: CloudArrowUpIcon },
 	{ name: "Search", description: "Native PostgreSQL full-text search with optional Typesense and Meilisearch backends", icon: MagnifyingGlassIcon },
-	{ name: "Batch Engine", description: "TigerBeetle-inspired transaction batching with balancing debits and 10,000+ TPS throughput", icon: BoltIcon },
+	{ name: "Batch Engine", description: "High-throughput transaction batching with balancing debits and 10,000+ TPS throughput", icon: BoltIcon },
 	{ name: "Event Store Partition", description: "PostgreSQL range partitioning with automated maintenance and archive", icon: TableCellsIcon },
 	{ name: "Verification Snapshots", description: "O(recent events) hash verification via per-aggregate snapshots", icon: ShieldCheckIcon },
 	{ name: "Message Queue", description: "Redis Streams message bus for high-throughput event delivery", icon: InboxStackIcon },
@@ -303,7 +303,7 @@ const securityGroups = [
 			{
 				icon: FingerPrintIcon,
 				title: "Safe Retries",
-				description: "Network glitch? Client crash? Retry the same request and get the original result back. Field-by-field validation catches mismatched parameters — TigerBeetle-inspired idempotency that tells you exactly which field changed.",
+				description: "Network glitch? Client crash? Retry the same request and get the original result back. Field-by-field validation catches mismatched parameters and tells you exactly which field changed.",
 			},
 			{
 				icon: HandRaisedIcon,

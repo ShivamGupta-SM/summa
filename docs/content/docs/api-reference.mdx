@@ -113,6 +113,7 @@ The `/health` endpoint returns `200` when healthy or `503` when degraded:
 | `GET` | `/accounts/:holderId/balance` | Get account balance |
 | `POST` | `/accounts/:holderId/freeze` | Freeze an account |
 | `POST` | `/accounts/:holderId/unfreeze` | Unfreeze an account |
+| `PATCH` | `/accounts/:holderId/overdraft` | Update overdraft settings |
 | `POST` | `/accounts/:holderId/close` | Close an account (with optional fund sweep) |
 
 **List accounts query parameters:**
@@ -132,7 +133,9 @@ The `/health` endpoint returns `200` when healthy or `503` when degraded:
 | `GET` | `/transactions` | List transactions with filtering |
 | `POST` | `/transactions/credit` | Credit an account |
 | `POST` | `/transactions/debit` | Debit an account |
+| `POST` | `/transactions/force-debit` | Force debit (bypasses balance checks) |
 | `POST` | `/transactions/transfer` | Transfer between accounts |
+| `POST` | `/transactions/force-transfer` | Force transfer (bypasses balance checks) |
 | `POST` | `/transactions/multi-transfer` | Multi-destination transfer |
 | `POST` | `/transactions/refund` | Refund a transaction (full or partial) |
 | `POST` | `/transactions/correct` | Correct a posted transaction (reversal + new entry) |

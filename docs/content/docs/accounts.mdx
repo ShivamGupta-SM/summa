@@ -122,7 +122,31 @@ const account = await summa.accounts.create({
 </Callout>
 
 <Callout type="info" title="Need to bypass limits?">
-  For chargebacks, network-initiated adjustments, or regulatory debits that must succeed regardless of balance, use [`forceDebit`](/docs/transactions#force-debit) instead. It skips all balance and overdraft checks.
+  For chargebacks, network-initiated adjustments, or regulatory debits that must succeed regardless of balance, use [`forceDebit`](/docs/transactions#force-debit) or [`forceTransfer`](/docs/transactions#force-transfer). They skip all balance and overdraft checks.
+</Callout>
+
+### Updating Overdraft Settings
+
+You can update overdraft settings on a live account without recreating it:
+
+```ts
+await summa.accounts.updateOverdraft({
+  holderId: "merchant_1",
+  allowOverdraft: true,
+  overdraftLimit: 1000_00,  // $1,000.00
+});
+```
+
+<TypeTable
+  type={{
+    holderId: { type: "string", description: "Holder ID of the account to update.", required: true },
+    allowOverdraft: { type: "boolean", description: "Enable or disable overdraft.", required: true },
+    overdraftLimit: { type: "number", description: "New overdraft limit in smallest currency units.", default: "0" },
+  }}
+/>
+
+<Callout type="info" title="Closed accounts">
+  Overdraft settings cannot be updated on closed accounts. Frozen accounts can be updated.
 </Callout>
 
 ### Account Indicators

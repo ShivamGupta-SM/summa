@@ -156,6 +156,13 @@ export const VALIDATION_SCHEMAS = {
 		...TX_BASE_FIELDS,
 		exchangeRate: "number?" as const,
 	},
+	forceTransfer: {
+		sourceHolderId: "string" as const,
+		destinationHolderId: "string" as const,
+		...TX_BASE_FIELDS,
+		reason: "string" as const,
+		exchangeRate: "number?" as const,
+	},
 	multiTransfer: {
 		sourceHolderId: "string" as const,
 		...TX_BASE_FIELDS,

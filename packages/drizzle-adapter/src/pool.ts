@@ -4,20 +4,13 @@
 // Production-ready pool configuration guidance for the Drizzle adapter.
 // Pool types, constants, and helpers are shared from @summa-ledger/core/db.
 
-import {
-	createPooledAdapterResult,
-	type PooledAdapterResult,
-	type PoolLike,
-} from "@summa-ledger/core/db";
+import type { PooledAdapterResult, PoolLike } from "@summa-ledger/core/db";
+import { createPooledAdapterResult } from "@summa-ledger/core/sql";
 import { drizzleAdapter } from "./adapter.js";
 
 // Re-export shared pool types and constants for convenience
-export {
-	type PooledAdapterResult,
-	type PoolLike,
-	type PoolStats,
-	RECOMMENDED_POOL_CONFIG,
-} from "@summa-ledger/core/db";
+export type { PooledAdapterResult, PoolLike, PoolStats } from "@summa-ledger/core/db";
+export { RECOMMENDED_POOL_CONFIG } from "@summa-ledger/core/sql";
 
 export interface DrizzlePooledAdapterConfig {
 	/** A pg.Pool instance (or compatible pool) */

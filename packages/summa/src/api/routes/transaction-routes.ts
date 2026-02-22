@@ -70,6 +70,17 @@ export const transactionRoutes: Route[] = [
 		return json(201, result);
 	}),
 
+	defineRoute("POST", "/transactions/force-transfer", async (req, summa) => {
+		const err = validateBody(req.body, VALIDATION_SCHEMAS.forceTransfer);
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const amtErr = validatePositiveIntegerAmount(req.body);
+		if (amtErr) return json(400, { error: { code: "INVALID_ARGUMENT", message: amtErr.error } });
+		const result = await summa.transactions.forceTransfer(
+			req.body as Parameters<Summa["transactions"]["forceTransfer"]>[0],
+		);
+		return json(201, result);
+	}),
+
 	defineRoute("POST", "/transactions/transfer", async (req, summa) => {
 		const err = validateBody(req.body, VALIDATION_SCHEMAS.transfer);
 		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });

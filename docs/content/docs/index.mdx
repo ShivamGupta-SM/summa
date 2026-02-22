@@ -19,7 +19,7 @@ Every mutation in Summa produces an immutable event with a **SHA-256 hash chain*
 | **Double-spending** | Pessimistic locks + balance checks in a single database transaction |
 | **Lost transactions** | Event sourcing with append-only log — nothing is ever deleted |
 | **Audit requirements** | Cryptographic hash chain verifies no event was modified or removed |
-| **High-traffic accounts** | Hot account pattern, mega CTE combined writes, and TigerBeetle-inspired transaction batching for 100,000+ TPS |
+| **High-traffic accounts** | Hot account pattern, mega CTE combined writes, and high-throughput transaction batching for 100,000+ TPS |
 | **Network retries** | Built-in idempotency keys prevent duplicate transactions |
 | **Partial failures** | Two-phase holds: reserve first, commit or void later |
 | **Data inconsistency** | Automated reconciliation compares balances against entry records |
@@ -163,7 +163,7 @@ Financial systems are high-value targets. Summa doesn't bolt security on as an a
     Drizzle ORM, Prisma, Kysely, or in-memory for testing. Bring your own ORM.
   </Card>
   <Card title="100,000+ TPS" href="/docs/scaling">
-    Mega CTE combined writes, TigerBeetle-inspired transaction batching, denormalized balance cache, and lock retry with backoff. Full HMAC integrity at every throughput level.
+    Mega CTE combined writes, high-throughput transaction batching, denormalized balance cache, and lock retry with backoff. Full HMAC integrity at every throughput level.
   </Card>
 </Cards>
 

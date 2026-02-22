@@ -21,6 +21,11 @@
 			"types": "./dist/db/index.d.mts",
 			"default": "./dist/db/index.mjs"
 		},
+		"./sql": {
+			"dev-source": "./src/sql/index.ts",
+			"types": "./dist/sql/index.d.mts",
+			"default": "./dist/sql/index.mjs"
+		},
 		"./error": {
 			"dev-source": "./src/error/index.ts",
 			"types": "./dist/error/index.d.mts",
