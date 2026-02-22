@@ -1,5 +1,8 @@
 # @summa-ledger/memory-adapter
 
+> **Warning**
+> This package is under active development and in a **highly experimental stage**. APIs may change without notice. Extensive testing is still pending — **do not use in production** until a stable release is announced.
+
 In-memory database adapter for the Summa ledger. Designed for unit testing -- no external database required.
 
 ## Installation

@@ -29,20 +29,26 @@ try {
 
 ## Error Codes
 
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `INSUFFICIENT_BALANCE` | 400 | Account does not have enough available funds (including pending holds) |
-| `ACCOUNT_FROZEN` | 403 | Account is frozen — all transactions are rejected |
-| `ACCOUNT_CLOSED` | 403 | Account is permanently closed — no operations allowed |
-| `LIMIT_EXCEEDED` | 429 | Transaction exceeds a velocity limit (daily, monthly, or per-transaction) |
-| `NOT_FOUND` | 404 | Requested resource (account, transaction, hold) does not exist |
-| `INVALID_ARGUMENT` | 400 | Invalid input parameter (negative amount, missing required field, etc.) |
-| `DUPLICATE` | 409 | Duplicate idempotency key with different parameters |
-| `CONFLICT` | 409 | Resource version conflict (concurrent modification) |
-| `INTERNAL` | 500 | Unexpected internal error |
-| `HOLD_EXPIRED` | 410 | Hold has passed its expiration time and cannot be committed |
-| `CHAIN_INTEGRITY_VIOLATION` | 500 | Event hash chain is broken — data may have been tampered with |
-| `RATE_LIMITED` | 429 | Too many requests — rate limit exceeded |
+Every error code is classified as either **transient** or **deterministic** — inspired by [TigerBeetle's error classification](https://docs.tigerbeetle.com/). This tells clients whether retrying (with a new idempotency key) could succeed.
+
+- **Transient**: The condition may change — balance may increase, account may unfreeze, rate limit may reset. Client should retry with a **new** idempotency key.
+- **Deterministic**: The condition is permanent — validation error, closed account, duplicate. Retrying will always fail.
+
+| Code | HTTP | Transient? | Description |
+|------|:----:|:----------:|-------------|
+| `INSUFFICIENT_BALANCE` | 400 | Yes | Account does not have enough available funds (including pending holds) |
+| `ACCOUNT_FROZEN` | 403 | Yes | Account is frozen — all transactions are rejected |
+| `LIMIT_EXCEEDED` | 429 | Yes | Transaction exceeds a velocity limit (daily, monthly, or per-transaction) |
+| `NOT_FOUND` | 404 | Yes | Requested resource (account, transaction, hold) does not exist |
+| `HOLD_EXPIRED` | 410 | Yes | Hold has passed its expiration time and cannot be committed |
+| `RATE_LIMITED` | 429 | Yes | Too many requests — rate limit exceeded |
+| `OPTIMISTIC_LOCK_CONFLICT` | 409 | Yes | Concurrent modification — retry with a new idempotency key |
+| `ACCOUNT_CLOSED` | 403 | No | Account is permanently closed — no operations allowed |
+| `INVALID_ARGUMENT` | 400 | No | Invalid input parameter (negative amount, missing required field, etc.) |
+| `DUPLICATE` | 409 | No | Duplicate idempotency key with different parameters |
+| `CONFLICT` | 409 | No | Resource version conflict |
+| `INTERNAL` | 500 | No | Unexpected internal error |
+| `CHAIN_INTEGRITY_VIOLATION` | 500 | No | Event hash chain is broken — data may have been tampered with |
 
 ### Handler-Level Errors
 
@@ -63,6 +69,18 @@ try {
 } catch (error) {
   if (!(error instanceof SummaError)) throw error;
 
+  // TigerBeetle-inspired: use the transient flag to decide retry behavior
+  if (error.transient) {
+    // Condition may change — safe to retry with a NEW idempotency key
+    // e.g., INSUFFICIENT_BALANCE, ACCOUNT_FROZEN, RATE_LIMITED
+    await retryWithNewKey(error);
+  } else {
+    // Condition is permanent — retrying will always fail
+    // e.g., INVALID_ARGUMENT, ACCOUNT_CLOSED, DUPLICATE
+    await reportPermanentFailure(error);
+  }
+
+  // Or use the switch pattern for granular handling:
   switch (error.code) {
     case "INSUFFICIENT_BALANCE":
       // Show "not enough funds" to user
@@ -82,7 +100,9 @@ try {
 }
 ```
 
-### Idempotency Handling
+### Idempotency & Field-by-Field Validation
+
+Summa performs **field-by-field validation** on idempotent retries — inspired by TigerBeetle's `create_transfer_exists()` which returns specific errors like `exists_with_different_amount`. When a cached result exists, the original request fields are compared against the retry. If any field differs, the error message tells you exactly which field changed.
 
 ```ts
 // First attempt
@@ -102,15 +122,34 @@ const txn2 = await summa.transactions.credit({
 });
 // txn2 === txn (no double-posting)
 
-// Retry with DIFFERENT parameters — throws DUPLICATE error
+// Retry with DIFFERENT amount — field-specific error
 await summa.transactions.credit({
   holderId: "user_123",
   amount: 200_00,  // Different amount!
   reference: "dep-001",
   idempotencyKey: "dep-001-v1",
 });
-// Throws: SummaError { code: "DUPLICATE", status: 409 }
+// Throws: SummaError {
+//   code: "CONFLICT",
+//   message: "Idempotency key 'dep-001-v1' already used with different amount"
+// }
+
+// Retry with DIFFERENT holderId — field-specific error
+await summa.transactions.credit({
+  holderId: "user_456",  // Different holder!
+  amount: 100_00,
+  reference: "dep-001",
+  idempotencyKey: "dep-001-v1",
+});
+// Throws: SummaError {
+//   code: "CONFLICT",
+//   message: "Idempotency key 'dep-001-v1' already used with different holderId"
+// }
 ```
+
+<Callout type="info" title="Validated fields">
+  The following fields are compared on idempotent retries: `amount`, `holderId`, `sourceHolderId`, `destinationHolderId`, `type`, `currency`, and `reference`. If any field differs, a `CONFLICT` error is thrown with the specific field name.
+</Callout>
 
 ### Hold Expiry
 
@@ -127,6 +166,32 @@ try {
 ## Plugin Error Codes
 
 Plugins can declare additional error codes via `$ERROR_CODES`. These are merged with the base codes at runtime. Check individual [plugin documentation](/docs/plugins) for plugin-specific error codes.
+
+## The `transient` Property
+
+Every `SummaError` instance has a `transient` boolean:
+
+```ts
+import { SummaError } from "@summa-ledger/summa/error";
+
+try {
+  await summa.transactions.transfer({ ... });
+} catch (error) {
+  if (error instanceof SummaError) {
+    console.log(error.transient); // true or false
+    console.log(error.docsUrl);   // "https://summa.dev/docs/error-codes#insufficient-balance"
+  }
+}
+```
+
+You can also access the classification from the error code registry:
+
+```ts
+import { BASE_ERROR_CODES } from "@summa-ledger/summa/error";
+
+BASE_ERROR_CODES.INSUFFICIENT_BALANCE.transient; // true
+BASE_ERROR_CODES.ACCOUNT_CLOSED.transient;       // false
+```
 
 ## Importing
 

@@ -62,6 +62,7 @@ export interface Summa<TInfer = Record<string, never>> {
 			holderType: HolderType;
 			currency?: string;
 			allowOverdraft?: boolean;
+			overdraftLimit?: number;
 			indicator?: string;
 			accountType?: AccountType;
 			accountCode?: string;

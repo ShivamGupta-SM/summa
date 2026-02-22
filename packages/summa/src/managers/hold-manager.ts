@@ -26,6 +26,7 @@ import {
 } from "../context/hooks.js";
 import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
 import { getAccountByHolder, resolveAccountForUpdate } from "./account-manager.js";
+import { checkSufficientBalance } from "./balance-check.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import {
 	checkIdempotencyKeyInTx,
@@ -177,19 +178,12 @@ export async function createHold(
 
 		// Check available balance
 		const available = Number(src.balance) - Number(src.pending_debit);
-		if (!src.allow_overdraft && available < amount) {
-			throw SummaError.insufficientBalance(
-				`Insufficient balance. Available: ${available}, Required: ${amount}`,
-			);
-		}
-		if (src.allow_overdraft) {
-			const overdraftLimit = Number(src.overdraft_limit ?? 0);
-			if (overdraftLimit > 0 && available - amount < -overdraftLimit) {
-				throw SummaError.insufficientBalance(
-					`Hold would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${available + overdraftLimit}, Required: ${amount}`,
-				);
-			}
-		}
+		checkSufficientBalance({
+			available,
+			amount,
+			allowOverdraft: src.allow_overdraft,
+			overdraftLimit: Number(src.overdraft_limit ?? 0),
+		});
 
 		// Resolve destination
 		let destAccountId: string | null = null;
@@ -411,19 +405,12 @@ export async function createMultiDestinationHold(
 
 		// Check available balance
 		const available = Number(src.balance) - Number(src.pending_debit);
-		if (!src.allow_overdraft && available < amount) {
-			throw SummaError.insufficientBalance(
-				`Insufficient balance. Available: ${available}, Required: ${amount}`,
-			);
-		}
-		if (src.allow_overdraft) {
-			const overdraftLimit = Number(src.overdraft_limit ?? 0);
-			if (overdraftLimit > 0 && available - amount < -overdraftLimit) {
-				throw SummaError.insufficientBalance(
-					`Hold would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${available + overdraftLimit}, Required: ${amount}`,
-				);
-			}
-		}
+		checkSufficientBalance({
+			available,
+			amount,
+			allowOverdraft: src.allow_overdraft,
+			overdraftLimit: Number(src.overdraft_limit ?? 0),
+		});
 
 		const holdExpiresAt =
 			expiresInMinutes !== undefined ? new Date(Date.now() + expiresInMinutes * 60 * 1000) : null;

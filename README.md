@@ -16,8 +16,8 @@
 </p>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/summa"><img src="https://img.shields.io/npm/v/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Version"></a>
-  <a href="https://www.npmjs.com/package/summa"><img src="https://img.shields.io/npm/dm/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Downloads"></a>
+  <a href="https://www.npmjs.com/package/@summa-ledger/summa"><img src="https://img.shields.io/npm/v/@summa-ledger/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Version"></a>
+  <a href="https://www.npmjs.com/package/@summa-ledger/summa"><img src="https://img.shields.io/npm/dm/@summa-ledger/summa.svg?style=flat&colorA=18181b&colorB=10b981" alt="Downloads"></a>
   <a href="https://github.com/summa-ledger/summa/blob/main/LICENSE"><img src="https://img.shields.io/github/license/summa-ledger/summa?style=flat&colorA=18181b&colorB=10b981" alt="License"></a>
   <a href="https://www.typescriptlang.org/"><img src="https://img.shields.io/badge/TypeScript-strict-blue?style=flat&colorA=18181b&colorB=10b981" alt="TypeScript"></a>
 </p>
@@ -26,12 +26,17 @@
   <a href="https://summa-docs.vercel.app/docs">Documentation</a> &nbsp;·&nbsp;
   <a href="https://summa-docs.vercel.app/docs/getting-started">Getting Started</a> &nbsp;·&nbsp;
   <a href="https://github.com/summa-ledger/summa/issues">Issues</a> &nbsp;·&nbsp;
-  <a href="https://www.npmjs.com/package/summa">npm</a>
+  <a href="https://www.npmjs.com/package/@summa-ledger/summa">npm</a>
 </p>
 
 <br/>
 
 ---
+
+<br/>
+
+> [!WARNING]
+> **Experimental** — Summa is under active development and in a highly experimental stage. APIs may change without notice. Extensive testing is still pending. **Do not use in production** until a stable release is announced.
 
 <br/>
 

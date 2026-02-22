@@ -33,6 +33,7 @@ import {
 import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import type { TransactionBatchEngine } from "../plugins/batch-engine.js";
 import { resolveAccountForUpdate } from "./account-manager.js";
+import { checkSufficientBalance } from "./balance-check.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "./idempotency.js";
 import { getLedgerId } from "./ledger-helpers.js";
@@ -398,17 +399,12 @@ export async function debitAccount(
 
 		// Check sufficient balance (skipped for forceDebit — chargebacks, network adjustments)
 		if (!params._skipBalanceCheck && !params.balancing) {
-			if (!sourceAccount.allow_overdraft && availableBalance < actualAmount) {
-				throw SummaError.insufficientBalance("Insufficient balance for this transaction");
-			}
-			if (sourceAccount.allow_overdraft) {
-				const overdraftLimit = Number(sourceAccount.overdraft_limit ?? 0);
-				if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
-					throw SummaError.insufficientBalance(
-						`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
-					);
-				}
-			}
+			checkSufficientBalance({
+				available: availableBalance,
+				amount: actualAmount,
+				allowOverdraft: sourceAccount.allow_overdraft,
+				overdraftLimit: Number(sourceAccount.overdraft_limit ?? 0),
+			});
 		}
 
 		// Get destination system account (cached — no DB hit after first call)
@@ -740,17 +736,12 @@ export async function transfer(
 		}
 
 		if (!params.balancing) {
-			if (!source.allow_overdraft && availableBalance < actualAmount) {
-				throw SummaError.insufficientBalance("Insufficient balance for this transaction");
-			}
-			if (source.allow_overdraft) {
-				const overdraftLimit = Number(source.overdraft_limit ?? 0);
-				if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
-					throw SummaError.insufficientBalance(
-						`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
-					);
-				}
-			}
+			checkSufficientBalance({
+				available: availableBalance,
+				amount: actualAmount,
+				allowOverdraft: source.allow_overdraft,
+				overdraftLimit: Number(source.overdraft_limit ?? 0),
+			});
 		}
 
 		// Enforce velocity limits inside tx
@@ -1016,17 +1007,12 @@ export async function multiTransfer(
 
 		// Check sufficient balance
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
-		if (!source.allow_overdraft && availableBalance < amount) {
-			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
-		}
-		if (source.allow_overdraft) {
-			const overdraftLimit = Number(source.overdraft_limit ?? 0);
-			if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
-				throw SummaError.insufficientBalance(
-					`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
-				);
-			}
-		}
+		checkSufficientBalance({
+			available: availableBalance,
+			amount,
+			allowOverdraft: source.allow_overdraft,
+			overdraftLimit: Number(source.overdraft_limit ?? 0),
+		});
 
 		// Enforce velocity limits on source
 		await enforceLimitsWithAccountId(tx, {

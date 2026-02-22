@@ -1,5 +1,8 @@
 # @summa-ledger/cli
 
+> **Warning**
+> This package is under active development and in a **highly experimental stage**. APIs may change without notice. Extensive testing is still pending — **do not use in production** until a stable release is announced.
+
 Command-line interface for the Summa ledger.
 
 ## Installation

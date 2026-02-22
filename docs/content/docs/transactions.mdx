@@ -93,6 +93,54 @@ const txn = await summa.transactions.debit({
 </Tab>
 </Tabs>
 
+### Balancing Debit
+
+A **balancing debit** automatically caps the amount to the account's available balance — inspired by [TigerBeetle's `balancing_debit` flag](https://docs.tigerbeetle.com/). If the account has less than the requested amount, the transaction succeeds with the available balance instead of failing with `INSUFFICIENT_BALANCE`.
+
+<Tabs items={["Balancing Debit", "Balancing Transfer"]}>
+<Tab value="Balancing Debit">
+
+```ts
+// Account has $50.00 available
+const txn = await summa.transactions.debit({
+  holderId: "user_123",
+  amount: 100_00,        // Requested $100
+  reference: "sweep-001",
+  balancing: true,
+  idempotencyKey: "sweep_001",
+});
+// txn.amount === 50_00 — capped to available balance
+// txn.metadata === { balancing: true, requestedAmount: 100_00 }
+```
+
+</Tab>
+<Tab value="Balancing Transfer">
+
+```ts
+// Source account has $30.00 available
+const txn = await summa.transactions.transfer({
+  sourceHolderId: "user_123",
+  destinationHolderId: "treasury",
+  amount: 100_00,        // Requested $100
+  reference: "sweep-002",
+  balancing: true,
+  idempotencyKey: "sweep_002",
+});
+// txn.amount === 30_00 — capped to source's available balance
+```
+
+</Tab>
+</Tabs>
+
+**Use cases:**
+- **Account sweeps**: Move all available funds to a treasury account without querying the balance first
+- **Best-effort payments**: Pay as much as possible toward a bill
+- **Account closure**: Drain remaining balance during account close
+
+<Callout type="info" title="Zero-amount transactions">
+  If the available balance is zero, a balancing debit/transfer succeeds with amount `0`. The original requested amount is always stored in `metadata.requestedAmount`.
+</Callout>
+
 ### Force Debit
 
 A privileged debit that **bypasses all balance and overdraft checks**. Use for chargebacks, network-initiated adjustments, regulatory debits, or any case where the debit must succeed regardless of account balance.
@@ -364,6 +412,6 @@ const txn = await summa.transactions.transfer({
   If you retry with the same `idempotencyKey`, Summa returns the original result without executing the transaction again. Keys expire after `advanced.idempotencyTTL` (default: 24 hours).
 </Callout>
 
-<Callout type="warn" title="Duplicate key with different params">
-  A duplicate key with *different* parameters throws a `DUPLICATE` error (HTTP 409).
+<Callout type="warn" title="Field-by-field validation">
+  A duplicate key with different parameters throws a `CONFLICT` error (HTTP 409) that tells you **exactly which field** changed — e.g., `"Idempotency key 'X' already used with different amount"`. See [Error Codes — Idempotency](/docs/error-codes#idempotency--field-by-field-validation) for details.
 </Callout>
