@@ -1,5 +1,14 @@
 # @summa-ledger/memory-adapter
 
+## 0.2.1
+
+### Patch Changes
+
+- [`51a9774`](https://github.com/summa-ledger/summa/commit/51a977446445e57f58b75afcaf90aaccd2203f2b) Thanks [@ShivamGupta-SM](https://github.com/ShivamGupta-SM)! - First npm publish with updated granular access token.
+
+- Updated dependencies [[`51a9774`](https://github.com/summa-ledger/summa/commit/51a977446445e57f58b75afcaf90aaccd2203f2b)]:
+  - @summa-ledger/core@0.2.1
+
 ## 0.2.0
 
 ### Minor Changes

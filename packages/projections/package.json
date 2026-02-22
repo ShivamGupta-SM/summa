@@ -1,6 +1,6 @@
 {
   "name": "@summa-ledger/projections",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "CQRS projection runner for Summa event streams",
   "type": "module",
   "license": "MIT",

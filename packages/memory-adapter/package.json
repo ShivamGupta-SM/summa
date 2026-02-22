@@ -1,6 +1,6 @@
 {
   "name": "@summa-ledger/memory-adapter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "deprecated": "The memory adapter does not support raw SQL queries used by Summa managers. Use @summa-ledger/drizzle-adapter with a real PostgreSQL instance for testing.",
   "type": "module",
   "license": "MIT",

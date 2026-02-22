@@ -1,6 +1,6 @@
 {
   "name": "@summa-ledger/message-queue",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Redis Streams message bus for Summa event delivery",
   "type": "module",
   "license": "MIT",
