@@ -309,6 +309,18 @@ export async function debitAccount(
 		idempotencyKey?: string;
 		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
+		/**
+		 * TigerBeetle-inspired balancing debit. When true, the transfer amount is
+		 * automatically capped to the available balance instead of failing with
+		 * INSUFFICIENT_BALANCE. The `amount` field becomes an upper limit.
+		 *
+		 * Use cases: sweep all available funds, close account with final payout,
+		 * distribute remaining balance.
+		 *
+		 * The actual debited amount is returned in the response's `amount` field.
+		 * If available balance is 0, the transaction still succeeds with amount 0.
+		 */
+		balancing?: boolean;
 		/** @internal Skip balance & overdraft checks (used by forceDebit). */
 		_skipBalanceCheck?: boolean;
 	},
@@ -377,15 +389,21 @@ export async function debitAccount(
 			category,
 		});
 
+		// Balancing debit (TigerBeetle-inspired): cap amount to available balance
+		const availableBalance = Number(sourceAccount.balance) - Number(sourceAccount.pending_debit);
+		let actualAmount = amount;
+		if (params.balancing) {
+			actualAmount = Math.min(amount, Math.max(0, availableBalance));
+		}
+
 		// Check sufficient balance (skipped for forceDebit — chargebacks, network adjustments)
-		if (!params._skipBalanceCheck) {
-			const availableBalance = Number(sourceAccount.balance) - Number(sourceAccount.pending_debit);
-			if (!sourceAccount.allow_overdraft && availableBalance < amount) {
+		if (!params._skipBalanceCheck && !params.balancing) {
+			if (!sourceAccount.allow_overdraft && availableBalance < actualAmount) {
 				throw SummaError.insufficientBalance("Insufficient balance for this transaction");
 			}
 			if (sourceAccount.allow_overdraft) {
 				const overdraftLimit = Number(sourceAccount.overdraft_limit ?? 0);
-				if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
+				if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
 					throw SummaError.insufficientBalance(
 						`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
 					);
@@ -406,15 +424,17 @@ export async function debitAccount(
 
 		// Pre-compute balance update in-memory
 		const balanceBefore = Number(sourceAccount.balance);
-		const balanceAfter = balanceBefore - amount;
+		const balanceAfter = balanceBefore - actualAmount;
 		const newVersion = Number(sourceAccount.version) + 1;
 		const newCreditBalance = Number(sourceAccount.credit_balance);
-		const newDebitBalance = Number(sourceAccount.debit_balance) + amount;
-		const fullMetadata = { ...metadata, category };
+		const newDebitBalance = Number(sourceAccount.debit_balance) + actualAmount;
+		const fullMetadata = params.balancing
+			? { ...metadata, category, balancing: true, requestedAmount: amount }
+			: { ...metadata, category };
 
 		const eventData = {
 			reference,
-			amount,
+			amount: actualAmount,
 			source: holderId,
 			destination: destinationSystemAccount,
 			category,
@@ -429,7 +449,7 @@ export async function debitAccount(
 
 			txnType: "debit",
 			reference,
-			amount,
+			amount: actualAmount,
 			currency: acctCurrency,
 			description,
 			metadata: fullMetadata,
@@ -468,7 +488,7 @@ export async function debitAccount(
 				accountId: sourceAccount.id,
 				holderId,
 				holderType: sourceAccount.holder_type,
-				amount,
+				amount: actualAmount,
 				transactionId: "", // filled by CTE via new_txn.id
 				reference,
 				category,
@@ -515,7 +535,7 @@ export async function debitAccount(
 			{
 				id: megaResult.transactionId,
 				reference,
-				amount,
+				amount: actualAmount,
 				currency: acctCurrency,
 				description,
 				source_account_id: sourceAccount.id,
@@ -601,6 +621,17 @@ export async function transfer(
 		exchangeRate?: number;
 		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
+		/**
+		 * TigerBeetle-inspired balancing transfer. When true, the transfer amount is
+		 * automatically capped to the source account's available balance instead of
+		 * failing with INSUFFICIENT_BALANCE. The `amount` field becomes an upper limit.
+		 *
+		 * Use cases: sweep all funds to another account, settlement of remaining balance.
+		 *
+		 * The actual transferred amount is returned in the response's `amount` field.
+		 * If available balance is 0, the transaction still succeeds with amount 0.
+		 */
+		balancing?: boolean;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -701,15 +732,24 @@ export async function transfer(
 
 		// Check sufficient balance first (cheap) before limit queries (expensive)
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
-		if (!source.allow_overdraft && availableBalance < amount) {
-			throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+
+		// Balancing transfer (TigerBeetle-inspired): cap amount to available balance
+		let actualAmount = amount;
+		if (params.balancing) {
+			actualAmount = Math.min(amount, Math.max(0, availableBalance));
 		}
-		if (source.allow_overdraft) {
-			const overdraftLimit = Number(source.overdraft_limit ?? 0);
-			if (overdraftLimit > 0 && availableBalance - amount < -overdraftLimit) {
-				throw SummaError.insufficientBalance(
-					`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
-				);
+
+		if (!params.balancing) {
+			if (!source.allow_overdraft && availableBalance < actualAmount) {
+				throw SummaError.insufficientBalance("Insufficient balance for this transaction");
+			}
+			if (source.allow_overdraft) {
+				const overdraftLimit = Number(source.overdraft_limit ?? 0);
+				if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
+					throw SummaError.insufficientBalance(
+						`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
+					);
+				}
 			}
 		}
 
@@ -717,7 +757,7 @@ export async function transfer(
 		await enforceLimitsWithAccountId(tx, {
 			accountId: source.id,
 			holderId: sourceHolderId,
-			amount,
+			amount: actualAmount,
 			txnType: "debit",
 			category,
 		});
@@ -754,7 +794,9 @@ export async function transfer(
 
 		// For cross-currency: credit amount in destination currency.
 		const fxRate = resolvedExchangeRate ?? 1_000_000;
-		const creditAmount = isCrossCurrency ? Math.round(amount * (fxRate / 1_000_000)) : amount;
+		const creditAmount = isCrossCurrency
+			? Math.round(actualAmount * (fxRate / 1_000_000))
+			: actualAmount;
 
 		if (isCrossCurrency && creditAmount <= 0) {
 			throw SummaError.invalidArgument(
@@ -767,7 +809,9 @@ export async function transfer(
 		// Create transaction record (IMMUTABLE — no status)
 		const txnMeta = isCrossCurrency
 			? { ...metadata, category, exchangeRate: resolvedExchangeRate, crossCurrency: true }
-			: { ...metadata, category };
+			: params.balancing
+				? { ...metadata, category, balancing: true, requestedAmount: amount }
+				: { ...metadata, category };
 		const txnRecordRows = await tx.raw<RawTransactionRow>(
 			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, meta_data, ledger_id, effective_date)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, NOW()))
@@ -775,7 +819,7 @@ export async function transfer(
 			[
 				"transfer",
 				reference,
-				amount,
+				actualAmount,
 				srcCurrency,
 				description,
 				source.id,

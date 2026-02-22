@@ -60,6 +60,11 @@ export interface BatchableTransaction {
 	systemAccount: string;
 	/** @deprecated Ignored — overdraft is now controlled only at account level via allowOverdraft + overdraftLimit */
 	allowOverdraft?: boolean;
+	/**
+	 * TigerBeetle-inspired balancing flag. When true for debits, the amount is
+	 * capped to available balance instead of failing with INSUFFICIENT_BALANCE.
+	 */
+	balancing?: boolean;
 	idempotencyKey?: string;
 	resolve: (result: LedgerTransaction) => void;
 	reject: (error: Error) => void;
@@ -277,15 +282,22 @@ export class TransactionBatchEngine {
 						debitBalance: Number(account.debit_balance),
 					};
 
+					// Balancing debit (TigerBeetle-inspired): cap amount to available balance
+					let actualAmount = item.amount;
+					if (item.type === "debit" && item.balancing) {
+						const avail = delta.balance - Number(account.pending_debit);
+						actualAmount = Math.min(item.amount, Math.max(0, avail));
+					}
+
 					// Compute new balance
 					const balanceBefore = delta.balance;
 					const balanceAfter =
-						item.type === "credit" ? balanceBefore + item.amount : balanceBefore - item.amount;
+						item.type === "credit" ? balanceBefore + actualAmount : balanceBefore - actualAmount;
 
 					// Check sufficient balance for debits (account-level only)
-					if (item.type === "debit") {
+					if (item.type === "debit" && !item.balancing) {
 						const availableBalance = balanceBefore - Number(account.pending_debit);
-						if (!account.allow_overdraft && availableBalance < item.amount) {
+						if (!account.allow_overdraft && availableBalance < actualAmount) {
 							item.reject(
 								SummaError.insufficientBalance("Insufficient balance for this transaction"),
 							);
@@ -293,7 +305,7 @@ export class TransactionBatchEngine {
 						}
 						if (account.allow_overdraft) {
 							const overdraftLimit = Number(account.overdraft_limit ?? 0);
-							if (overdraftLimit > 0 && availableBalance - item.amount < -overdraftLimit) {
+							if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
 								item.reject(
 									SummaError.insufficientBalance(
 										`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
@@ -306,9 +318,9 @@ export class TransactionBatchEngine {
 
 					const newVersion = delta.version + 1;
 					const newCreditBalance =
-						item.type === "credit" ? delta.creditBalance + item.amount : delta.creditBalance;
+						item.type === "credit" ? delta.creditBalance + actualAmount : delta.creditBalance;
 					const newDebitBalance =
-						item.type === "debit" ? delta.debitBalance + item.amount : delta.debitBalance;
+						item.type === "debit" ? delta.debitBalance + actualAmount : delta.debitBalance;
 
 					// Update cumulative delta
 					balanceDeltas.set(account.id, {
