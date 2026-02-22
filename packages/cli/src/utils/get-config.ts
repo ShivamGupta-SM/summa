@@ -101,12 +101,7 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
 		const aliases = getPathAliases(cwd);
 
 		// If path aliases exist, create a jiti instance with alias support
-		const jitiImport = aliases
-			? (() => {
-					const jiti = createJiti(cwd, { alias: aliases });
-					return (id: string) => jiti.import(id);
-				})()
-			: undefined;
+		const jitiInstance = aliases ? createJiti(cwd, { alias: aliases }) : undefined;
 
 		const { config } = await loadConfig({
 			configFile,
@@ -117,7 +112,7 @@ async function tryLoadConfig(configFile: string, cwd: string): Promise<ResolvedS
 			rcFile: false,
 			packageJson: false,
 			globalRc: false,
-			...(jitiImport ? { jiti: jitiImport } : {}),
+			...(jitiInstance ? { jiti: jitiInstance } : {}),
 		});
 
 		if (!config || typeof config !== "object") return null;

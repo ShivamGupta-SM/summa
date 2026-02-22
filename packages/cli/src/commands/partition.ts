@@ -7,7 +7,6 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as p from "@clack/prompts";
-import { generatePartitionDDL } from "@summa/core/db";
 import { Command } from "commander";
 import pc from "picocolors";
 import { getConfig } from "../utils/get-config.js";
@@ -97,12 +96,21 @@ function generateSubCommand(): Command {
 			lines.push("");
 
 			// Phase 2-5: Use generatePartitionDDL for rename + create + migrate
-			const ddlStatements = generatePartitionDDL({
-				schema,
-				tables: {
-					ledger_event: { type: "range", interval },
-				},
-			});
+			let ddlStatements: string[];
+			try {
+				const summaDb = await import("summa/db" as string);
+				ddlStatements = summaDb.generatePartitionDDL({
+					schema,
+					tables: {
+						ledger_event: { type: "range", interval },
+					},
+				});
+			} catch {
+				p.log.error(`${pc.red("summa not installed")} ${pc.dim("run: pnpm add summa")}`);
+				p.outro(pc.dim("Aborted."));
+				process.exitCode = 1;
+				return;
+			}
 			lines.push("-- PHASE 2-5: Rename, create partitioned table, migrate data");
 			for (const stmt of ddlStatements) {
 				lines.push(stmt);
