@@ -84,6 +84,11 @@ export interface Summa<TInfer = Record<string, never>> {
 			reason?: string;
 			transferToHolderId?: string;
 		}) => Promise<Account>;
+		updateOverdraft: (params: {
+			holderId: string;
+			allowOverdraft: boolean;
+			overdraftLimit?: number;
+		}) => Promise<Account>;
 		list: (params: {
 			page?: number;
 			perPage?: number;
@@ -132,6 +137,20 @@ export interface Summa<TInfer = Record<string, never>> {
 			metadata?: Record<string, unknown>;
 			destinationSystemAccount?: string;
 			idempotencyKey?: string;
+			effectiveDate?: Date | string;
+		}) => Promise<LedgerTransaction>;
+		/** Privileged transfer that bypasses balance & overdraft checks. Use for clawbacks, regulatory seizures. */
+		forceTransfer: (params: {
+			sourceHolderId: string;
+			destinationHolderId: string;
+			amount: number;
+			reference: string;
+			reason: string;
+			description?: string;
+			category?: string;
+			metadata?: Record<string, unknown>;
+			idempotencyKey?: string;
+			exchangeRate?: number;
 			effectiveDate?: Date | string;
 		}) => Promise<LedgerTransaction>;
 		transfer: (params: {
@@ -396,6 +415,10 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				const ctx = await getCtx();
 				return accounts.closeAccount(ctx, params);
 			},
+			updateOverdraft: async (params) => {
+				const ctx = await getCtx();
+				return accounts.updateOverdraft(ctx, params);
+			},
 			list: async (params) => {
 				const ctx = await getCtx();
 				return accounts.listAccounts(ctx, params);
@@ -435,6 +458,10 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 			forceDebit: async (params) => {
 				const ctx = await getCtx();
 				return transactions.forceDebit(ctx, params);
+			},
+			forceTransfer: async (params) => {
+				const ctx = await getCtx();
+				return transactions.forceTransfer(ctx, params);
 			},
 			transfer: async (params) => {
 				const ctx = await getCtx();

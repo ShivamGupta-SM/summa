@@ -593,7 +593,37 @@ export async function forceDebit(
 	const { reason, ...debitParams } = params;
 	return debitAccount(ctx, {
 		...debitParams,
-		metadata: { ...debitParams.metadata, _forceDebitReason: reason },
+		metadata: { ...debitParams.metadata, forceReason: reason },
+		_skipBalanceCheck: true,
+	});
+}
+
+// =============================================================================
+// FORCE TRANSFER — Privileged transfer that bypasses balance & overdraft checks
+// =============================================================================
+// Use for clawbacks, regulatory seizures, or inter-account forced moves where
+// the transfer MUST succeed regardless of source account balance.
+
+export async function forceTransfer(
+	ctx: SummaContext,
+	params: {
+		sourceHolderId: string;
+		destinationHolderId: string;
+		amount: number;
+		reference: string;
+		reason: string;
+		description?: string;
+		category?: string;
+		metadata?: Record<string, unknown>;
+		idempotencyKey?: string;
+		exchangeRate?: number;
+		effectiveDate?: Date | string;
+	},
+): Promise<LedgerTransaction> {
+	const { reason, ...transferParams } = params;
+	return transfer(ctx, {
+		...transferParams,
+		metadata: { ...transferParams.metadata, forceReason: reason },
 		_skipBalanceCheck: true,
 	});
 }
@@ -628,6 +658,8 @@ export async function transfer(
 		 * If available balance is 0, the transaction still succeeds with amount 0.
 		 */
 		balancing?: boolean;
+		/** @internal Skip balance & overdraft checks (used by forceTransfer). */
+		_skipBalanceCheck?: boolean;
 	},
 ): Promise<LedgerTransaction> {
 	const {
@@ -735,7 +767,7 @@ export async function transfer(
 			actualAmount = Math.min(amount, Math.max(0, availableBalance));
 		}
 
-		if (!params.balancing) {
+		if (!params._skipBalanceCheck && !params.balancing) {
 			checkSufficientBalance({
 				available: availableBalance,
 				amount: actualAmount,

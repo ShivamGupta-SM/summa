@@ -82,6 +82,20 @@ export const accountRoutes: Route[] = [
 		return json(200, result);
 	}),
 
+	defineRoute("PATCH", "/accounts/:holderId/overdraft", async (req, summa, params) => {
+		const err = validateBody(req.body, {
+			allowOverdraft: "boolean",
+			overdraftLimit: "number?",
+		});
+		if (err) return json(400, { error: { code: "INVALID_ARGUMENT", message: err.error } });
+		const body = req.body as { allowOverdraft: boolean; overdraftLimit?: number };
+		const result = await summa.accounts.updateOverdraft({
+			...body,
+			holderId: params.holderId ?? "",
+		});
+		return json(200, result);
+	}),
+
 	defineRoute("GET", "/accounts/:holderId", async (_req, summa, params) => {
 		const result = await summa.accounts.get(params.holderId ?? "");
 		return json(200, result);

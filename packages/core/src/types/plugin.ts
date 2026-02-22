@@ -34,6 +34,7 @@ export type SummaOperation =
 	| { type: "account.freeze"; params: Record<string, unknown> }
 	| { type: "account.unfreeze"; params: Record<string, unknown> }
 	| { type: "account.close"; params: Record<string, unknown> }
+	| { type: "account.update"; params: Record<string, unknown> }
 	| { type: "transaction.credit"; params: Record<string, unknown> }
 	| { type: "transaction.debit"; params: Record<string, unknown> }
 	| { type: "transaction.transfer"; params: Record<string, unknown> }

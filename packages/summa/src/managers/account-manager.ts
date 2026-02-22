@@ -1257,6 +1257,84 @@ export async function listAccounts(
 }
 
 // =============================================================================
+// UPDATE OVERDRAFT
+// =============================================================================
+
+export async function updateOverdraft(
+	ctx: SummaContext,
+	params: {
+		holderId: string;
+		allowOverdraft: boolean;
+		overdraftLimit?: number;
+	},
+): Promise<Account> {
+	const { holderId, allowOverdraft, overdraftLimit = 0 } = params;
+	const ledgerId = getLedgerId(ctx);
+	const t = createTableResolver(ctx.options.schema);
+
+	if (overdraftLimit < 0 || !Number.isInteger(overdraftLimit)) {
+		throw SummaError.invalidArgument("overdraftLimit must be a non-negative integer");
+	}
+
+	const result = await withTransactionTimeout(ctx, async (tx) => {
+		const dn = ctx.options.advanced.useDenormalizedBalance;
+		const lockedRow = await resolveAccountForUpdate(
+			tx,
+			ledgerId,
+			holderId,
+			ctx.options.schema,
+			ctx.options.advanced.lockMode,
+			dn,
+		);
+
+		if (lockedRow.status === "closed") {
+			throw SummaError.accountClosed("Cannot update overdraft on a closed account");
+		}
+
+		// Update the static overdraft fields on account_balance
+		await tx.raw(
+			`UPDATE ${t("account_balance")} SET allow_overdraft = $1, overdraft_limit = $2 WHERE id = $3`,
+			[allowOverdraft, overdraftLimit, lockedRow.id],
+		);
+
+		// Append event
+		await appendEvent(
+			tx,
+			{
+				aggregateType: AGGREGATE_TYPES.ACCOUNT,
+				aggregateId: lockedRow.id,
+				eventType: ACCOUNT_EVENTS.CREATED, // re-use; no dedicated event type needed
+				eventData: {
+					action: "update_overdraft",
+					allowOverdraft,
+					overdraftLimit,
+					previousAllowOverdraft: lockedRow.allow_overdraft,
+					previousOverdraftLimit: Number(lockedRow.overdraft_limit ?? 0),
+				},
+			},
+			ctx.options.schema,
+			ctx.options.advanced.hmacSecret,
+			ledgerId,
+		);
+
+		// Read back
+		const updatedRows = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			[ledgerId, lockedRow.id],
+		);
+		const updated = updatedRows[0];
+		if (!updated) throw SummaError.internal("Failed to read updated account");
+		return rawRowToAccount(updated);
+	});
+
+	await runAfterOperationHooks(ctx, {
+		type: "account.update",
+		params: { holderId, allowOverdraft, overdraftLimit },
+	});
+	return result;
+}
+
+// =============================================================================
 // HELPERS
 // =============================================================================
 

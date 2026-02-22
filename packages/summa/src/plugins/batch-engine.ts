@@ -14,15 +14,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { LedgerTransaction, SummaContext, SummaPlugin } from "@summa-ledger/core";
-import {
-	computeBalanceChecksum,
-	computeHash,
-	SummaError,
-	validatePluginOptions,
-} from "@summa-ledger/core";
+import { computeBalanceChecksum, computeHash, validatePluginOptions } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import { resolveAccountForUpdate } from "../managers/account-manager.js";
+import { checkSufficientBalance } from "../managers/balance-check.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "../managers/idempotency.js";
 import { enforceLimitsWithAccountId } from "../managers/limit-manager.js";
 import type { RawAccountRow, RawTransactionRow } from "../managers/raw-types.js";
@@ -297,22 +293,16 @@ export class TransactionBatchEngine {
 					// Check sufficient balance for debits (account-level only)
 					if (item.type === "debit" && !item.balancing) {
 						const availableBalance = balanceBefore - Number(account.pending_debit);
-						if (!account.allow_overdraft && availableBalance < actualAmount) {
-							item.reject(
-								SummaError.insufficientBalance("Insufficient balance for this transaction"),
-							);
+						try {
+							checkSufficientBalance({
+								available: availableBalance,
+								amount: actualAmount,
+								allowOverdraft: account.allow_overdraft,
+								overdraftLimit: Number(account.overdraft_limit ?? 0),
+							});
+						} catch (err) {
+							item.reject(err as Error);
 							continue;
-						}
-						if (account.allow_overdraft) {
-							const overdraftLimit = Number(account.overdraft_limit ?? 0);
-							if (overdraftLimit > 0 && availableBalance - actualAmount < -overdraftLimit) {
-								item.reject(
-									SummaError.insufficientBalance(
-										`Transaction would exceed overdraft limit of ${overdraftLimit}. Available (incl. overdraft): ${availableBalance + overdraftLimit}`,
-									),
-								);
-								continue;
-							}
 						}
 					}
 

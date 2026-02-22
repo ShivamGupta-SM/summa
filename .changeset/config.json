@@ -7,5 +7,5 @@
 	"access": "public",
 	"baseBranch": "main",
 	"updateInternalDependencies": "patch",
-	"ignore": ["@summa-ledger/test-utils"]
+	"ignore": ["@summa-ledger/test-utils", "@summa-ledger/integration-tests"]
 }
