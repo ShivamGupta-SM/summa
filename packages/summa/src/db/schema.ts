@@ -17,41 +17,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 		},
 		indexes: [{ name: "uq_ledger_name", columns: ["name"], unique: true }],
 	},
-	ledgerEvent: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			ledger_id: {
-				type: "uuid",
-				notNull: true,
-				references: { table: "ledger", column: "id" },
-			},
-			aggregate_type: { type: "text", notNull: true },
-			aggregate_id: { type: "uuid", notNull: true },
-			event_type: { type: "text", notNull: true },
-			event_data: { type: "jsonb", notNull: true },
-			sequence_number: { type: "integer", notNull: true },
-			previous_hash: { type: "text" },
-			event_hash: { type: "text", notNull: true },
-			correlation_id: { type: "text" },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [
-			{ name: "idx_ledger_event_ledger", columns: ["ledger_id"] },
-			{
-				name: "idx_ledger_event_aggregate",
-				columns: ["ledger_id", "aggregate_type", "aggregate_id"],
-			},
-			{ name: "idx_ledger_event_correlation", columns: ["ledger_id", "correlation_id"] },
-			{
-				name: "uq_ledger_event_sequence",
-				columns: ["ledger_id", "aggregate_type", "aggregate_id", "sequence_number"],
-				unique: true,
-			},
-		],
-	},
-	// IMMUTABLE after insert — static properties only.
-	// All mutable state (balance, status, etc.) lives in account_balance_version.
-	accountBalance: {
+
+	// UNIFIED ACCOUNT — merges user accounts + system accounts.
+	// Mutable balance state updated in-place, protected by HMAC checksum.
+	// Optimistic locking via UPDATE ... WHERE version = $expected.
+	account: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
 			ledger_id: {
@@ -62,36 +32,36 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			holder_id: { type: "text", notNull: true },
 			holder_type: { type: "text", notNull: true, default: "'individual'" },
 			currency: { type: "text", notNull: true },
-			allow_overdraft: { type: "boolean", notNull: true, default: "false" },
-			overdraft_limit: { type: "bigint", notNull: true, default: "0" },
+			is_system: { type: "boolean", notNull: true, default: "false" },
+			system_identifier: { type: "text" },
+			name: { type: "text" },
 			account_type: { type: "text" },
 			account_code: { type: "text" },
 			parent_account_id: {
 				type: "uuid",
-				references: { table: "account_balance", column: "id" },
+				references: { table: "account", column: "id" },
 			},
 			normal_balance: { type: "text" },
 			indicator: { type: "text" },
-			name: { type: "text" },
+			allow_overdraft: { type: "boolean", notNull: true, default: "false" },
+			overdraft_limit: { type: "bigint", notNull: true, default: "0" },
 			metadata: { type: "jsonb" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-			// Denormalized balance cache — opt-in via advanced.useDenormalizedBalance.
-			// Updated atomically in the same transaction as account_balance_version inserts.
-			// Eliminates LATERAL JOIN for balance reads when enabled.
-			cached_balance: { type: "bigint", default: "0" },
-			cached_credit_balance: { type: "bigint", default: "0" },
-			cached_debit_balance: { type: "bigint", default: "0" },
-			cached_pending_debit: { type: "bigint", default: "0" },
-			cached_pending_credit: { type: "bigint", default: "0" },
-			cached_version: { type: "integer", default: "0" },
-			cached_status: { type: "text", default: "'active'" },
-			cached_checksum: { type: "text" },
-			cached_freeze_reason: { type: "text" },
-			cached_frozen_at: { type: "timestamp" },
-			cached_frozen_by: { type: "text" },
-			cached_closed_at: { type: "timestamp" },
-			cached_closed_by: { type: "text" },
-			cached_closure_reason: { type: "text" },
+			// Mutable balance state — protected by HMAC checksum
+			balance: { type: "bigint", notNull: true, default: "0" },
+			credit_balance: { type: "bigint", notNull: true, default: "0" },
+			debit_balance: { type: "bigint", notNull: true, default: "0" },
+			pending_debit: { type: "bigint", notNull: true, default: "0" },
+			pending_credit: { type: "bigint", notNull: true, default: "0" },
+			version: { type: "integer", notNull: true, default: "0" },
+			status: { type: "text", notNull: true, default: "'active'" },
+			checksum: { type: "text" },
+			freeze_reason: { type: "text" },
+			frozen_at: { type: "timestamp" },
+			frozen_by: { type: "text" },
+			closed_at: { type: "timestamp" },
+			closed_by: { type: "text" },
+			closure_reason: { type: "text" },
 		},
 		indexes: [
 			{ name: "idx_account_ledger", columns: ["ledger_id"] },
@@ -102,106 +72,18 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			},
 			{ name: "idx_account_code", columns: ["ledger_id", "account_code"] },
 			{ name: "idx_account_parent", columns: ["parent_account_id"] },
-		],
-	},
-	// APPEND-ONLY — each row is a complete state snapshot at a point in time.
-	// Current state = latest version row for a given account_id.
-	accountBalanceVersion: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			account_id: {
-				type: "uuid",
-				notNull: true,
-				references: { table: "account_balance", column: "id" },
-			},
-			version: { type: "integer", notNull: true },
-			balance: { type: "bigint", notNull: true, default: "0" },
-			credit_balance: { type: "bigint", notNull: true, default: "0" },
-			debit_balance: { type: "bigint", notNull: true, default: "0" },
-			pending_credit: { type: "bigint", notNull: true, default: "0" },
-			pending_debit: { type: "bigint", notNull: true, default: "0" },
-			status: { type: "text", notNull: true, default: "'active'" },
-			checksum: { type: "text" },
-			freeze_reason: { type: "text" },
-			frozen_at: { type: "timestamp" },
-			frozen_by: { type: "text" },
-			closed_at: { type: "timestamp" },
-			closed_by: { type: "text" },
-			closure_reason: { type: "text" },
-			change_type: { type: "text", notNull: true },
-			caused_by_event_id: { type: "uuid" },
-			caused_by_transaction_id: { type: "uuid" },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [
 			{
-				name: "uq_account_balance_version",
-				columns: ["account_id", "version"],
+				name: "uq_account_system_identifier",
+				columns: ["ledger_id", "system_identifier"],
 				unique: true,
 			},
-			{
-				name: "idx_account_balance_version_latest",
-				columns: ["account_id", "version"],
-			},
-			{ name: "idx_account_balance_version_status", columns: ["status"] },
-			{ name: "idx_account_balance_version_created", columns: ["created_at"] },
+			{ name: "idx_account_is_system", columns: ["is_system"] },
 		],
 	},
-	// IMMUTABLE after insert — static properties only.
-	// Balance state lives in system_account_version (updated via hot accounts batching).
-	systemAccount: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			ledger_id: {
-				type: "uuid",
-				notNull: true,
-				references: { table: "ledger", column: "id" },
-			},
-			identifier: { type: "text", notNull: true },
-			account_id: {
-				type: "uuid",
-				notNull: true,
-				references: { table: "account_balance", column: "id" },
-			},
-			name: { type: "text", notNull: true },
-			currency: { type: "text", notNull: true },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [
-			{ name: "uq_system_account_identifier", columns: ["ledger_id", "identifier"], unique: true },
-		],
-	},
-	// APPEND-ONLY — each row is a balance snapshot for a system account.
-	systemAccountVersion: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			account_id: {
-				type: "uuid",
-				notNull: true,
-				references: { table: "system_account", column: "id" },
-			},
-			version: { type: "integer", notNull: true },
-			balance: { type: "bigint", notNull: true, default: "0" },
-			credit_balance: { type: "bigint", notNull: true, default: "0" },
-			debit_balance: { type: "bigint", notNull: true, default: "0" },
-			change_type: { type: "text", notNull: true },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [
-			{
-				name: "uq_system_account_version",
-				columns: ["account_id", "version"],
-				unique: true,
-			},
-			{
-				name: "idx_system_account_version_latest",
-				columns: ["account_id", "version"],
-			},
-		],
-	},
-	// IMMUTABLE after insert — core transaction data never changes.
-	// Status lifecycle lives in transaction_status table.
-	transactionRecord: {
+
+	// TRANSFER — immutable transaction header with mutable status column.
+	// Status transitions logged in entity_status_log.
+	transfer: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
 			ledger_id: {
@@ -210,93 +92,107 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 				references: { table: "ledger", column: "id" },
 			},
 			type: { type: "text", notNull: true },
+			status: { type: "text", notNull: true },
 			reference: { type: "text", notNull: true },
 			amount: { type: "bigint", notNull: true },
 			currency: { type: "text", notNull: true },
 			description: { type: "text" },
+			source_account_id: {
+				type: "uuid",
+				references: { table: "account", column: "id" },
+			},
+			destination_account_id: {
+				type: "uuid",
+				references: { table: "account", column: "id" },
+			},
+			correlation_id: { type: "text" },
 			metadata: { type: "jsonb" },
-			source_account_id: { type: "uuid" },
-			destination_account_id: { type: "uuid" },
-			source_system_account_id: { type: "uuid" },
-			destination_system_account_id: { type: "uuid" },
 			is_hold: { type: "boolean", notNull: true, default: "false" },
 			hold_expires_at: { type: "timestamp" },
-			parent_id: { type: "uuid" },
-			is_reversal: { type: "boolean", notNull: true, default: "false" },
-			correlation_id: { type: "text" },
-			meta_data: { type: "jsonb" },
-			/** Effective date for backdated transactions. Defaults to created_at. */
-			effective_date: { type: "timestamp", notNull: true, default: "NOW()" },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [
-			{ name: "idx_transaction_ledger", columns: ["ledger_id"] },
-			{ name: "uq_transaction_reference", columns: ["ledger_id", "reference"], unique: true },
-			{ name: "idx_transaction_type", columns: ["type"] },
-			{ name: "idx_transaction_created", columns: ["created_at"] },
-			{ name: "idx_transaction_effective_date", columns: ["effective_date"] },
-			{ name: "idx_transaction_source", columns: ["source_account_id"] },
-			{ name: "idx_transaction_destination", columns: ["destination_account_id"] },
-			{ name: "idx_transaction_hold_expires", columns: ["hold_expires_at"] },
-			{ name: "idx_transaction_parent", columns: ["parent_id"] },
-			{ name: "idx_transaction_is_hold", columns: ["is_hold"] },
-		],
-	},
-	// APPEND-ONLY — each status transition creates a new row.
-	// Current status = latest row for a given transaction_id.
-	transactionStatus: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			transaction_id: {
+			parent_id: {
 				type: "uuid",
-				notNull: true,
-				references: { table: "transaction_record", column: "id" },
+				references: { table: "transfer", column: "id" },
 			},
-			status: { type: "text", notNull: true },
+			is_reversal: { type: "boolean", notNull: true, default: "false" },
 			committed_amount: { type: "bigint" },
 			refunded_amount: { type: "bigint" },
+			effective_date: { type: "timestamp", notNull: true, default: "NOW()" },
 			posted_at: { type: "timestamp" },
-			reason: { type: "text" },
-			caused_by_event_id: { type: "uuid" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
+			{ name: "idx_transfer_ledger", columns: ["ledger_id"] },
 			{
-				name: "idx_transaction_status_latest",
-				columns: ["transaction_id", "created_at"],
+				name: "uq_transfer_reference",
+				columns: ["ledger_id", "reference"],
+				unique: true,
 			},
-			{ name: "idx_transaction_status_status", columns: ["status"] },
+			{ name: "idx_transfer_type", columns: ["type"] },
+			{ name: "idx_transfer_status", columns: ["status"] },
+			{ name: "idx_transfer_created", columns: ["created_at"] },
+			{ name: "idx_transfer_effective_date", columns: ["effective_date"] },
+			{ name: "idx_transfer_source", columns: ["source_account_id"] },
+			{ name: "idx_transfer_destination", columns: ["destination_account_id"] },
+			{ name: "idx_transfer_hold_expires", columns: ["hold_expires_at"] },
+			{ name: "idx_transfer_parent", columns: ["parent_id"] },
+			{ name: "idx_transfer_is_hold", columns: ["is_hold"] },
+			{ name: "idx_transfer_correlation", columns: ["correlation_id"] },
 		],
 	},
-	entryRecord: {
+
+	// ENTRY — immutable double-entry journal lines with hash chain fields.
+	// Entries ARE the event log. Per-account hash chains for tamper detection.
+	entry: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
-			transaction_id: {
+			transfer_id: {
 				type: "uuid",
 				notNull: true,
-				references: { table: "transaction_record", column: "id" },
+				references: { table: "transfer", column: "id" },
 			},
 			account_id: {
 				type: "uuid",
 				notNull: true,
-				references: { table: "account_balance", column: "id" },
+				references: { table: "account", column: "id" },
 			},
 			entry_type: { type: "text", notNull: true },
 			amount: { type: "bigint", notNull: true },
-			balance_after: { type: "bigint", notNull: true },
-			/** Effective date for backdated entries. Defaults to created_at. */
+			currency: { type: "text", notNull: true },
+			balance_before: { type: "bigint" },
+			balance_after: { type: "bigint" },
+			account_version: { type: "integer" },
+			// Hash chain fields — per-account tamper-proof chain
+			sequence_number: { type: "bigint", notNull: true },
+			hash: { type: "text", notNull: true },
+			prev_hash: { type: "text" },
+			// FX fields
+			original_amount: { type: "bigint" },
+			original_currency: { type: "text" },
+			exchange_rate: { type: "bigint" },
 			effective_date: { type: "timestamp", notNull: true, default: "NOW()" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
-			{ name: "idx_entry_transaction", columns: ["transaction_id"] },
+			{ name: "idx_entry_transfer", columns: ["transfer_id"] },
 			{ name: "idx_entry_account", columns: ["account_id"] },
 			{ name: "idx_entry_account_created", columns: ["account_id", "created_at"] },
 			{ name: "idx_entry_effective_date", columns: ["account_id", "effective_date"] },
+			{
+				name: "uq_entry_account_version",
+				columns: ["account_id", "account_version"],
+				unique: true,
+			},
+			{
+				name: "uq_entry_sequence",
+				columns: ["sequence_number"],
+				unique: true,
+			},
+			{ name: "idx_entry_account_sequence", columns: ["account_id", "sequence_number"] },
 		],
 	},
-	// APPEND-ONLY — shared status history for all plugin workflow entities.
-	// Every status transition across all plugins creates a new row.
+
+	// APPEND-ONLY — shared status history for all entities.
+	// Tracks transfer status transitions, account lifecycle changes, and plugin workflow states.
 	entityStatusLog: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
@@ -316,8 +212,8 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			{ name: "idx_entity_status_log_type", columns: ["entity_type"] },
 		],
 	},
+
 	// APPEND-ONLY — Merkle tree nodes for block-level cryptographic proofs.
-	// Each block checkpoint builds a Merkle tree; nodes are stored here.
 	merkleNode: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
@@ -331,7 +227,7 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			hash: { type: "text", notNull: true },
 			left_child_id: { type: "uuid" },
 			right_child_id: { type: "uuid" },
-			event_id: { type: "uuid" },
+			entry_id: { type: "uuid" },
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [
@@ -341,11 +237,11 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 				unique: true,
 			},
 			{ name: "idx_merkle_node_block", columns: ["block_id"] },
-			{ name: "idx_merkle_node_event", columns: ["event_id"] },
+			{ name: "idx_merkle_node_entry", columns: ["entry_id"] },
 		],
 	},
+
 	// APPEND-ONLY — block-based hash chain checkpoints.
-	// Each block covers a range of events and chains to the previous block.
 	blockCheckpoint: {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
@@ -355,8 +251,8 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 				references: { table: "ledger", column: "id" },
 			},
 			block_sequence: { type: "bigint", notNull: true },
-			from_event_sequence: { type: "bigint", notNull: true },
-			to_event_sequence: { type: "bigint", notNull: true },
+			from_entry_sequence: { type: "bigint", notNull: true },
+			to_entry_sequence: { type: "bigint", notNull: true },
 			event_count: { type: "integer", notNull: true },
 			events_hash: { type: "text", notNull: true },
 			block_hash: { type: "text", notNull: true },
@@ -375,6 +271,7 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			{ name: "idx_block_checkpoint_at", columns: ["block_at"] },
 		],
 	},
+
 	idempotencyKey: {
 		columns: {
 			ledger_id: {
@@ -392,6 +289,7 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			{ name: "idx_idempotency_expires", columns: ["expires_at"] },
 		],
 	},
+
 	workerLease: {
 		columns: {
 			worker_id: { type: "text", primaryKey: true, notNull: true },
@@ -400,16 +298,7 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 	},
-	processedEvent: {
-		columns: {
-			id: { type: "uuid", primaryKey: true, notNull: true },
-			event_id: { type: "uuid", notNull: true },
-			topic: { type: "text", notNull: true },
-			payload: { type: "jsonb" },
-			processed_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [{ name: "uq_processed_event", columns: ["event_id", "topic"], unique: true }],
-	},
+
 	summaMigration: {
 		columns: {
 			id: { type: "serial", primaryKey: true, notNull: true },
@@ -418,14 +307,6 @@ const CORE_TABLES: Record<string, TableDefinition> = {
 			applied_at: { type: "timestamp", notNull: true, default: "NOW()" },
 		},
 		indexes: [{ name: "uq_summa_migration_name", columns: ["name"], unique: true }],
-	},
-	rateLimitLog: {
-		columns: {
-			id: { type: "serial", primaryKey: true, notNull: true },
-			key: { type: "text", notNull: true },
-			created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-		},
-		indexes: [{ name: "idx_rate_limit_log_key_created", columns: ["key", "created_at"] }],
 	},
 };
 

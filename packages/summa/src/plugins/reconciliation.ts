@@ -2,14 +2,14 @@
 // RECONCILIATION PLUGIN -- Event store vs projection integrity verification
 // =============================================================================
 // Daily reconciliation verifies that the event store and materialized projections
-// (account_balance, entry_record, system_account) remain consistent.
+// (account, entry) remain consistent.
 //
 // Checks performed:
 //   Step 0:  Per-transaction double-entry balance (debits == credits)
 //   Step 0b: Duplicate entry detection
 //   Step 0c: Lock version monotonicity per account
 //   Step 1:  User account snapshot-based balance verification (batched)
-//   Step 2:  System account full SUM with pending hot entries
+//   Step 2:  System account balance verification (is_system = true)
 //   Step 3:  Block chain hash verification via verifyRecentBlocks
 //
 // All SQL uses ctx.adapter.raw() with $1, $2 parameterized queries.
@@ -175,7 +175,7 @@ export function reconciliation(options?: ReconciliationOptions): SummaPlugin {
 									blockSequence: 0, // sequence assigned by DB
 									eventCount: result.eventCount,
 									fromEventSequence: 0,
-									toEventSequence: result.toEventSequence,
+									toEventSequence: result.toEntrySequence,
 									timestamp: new Date().toISOString(),
 								});
 							} catch (err) {
@@ -238,10 +238,10 @@ async function dailyReconciliation(
 
 	let step0Sql = `
 		SELECT
-			e.transaction_id,
+			e.transfer_id,
 			SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END) AS total_credits,
 			SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END) AS total_debits
-		FROM ${t("entry_record")} e`;
+		FROM ${t("entry")} e`;
 
 	const step0Params: unknown[] = [];
 	if (watermarkDate) {
@@ -250,12 +250,12 @@ async function dailyReconciliation(
 	}
 
 	step0Sql += `
-		GROUP BY e.transaction_id
+		GROUP BY e.transfer_id
 		HAVING SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END)
 		    != SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END)`;
 
 	const step0Rows = await ctx.adapter.raw<{
-		transaction_id: string;
+		transfer_id: string;
 		total_credits: number;
 		total_debits: number;
 	}>(step0Sql, step0Params);
@@ -264,7 +264,7 @@ async function dailyReconciliation(
 		mismatches.push({
 			step: "step0_double_entry",
 			detail: {
-				transactionId: row.transaction_id,
+				transferId: row.transfer_id,
 				totalCredits: Number(row.total_credits),
 				totalDebits: Number(row.total_debits),
 			},
@@ -282,19 +282,17 @@ async function dailyReconciliation(
 	// =========================================================================
 	// Step 0b: Duplicate entry detection (incremental)
 	// =========================================================================
-	// Each (transaction_id, account_id/system_account_id, entry_type) should be
-	// unique for non-hot entries. Hot account entries may have multiples by design,
-	// so we only check non-hot entries.
+	// Each (transfer_id, account_id, entry_type) should be unique.
+	// In v2, all entries (user and system) use account_id in the unified entry table.
 
 	let step0bSql = `
 		SELECT
-			e.transaction_id,
-			COALESCE(e.account_id::text, '') AS account_id,
-			COALESCE(e.system_account_id::text, '') AS system_account_id,
+			e.transfer_id,
+			e.account_id,
 			e.entry_type,
 			COUNT(*) AS cnt
-		FROM ${t("entry_record")} e
-		WHERE e.is_hot_account = false`;
+		FROM ${t("entry")} e
+		WHERE 1=1`;
 
 	const step0bParams: unknown[] = [];
 	if (watermarkDate) {
@@ -303,13 +301,12 @@ async function dailyReconciliation(
 	}
 
 	step0bSql += `
-		GROUP BY e.transaction_id, e.account_id, e.system_account_id, e.entry_type
+		GROUP BY e.transfer_id, e.account_id, e.entry_type
 		HAVING COUNT(*) > 1`;
 
 	const step0bRows = await ctx.adapter.raw<{
-		transaction_id: string;
+		transfer_id: string;
 		account_id: string;
-		system_account_id: string;
 		entry_type: string;
 		cnt: number;
 	}>(step0bSql, step0bParams);
@@ -318,9 +315,8 @@ async function dailyReconciliation(
 		mismatches.push({
 			step: "step0b_duplicate_entry",
 			detail: {
-				transactionId: row.transaction_id,
-				accountId: row.account_id || null,
-				systemAccountId: row.system_account_id || null,
+				transferId: row.transfer_id,
+				accountId: row.account_id,
 				entryType: row.entry_type,
 				duplicateCount: Number(row.cnt),
 			},
@@ -346,21 +342,21 @@ async function dailyReconciliation(
 			sub.account_id,
 			sub.entry_type,
 			sub.created_at,
-			sub.account_lock_version,
-			sub.prev_lock_version
+			sub.account_version,
+			sub.prev_account_version
 		FROM (
 			SELECT
 				e.account_id,
 				e.entry_type,
 				e.created_at,
-				e.account_lock_version,
-				LAG(e.account_lock_version) OVER (
+				e.account_version,
+				LAG(e.account_version) OVER (
 					PARTITION BY e.account_id
 					ORDER BY e.created_at ASC, e.id ASC
-				) AS prev_lock_version
-			FROM ${t("entry_record")} e
+				) AS prev_account_version
+			FROM ${t("entry")} e
 			WHERE e.account_id IS NOT NULL
-			  AND e.account_lock_version IS NOT NULL`;
+			  AND e.account_version IS NOT NULL`;
 
 	const step0cParams: unknown[] = [];
 	if (watermarkDate) {
@@ -370,16 +366,16 @@ async function dailyReconciliation(
 
 	step0cSql += `
 		) sub
-		WHERE sub.prev_lock_version IS NOT NULL
-		  AND sub.account_lock_version <= sub.prev_lock_version
+		WHERE sub.prev_account_version IS NOT NULL
+		  AND sub.account_version <= sub.prev_account_version
 		LIMIT 100`;
 
 	const step0cRows = await ctx.adapter.raw<{
 		account_id: string;
 		entry_type: string;
 		created_at: string | Date;
-		account_lock_version: number;
-		prev_lock_version: number;
+		account_version: number;
+		prev_account_version: number;
 	}>(step0cSql, step0cParams);
 
 	for (const row of step0cRows) {
@@ -389,8 +385,8 @@ async function dailyReconciliation(
 				accountId: row.account_id,
 				entryType: row.entry_type,
 				createdAt: String(row.created_at),
-				lockVersion: Number(row.account_lock_version),
-				prevLockVersion: Number(row.prev_lock_version),
+				accountVersion: Number(row.account_version),
+				prevAccountVersion: Number(row.prev_account_version),
 			},
 		});
 	}
@@ -423,7 +419,7 @@ async function dailyReconciliation(
 		// --- INCREMENTAL: only verify accounts that had activity since watermark ---
 		const activeAccountRows = await ctx.adapter.raw<{ account_id: string }>(
 			`SELECT DISTINCT e.account_id
-			 FROM ${t("entry_record")} e
+			 FROM ${t("entry")} e
 			 WHERE e.account_id IS NOT NULL
 			   AND e.created_at > $1
 			 ORDER BY e.account_id ASC`,
@@ -443,14 +439,10 @@ async function dailyReconciliation(
 				credit_balance: number;
 				debit_balance: number;
 			}>(
-				`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
-				 FROM ${t("account_balance")} a
-				 JOIN LATERAL (
-				   SELECT balance, credit_balance, debit_balance
-				   FROM ${t("account_balance_version")}
-				   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
-				 ) v ON true
-				 WHERE a.id = ANY($1::uuid[])`,
+				`SELECT a.id, a.holder_id, a.balance, a.credit_balance, a.debit_balance
+				 FROM ${t("account")} a
+				 WHERE a.id = ANY($1::uuid[])
+				   AND a.is_system = false`,
 				[batchIds],
 			);
 
@@ -463,9 +455,8 @@ async function dailyReconciliation(
 					e.account_id,
 					COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
 					COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
-				 FROM ${t("entry_record")} e
+				 FROM ${t("entry")} e
 				 WHERE e.account_id = ANY($1::uuid[])
-				   AND e.is_hot_account = false
 				 GROUP BY e.account_id`,
 				[batchIds],
 			);
@@ -543,14 +534,10 @@ async function dailyReconciliation(
 				credit_balance: number;
 				debit_balance: number;
 			}>(
-				`SELECT a.id, a.holder_id, v.balance, v.credit_balance, v.debit_balance
-				 FROM ${t("account_balance")} a
-				 JOIN LATERAL (
-				   SELECT balance, credit_balance, debit_balance
-				   FROM ${t("account_balance_version")}
-				   WHERE account_id = a.id ORDER BY version DESC LIMIT 1
-				 ) v ON true
+				`SELECT a.id, a.holder_id, a.balance, a.credit_balance, a.debit_balance
+				 FROM ${t("account")} a
 				 WHERE a.ledger_id = $1
+				   AND a.is_system = false
 				   AND a.id > $2
 				 ORDER BY a.id ASC
 				 LIMIT $3`,
@@ -570,9 +557,8 @@ async function dailyReconciliation(
 					e.account_id,
 					COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
 					COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
-				 FROM ${t("entry_record")} e
+				 FROM ${t("entry")} e
 				 WHERE e.account_id = ANY($1::uuid[])
-				   AND e.is_hot_account = false
 				 GROUP BY e.account_id`,
 				[accountIds],
 			);
@@ -653,19 +639,26 @@ async function dailyReconciliation(
 	ctx.logger.info("Step 1 complete: user account balance verification", step1Result);
 
 	// =========================================================================
-	// Step 2: System accounts -- full SUM with pending hot entries
+	// Step 2: System accounts -- balance verification (is_system = true)
 	// =========================================================================
-	// System accounts use the hot account pattern. Their effective balance is:
-	//   SUM(hot_account_entry.amount WHERE status='pending')
-	// plus the already-consolidated balance.
-	// We verify by comparing settled entry sums + pending hot entries.
+	// In v2, system accounts are rows in the unified `account` table with
+	// is_system = true. Their balance should equal:
+	//   SUM(CREDIT entries) - SUM(DEBIT entries)
+	// from the unified `entry` table (which holds both user and system entries).
 
 	const systemAccounts = await ctx.adapter.raw<{
 		id: string;
 		identifier: string;
-	}>(`SELECT id, identifier FROM ${t("system_account")} WHERE ledger_id = $1 ORDER BY id ASC`, [
-		ledgerId,
-	]);
+		balance: number;
+		credit_balance: number;
+		debit_balance: number;
+	}>(
+		`SELECT id, identifier, balance, credit_balance, debit_balance
+		 FROM ${t("account")}
+		 WHERE ledger_id = $1 AND is_system = true
+		 ORDER BY id ASC`,
+		[ledgerId],
+	);
 
 	let step2Checked = 0;
 	let step2Mismatches = 0;
@@ -673,7 +666,7 @@ async function dailyReconciliation(
 	for (const sysAcct of systemAccounts) {
 		step2Checked++;
 
-		// Get entry-based totals for this system account
+		// Get entry-based totals for this system account from the unified entry table
 		const sysEntryRows = await ctx.adapter.raw<{
 			total_credits: number;
 			total_debits: number;
@@ -681,65 +674,59 @@ async function dailyReconciliation(
 			`SELECT
 				COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) AS total_credits,
 				COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) AS total_debits
-			 FROM ${t("entry_record")} e
-			 WHERE e.system_account_id = $1`,
+			 FROM ${t("entry")} e
+			 WHERE e.account_id = $1`,
 			[sysAcct.id],
 		);
 
 		const sysEntries = sysEntryRows[0];
 		if (!sysEntries) continue;
 
-		const entryNetCredits = Number(sysEntries.total_credits) - Number(sysEntries.total_debits);
+		const expectedBalance =
+			Number(sysEntries.total_credits) - Number(sysEntries.total_debits);
+		const actualBalance = Number(sysAcct.balance);
 
-		// Get pending hot account entries for this system account
-		const hotPendingRows = await ctx.adapter.raw<{
-			pending_sum: number;
-		}>(
-			`SELECT COALESCE(SUM(amount), 0) AS pending_sum
-			 FROM ${t("hot_account_entry")}
-			 WHERE account_id = $1
-			   AND status = 'pending'`,
-			[sysAcct.id],
-		);
-
-		const pendingHotSum = Number(hotPendingRows[0]?.pending_sum ?? 0);
-
-		// The hot_account_entry amounts are signed:
-		//   CREDIT => +amount, DEBIT => -amount
-		// So the net impact from hot entries is directly their sum.
-		// The entry_record for system accounts has is_hot_account = true,
-		// meaning they were recorded alongside hot_account_entry inserts.
-		// We verify: net entry credits should be consistent with hot entries.
-
-		// Get processed (flushed) hot account totals
-		const hotProcessedRows = await ctx.adapter.raw<{
-			processed_sum: number;
-		}>(
-			`SELECT COALESCE(SUM(amount), 0) AS processed_sum
-			 FROM ${t("hot_account_entry")}
-			 WHERE account_id = $1
-			   AND status = 'processed'`,
-			[sysAcct.id],
-		);
-
-		const processedHotSum = Number(hotProcessedRows[0]?.processed_sum ?? 0);
-
-		// Total hot account net = processed + pending
-		const totalHotNet = processedHotSum + pendingHotSum;
-
-		// entryNetCredits should equal totalHotNet
-		// (both represent the net flow into the system account)
-		if (entryNetCredits !== totalHotNet) {
+		if (expectedBalance !== actualBalance) {
 			step2Mismatches++;
 			mismatches.push({
 				step: "step2_system_account_balance",
 				detail: {
 					systemAccountId: sysAcct.id,
 					identifier: sysAcct.identifier,
-					entryNetCredits,
-					totalHotNet,
-					pendingHotSum,
-					processedHotSum,
+					expectedBalance,
+					actualBalance,
+					entryCredits: Number(sysEntries.total_credits),
+					entryDebits: Number(sysEntries.total_debits),
+				},
+			});
+		}
+
+		// Also verify credit_balance and debit_balance
+		const actualCreditBalance = Number(sysAcct.credit_balance);
+		const actualDebitBalance = Number(sysAcct.debit_balance);
+
+		if (Number(sysEntries.total_credits) !== actualCreditBalance) {
+			step2Mismatches++;
+			mismatches.push({
+				step: "step2_system_account_credit_balance",
+				detail: {
+					systemAccountId: sysAcct.id,
+					identifier: sysAcct.identifier,
+					expectedCreditBalance: Number(sysEntries.total_credits),
+					actualCreditBalance,
+				},
+			});
+		}
+
+		if (Number(sysEntries.total_debits) !== actualDebitBalance) {
+			step2Mismatches++;
+			mismatches.push({
+				step: "step2_system_account_debit_balance",
+				detail: {
+					systemAccountId: sysAcct.id,
+					identifier: sysAcct.identifier,
+					expectedDebitBalance: Number(sysEntries.total_debits),
+					actualDebitBalance,
 				},
 			});
 		}
@@ -802,7 +789,7 @@ async function dailyReconciliation(
 	// Get the latest entry created_at as the new watermark
 	const latestEntryRows = await ctx.adapter.raw<{
 		max_created_at: string | null;
-	}>(`SELECT MAX(created_at)::text AS max_created_at FROM ${t("entry_record")}`, []);
+	}>(`SELECT MAX(created_at)::text AS max_created_at FROM ${t("entry")}`, []);
 
 	const newWatermarkDate = latestEntryRows[0]?.max_created_at ?? watermarkDate;
 
@@ -899,17 +886,17 @@ async function fastReconciliation(ctx: SummaContext): Promise<void> {
 	const sinceDate = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
 
 	const step0Rows = await ctx.adapter.raw<{
-		transaction_id: string;
+		transfer_id: string;
 		total_credits: number;
 		total_debits: number;
 	}>(
 		`SELECT
-			e.transaction_id,
+			e.transfer_id,
 			SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END) AS total_credits,
 			SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END) AS total_debits
-		FROM ${t("entry_record")} e
+		FROM ${t("entry")} e
 		WHERE e.created_at > $1
-		GROUP BY e.transaction_id
+		GROUP BY e.transfer_id
 		HAVING SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END)
 		    != SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END)`,
 		[sinceDate],
@@ -919,7 +906,7 @@ async function fastReconciliation(ctx: SummaContext): Promise<void> {
 		mismatches.push({
 			step: "fast_step0_double_entry",
 			detail: {
-				transactionId: row.transaction_id,
+				transferId: row.transfer_id,
 				totalCredits: Number(row.total_credits),
 				totalDebits: Number(row.total_debits),
 			},

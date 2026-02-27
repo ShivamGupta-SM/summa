@@ -1,98 +1,64 @@
 ---
 title: Events
-description: Event sourcing, hash chain verification, and the immutable audit trail.
+description: Entry-based hash chains, tamper-proof verification, and the immutable audit trail.
 icon: QueueList
 ---
 
 ## Overview
 
-Summa is **event-sourced** — every mutation (account creation, transaction, hold, etc.) produces an immutable event stored in an append-only log. Events are never updated or deleted.
+In Summa, **entries are events** — every financial mutation (credit, debit, transfer, hold) produces double-entry journal entries that also serve as the immutable, tamper-proof event log. There is no separate event store.
 
-Each event includes an **HMAC-SHA256 hash** computed from the event data and the previous event's hash, forming a cryptographic chain. If any event is tampered with, the chain breaks — detected immediately on the next read.
+Each entry includes an **HMAC-SHA256 hash** computed from the entry data and the previous entry's hash (per-account), forming a cryptographic chain. If any entry is tampered with, the chain breaks — detected immediately on the next read.
 
-## Event Structure
+## Entry Structure
 
-Every event stored in Summa follows the `StoredEvent` interface:
+Every entry stored in Summa follows the `StoredEvent` interface:
 
 ```ts
 interface StoredEvent {
   id: string;                    // UUID
-  sequenceNumber: number;        // Global sequence
-  aggregateType: string;         // "account", "transaction", "hold"
-  aggregateId: string;           // The entity's ID
-  aggregateVersion: number;      // Per-aggregate version counter
-  eventType: string;             // e.g. "AccountCreated", "TransactionPosted"
-  eventData: Record<string, unknown>;  // Event payload
-  correlationId: string;         // Groups related events
+  transferId: string;            // The transfer that created this entry
+  accountId: string;             // The account this entry belongs to
+  entryType: string;             // "CREDIT" or "DEBIT"
+  amount: number;                // Amount in minor units
+  currency: string;              // ISO 4217 currency code
+  balanceBefore: number | null;  // Balance before this entry
+  balanceAfter: number | null;   // Balance after this entry
+  accountVersion: number | null; // Account version after this entry
+  sequenceNumber: number;        // Global per-ledger sequence
   hash: string;                  // HMAC-SHA256 hash (or SHA-256 if no secret)
-  prevHash: string | null;       // Previous event's hash (null for first)
+  prevHash: string | null;       // Previous entry's hash in this account's chain
   createdAt: Date;
 }
 ```
 
-## Event Types
-
-### Account Events
-
-| Event | When |
-|-------|------|
-| `AccountCreated` | New account is created |
-| `AccountFrozen` | Account is frozen |
-| `AccountUnfrozen` | Account is unfrozen |
-| `AccountClosed` | Account is permanently closed |
-
-### Transaction Events
-
-| Event | When |
-|-------|------|
-| `TransactionInitiated` | Transaction begins processing |
-| `TransactionPosted` | Transaction completes and balances are updated |
-| `TransactionReversed` | Transaction is refunded |
-
-### Hold Events
-
-| Event | When |
-|-------|------|
-| `HoldCreated` | New hold is placed on an account |
-| `HoldCommitted` | Hold is captured into a posted transaction |
-| `HoldVoided` | Hold is released without charging |
-| `HoldExpired` | Hold passed its expiration time |
-
-### Scheduled Transaction Events
-
-| Event | When |
-|-------|------|
-| `ScheduledTransactionCreated` | Future transaction is scheduled |
-| `ScheduledTransactionCancelled` | Scheduled transaction is cancelled |
-| `ScheduledTransactionProcessing` | Worker picks up the scheduled transaction |
-| `ScheduledTransactionCompleted` | Scheduled transaction succeeds |
-| `ScheduledTransactionRescheduled` | Scheduled transaction is retried later |
-| `ScheduledTransactionFailed` | Scheduled transaction fails permanently |
-
 ## Querying Events
 
-### By aggregate
+### By account
 
-Get all events for a specific entity:
+Get all entries for a specific account:
 
 ```ts
-// All events for an account
-const events = await summa.events.getForAggregate("account", accountId);
+// All entries for an account
+const events = await summa.events.getForAccount(accountId);
+```
 
-// All events for a transaction
-const events = await summa.events.getForAggregate("transaction", txnId);
+### By transfer
 
-// All events for a hold
-const events = await summa.events.getForAggregate("hold", holdId);
+Get all entries produced by a specific transfer:
+
+```ts
+// All entries for a transfer (both sides of the double-entry)
+const events = await summa.events.getForTransfer(transferId);
 ```
 
 ### By correlation
 
-All events in a single operation share a `correlationId`. For example, a transfer creates events on both the source and destination accounts — they share the same correlationId:
+All entries in a single operation share a `correlationId` via their transfer. For example, a transfer creates entries on both the source and destination accounts — they share the same correlationId:
 
 ```ts
-const events = await summa.events.getByCorrelation(txn.correlationId);
-// Returns: TransactionInitiated, TransactionPosted, entry events, etc.
+const events = await summa.events.getByCorrelation(transfer.correlationId);
+// Returns: all entries produced by transfers with this correlation ID
 ```
 
 ## Tamper-Proofing
@@ -101,7 +67,7 @@ Summa uses multiple layers to ensure ledger integrity:
 
 ### HMAC-SHA256 Hash Chain
 
-Every event is hashed with the previous event's hash using **HMAC-SHA256** (when `advanced.hmacSecret` is configured). Without the secret key, an attacker with database access cannot recompute valid hashes — any modification is cryptographically undetectable without the key.
+Every entry is hashed with the previous entry's hash (for the same account) using **HMAC-SHA256** (when `advanced.hmacSecret` is configured). Without the secret key, an attacker with database access cannot recompute valid hashes — any modification is cryptographically detectable.
 
 ```ts
 const summa = createSumma({
@@ -118,12 +84,12 @@ const summa = createSumma({
 
 ### Read-Time Hash Verification
 
-By default, Summa verifies the hash chain **on every read** — not just during manual verification or daily reconciliation. Any tampered event is detected immediately when accessed.
+By default, Summa verifies the entry hash chain **on every read** — not just during manual verification or daily reconciliation. Any tampered entry is detected immediately when accessed.
 
 ```ts
 // Enabled by default — disable only for maximum read throughput
 advanced: {
-  verifyHashOnRead: true,  // default
+  verifyEntryHashOnRead: true,  // default
 }
 ```
 
@@ -131,18 +97,15 @@ When a hash mismatch is detected on read, Summa throws a `SummaError` with code 
 
 ### Balance Checksums
 
-Every `account_balance_version` row includes an HMAC-SHA256 checksum computed from the balance fields (`balance`, `credit_balance`, `debit_balance`, `pending_debit`, `pending_credit`, `version`). Since balances are append-only (each change creates a new version row), direct SQL tampering is both detected by the checksum and blocked by database-level immutability triggers.
+Every `account` row includes an HMAC-SHA256 checksum computed from the balance fields (`balance`, `credit_balance`, `debit_balance`, `pending_debit`, `pending_credit`, `version`). Balances are updated in-place but protected by the checksum — any direct SQL tampering of balance columns is immediately detected.
 
 ### Database-Level Immutability
 
-Beyond application-level checks, Summa enforces immutability at the PostgreSQL level. The `summa migrate push` command automatically creates triggers that block UPDATE and DELETE operations on all financial tables:
+Beyond application-level checks, Summa enforces immutability at the PostgreSQL level. The `summa migrate push` command automatically creates triggers that block UPDATE and DELETE operations on immutable financial tables:
 
-- `account_balance`, `account_balance_version`
-- `transaction_record`, `transaction_status`
-- `entry_record`, `ledger_event`
+- `entry`
 - `block_checkpoint`, `merkle_node`
 - `entity_status_log`
-- `system_account`, `system_account_version`
 
 Even with direct database access, any attempt to modify or delete these rows raises an exception.
 
@@ -160,9 +123,9 @@ plugins: [
       await externalStore.put(`block-${anchor.blockSequence}`, {
         blockHash: anchor.blockHash,
         merkleRoot: anchor.merkleRoot,
-        eventCount: anchor.eventCount,
-        fromEventSequence: anchor.fromEventSequence,
-        toEventSequence: anchor.toEventSequence,
+        entryCount: anchor.entryCount,
+        fromEntrySequence: anchor.fromEntrySequence,
+        toEntrySequence: anchor.toEntrySequence,
         timestamp: anchor.timestamp,
       });
     },
@@ -184,11 +147,11 @@ console.log(result.storedHash);  // the hash in the database
 
 ### Merkle Proofs
 
-Summa builds a Merkle tree during each block checkpoint, enabling O(log n) inclusion proofs for any event. Generate a compact proof for a single event and verify it independently:
+Summa builds a Merkle tree during each block checkpoint, enabling O(log n) inclusion proofs for any entry. Generate a compact proof for a single entry and verify it independently:
 
 ```ts
-// Generate a proof for a specific event (O(log n) sibling hashes)
-const proof = await summa.events.generateProof(eventId);
+// Generate a proof for a specific entry (O(log n) sibling hashes)
+const proof = await summa.events.generateProof(entryId);
 // proof = { leafHash, leafIndex, siblings, root, blockId, blockSequence }
 
 // Verify the proof cryptographically + cross-check against stored block root
@@ -197,25 +160,25 @@ console.log(result.valid);     // true if proof is cryptographically valid
 console.log(result.rootMatch); // true if root matches stored block checkpoint
 ```
 
-For a block with 1M events, the proof contains ~20 sibling hashes — enough to recompute the root without scanning the entire block.
+For a block with 1M entries, the proof contains ~20 sibling hashes — enough to recompute the root without scanning the entire block.
 
 ## Hash Chain Verification
 
-Verify the integrity of the event chain for any aggregate:
+Verify the integrity of the entry chain for a specific account:
 
 ```ts
-const result = await summa.events.verifyChain("account", accountId);
+const result = await summa.events.verifyAccountChain(accountId);
 
 console.log(result.valid);           // true if chain is intact
-console.log(result.eventCount);      // number of events verified
+console.log(result.eventCount);      // number of entries verified
 console.log(result.brokenAtVersion); // version where chain broke (if invalid)
 ```
 
-The verification re-computes every hash from the event data and checks that each `hash` matches the next event's `prevHash`.
+The verification re-computes every hash from the entry data and checks that each `hash` matches the next entry's `prevHash`.
 
 ### Checkpoint-Aware Verification
 
-`verifyHashChain()` scans every event from the beginning — O(all events). For ledgers with millions of events, use the checkpoint-aware variant that skips events already covered by sealed block checkpoints:
+`verifyAccountChain()` scans every entry from the beginning — O(all entries). For accounts with millions of entries, use the checkpoint-aware variant that skips entries already covered by sealed block checkpoints:
 
 ```ts
 import { verifyHashChainFromCheckpoint } from "@summa-ledger/summa/infrastructure";
@@ -228,18 +191,18 @@ const result = await verifyHashChainFromCheckpoint(
 );
 
 console.log(result.valid);                // true if chain is intact
-console.log(result.eventCount);           // events actually scanned
-console.log(result.skippedViaCheckpoint); // events skipped (already sealed)
+console.log(result.eventCount);           // entries actually scanned
+console.log(result.skippedViaCheckpoint); // entries skipped (already sealed)
 console.log(result.brokenAtVersion);      // version where chain broke (if invalid)
 ```
 
-This finds the latest sealed `block_checkpoint`, gets the last event hash it covers, and verifies only events after that point. Falls back to a full scan if no checkpoints exist.
+This finds the latest sealed `block_checkpoint`, gets the last entry hash it covers, and verifies only entries after that point. Falls back to a full scan if no checkpoints exist.
 
-The reconciliation plugin uses this automatically for Step 5 (hash chain verification).
+The reconciliation plugin uses this automatically for hash chain verification.
 
 ### `getLatestSealedSequence`
 
-Get the highest event sequence number covered by a sealed block checkpoint:
+Get the highest entry sequence number covered by a sealed block checkpoint:
 
 ```ts
 import { getLatestSealedSequence } from "@summa-ledger/summa/infrastructure";
@@ -248,7 +211,7 @@ const seq = await getLatestSealedSequence(ctx, ledgerId);
 // Returns 0 if no checkpoints exist
 ```
 
-Useful for determining how much of the event log is "sealed" and safe for partition detachment.
+Useful for determining how much of the entry log is "sealed" and safe for partition detachment.
 
 ## CLI Verification
 
@@ -270,36 +233,17 @@ npx summa verify --merkle
 
 **Hash chain checks:**
 - Block checkpoint chain linkage (`prev_block_hash` matches)
-- Event hash chain per aggregate (samples up to 50 aggregates)
+- Entry hash chain per account (samples up to 50 accounts)
 
 **Balance checks:**
-- Per-transaction double-entry balance (every transaction must have equal debits and credits)
-- Global balance invariant (user + system + hot accounts = 0)
+- Per-transfer double-entry balance (every transfer must have equal debits and credits)
+- Global balance invariant (sum of all account balances = 0)
 - Duplicate entry detection
 
 **Merkle tree checks:**
-- Recompute Merkle root from event hashes and compare with stored root
-- Verify leaf node counts match event counts per block
-
-## Disabling Event Sourcing
-
-For testing or high-throughput scenarios where you don't need the audit trail:
-
-```ts
-const summa = createSumma({
-  database: adapter,
-  advanced: {
-    enableEventSourcing: false,  // Don't write events
-  },
-});
-```
-
-This reduces write amplification but loses the audit trail and chain verification capability.
-
-<Callout type="warn" title="Hash chain cannot be disabled">
-  The HMAC-SHA256 hash chain is always enabled when event sourcing is on. It is critical for tamper detection and integrity verification. All events are hashed with their predecessor's hash, forming a verifiable chain per aggregate.
-</Callout>
+- Recompute Merkle root from entry hashes and compare with stored root
+- Verify leaf node counts match entry counts per block
 
 ## Transaction Isolation
 
-All event store operations run within `READ COMMITTED` isolation level transactions with configurable statement and lock timeouts. This ensures consistency without risking deadlocks under concurrent load.
+All entry operations run within `READ COMMITTED` isolation level transactions with configurable statement and lock timeouts. This ensures consistency without risking deadlocks under concurrent load.

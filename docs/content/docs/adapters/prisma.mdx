@@ -45,7 +45,7 @@ npx prisma db push
 If you have plugins configured in your `summa.config.ts`, the generated schema includes their tables too.
 
 ```prisma title="prisma/summa.prisma (generated)"
-model AccountBalance {
+model Account {
   id         String   @id @default(uuid())
   holderId   String   @map("holder_id")
   holderType String   @map("holder_type")
@@ -53,9 +53,9 @@ model AccountBalance {
   balance    BigInt   @default(0)
   // ... more fields
 
-  @@map("account_balance")
+  @@map("account")
   @@schema("summa")
-  @@index([holderId], name: "account_balance_holder_id_idx")
+  @@index([holderId], name: "account_holder_id_idx")
 }
 
 // ... all other models

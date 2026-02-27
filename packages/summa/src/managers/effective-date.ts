@@ -3,6 +3,10 @@
 // =============================================================================
 // Computes account balance as of a given effective date by summing entries
 // with effective_date <= the target date.
+//
+// v2 changes:
+// - entry_record → entry
+// - account_balance → account
 
 import type { SummaContext } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
@@ -18,7 +22,7 @@ export interface BalanceAsOf {
 
 /**
  * Compute the balance of an account as of a given effective date.
- * Sums all entry_record rows with effective_date <= asOf.
+ * Sums all entry rows with effective_date <= asOf.
  */
 export async function getBalanceAsOf(
 	ctx: SummaContext,
@@ -28,7 +32,7 @@ export async function getBalanceAsOf(
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 
-	const rows = await (ctx as SummaContext & { readAdapter: typeof ctx.adapter }).readAdapter.raw<{
+	const rows = await ctx.readAdapter.raw<{
 		total_credits: string;
 		total_debits: string;
 		currency: string;
@@ -37,8 +41,8 @@ export async function getBalanceAsOf(
 			COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0) as total_credits,
 			COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT' THEN e.amount ELSE 0 END), 0) as total_debits,
 			a.currency
-		FROM ${t("entry_record")} e
-		JOIN ${t("account_balance")} a ON a.id = e.account_id
+		FROM ${t("entry")} e
+		JOIN ${t("account")} a ON a.id = e.account_id
 		WHERE e.account_id = $1
 			AND a.ledger_id = $2
 			AND e.effective_date <= $3::timestamptz`,

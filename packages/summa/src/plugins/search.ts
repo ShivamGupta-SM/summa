@@ -292,7 +292,7 @@ async function processIndexQueue(
 				documents = await ctx.adapter.raw(
 					`SELECT id, holder_id, holder_type, currency, status, account_type,
 					        account_code, balance, created_at
-					 FROM ${t("account_balance")}
+					 FROM ${t("account")}
 					 WHERE id = ANY($1::uuid[]) AND ledger_id = $2`,
 					[docIds, ledgerId],
 				);
@@ -300,7 +300,7 @@ async function processIndexQueue(
 				documents = await ctx.adapter.raw(
 					`SELECT id, type, reference, status, amount, currency, description,
 					        source_account_id, destination_account_id, created_at
-					 FROM ${t("transaction_record")}
+					 FROM ${t("transfer")}
 					 WHERE id = ANY($1::uuid[]) AND ledger_id = $2`,
 					[docIds, ledgerId],
 				);
@@ -376,8 +376,8 @@ async function startReindex(
 		let lastId = "";
 
 		// Count total
-		let tableName = "account_balance";
-		if (collection === "transactions") tableName = "transaction_record";
+		let tableName = "account";
+		if (collection === "transactions") tableName = "transfer";
 		if (collection === "identities") tableName = "identity";
 
 		const countRows = await ctx.adapter.raw<{ total: number }>(
@@ -399,7 +399,7 @@ async function startReindex(
 				documents = await ctx.adapter.raw(
 					`SELECT id, holder_id, holder_type, currency, status, account_type,
 					        account_code, balance, created_at
-					 FROM ${t("account_balance")}
+					 FROM ${t("account")}
 					 WHERE ledger_id = $1 AND id > $2
 					 ORDER BY id ASC LIMIT $3`,
 					[ledgerId, lastId, batchSize],
@@ -408,7 +408,7 @@ async function startReindex(
 				documents = await ctx.adapter.raw(
 					`SELECT id, type, reference, status, amount, currency, description,
 					        source_account_id, destination_account_id, created_at
-					 FROM ${t("transaction_record")}
+					 FROM ${t("transfer")}
 					 WHERE ledger_id = $1 AND id > $2
 					 ORDER BY id ASC LIMIT $3`,
 					[ledgerId, lastId, batchSize],
@@ -503,7 +503,7 @@ export function search(options: SearchOptions): SummaPlugin {
 				const t = createTableResolver(params.ctx.options.schema);
 				const ledgerId = getLedgerId(params.ctx);
 				const rows = await params.ctx.adapter.raw<{ id: string }>(
-					`SELECT id FROM ${t("transaction_record")}
+					`SELECT id FROM ${t("transfer")}
 					 WHERE reference = $1 AND ledger_id = $2 LIMIT 1`,
 					[params.reference, ledgerId],
 				);
@@ -516,7 +516,7 @@ export function search(options: SearchOptions): SummaPlugin {
 					const holderId = params.holderId ?? params.sourceHolderId;
 					if (holderId) {
 						const accounts = await params.ctx.adapter.raw<{ id: string }>(
-							`SELECT id FROM ${t("account_balance")}
+							`SELECT id FROM ${t("account")}
 							 WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
 							[holderId, ledgerId],
 						);

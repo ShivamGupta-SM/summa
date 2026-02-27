@@ -6,7 +6,7 @@ icon: Clock
 
 ## Overview
 
-The data retention plugin manages data lifecycle for plugin-owned tables. Core cleanup (idempotency keys, worker leases) is handled by core workers automatically. This plugin provides configurable retention policies for audit logs, hot account entries, velocity logs, and FX quotes.
+The data retention plugin manages data lifecycle for plugin-owned tables. Core cleanup (idempotency keys, worker leases) is handled by core workers automatically. This plugin provides configurable retention policies for audit logs, velocity logs, and FX quotes.
 
 ## Setup
 
@@ -20,7 +20,6 @@ const summa = createSumma({
   plugins: [
     dataRetention({
       auditLogs: "7y",
-      hotAccountEntries: "24h",
       velocityLogs: "90d",
       fxQuotes: "30d",
     }),
@@ -29,7 +28,7 @@ const summa = createSumma({
 ```
 
 <Callout type="info">
-  Core-owned tables (idempotency keys, worker leases) are cleaned automatically by core workers. Processed event cleanup is handled by the outbox plugin. This plugin manages retention for plugin-owned tables only.
+  Core-owned tables (idempotency keys, worker leases) are cleaned automatically by core workers. This plugin manages retention for plugin-owned tables only.
 </Callout>
 
 ## Configuration
@@ -38,7 +37,6 @@ const summa = createSumma({
 |--------|------|---------|-------------|
 | `velocityLogs` | `string` | `"30d"` | Retention for velocity/rate-limit logs (always active) |
 | `auditLogs` | `string` | — | Retention for audit log entries |
-| `hotAccountEntries` | `string` | — | Retention for flushed hot account entries |
 | `fxQuotes` | `string` | — | Retention for expired FX rate quotes |
 | `interval` | `string` | `"6h"` | How often the cleanup worker runs |
 
@@ -97,19 +95,16 @@ This plugin only manages retention for **plugin-owned** tables. Other cleanup is
 | `worker_lease` | [Core worker](/docs/configuration#core-workers) (`core:lease-cleanup`) | Yes |
 | `hold` (expiry) | [Core worker](/docs/configuration#core-workers) (`core:hold-expiry`) | Yes |
 | `outbox_event` | [Outbox plugin](/docs/plugins/outbox) (`outbox-cleanup`) | Yes |
-| `processed_event` | [Outbox plugin](/docs/plugins/outbox) (`outbox-cleanup`) | Yes |
 | `rate_limit_log` | **This plugin** (always, default: 30d) | — |
 | `audit_log` | **This plugin** (if `auditLogs` set) | — |
-| `hot_account_entry` | **This plugin** (if `hotAccountEntries` set) | — |
 | `fx_rate_quote` | **This plugin** (if `fxQuotes` set) | — |
 
-The principle: **if core writes to a table, core cleans it up**. The outbox plugin owns `processed_event` because it populates that table during event delivery. This plugin handles the remaining plugin-owned tables.
+The principle: **if core writes to a table, core cleans it up**. This plugin handles the remaining plugin-owned tables.
 
 ```ts
 plugins: [
   dataRetention({         // Data lifecycle for plugin tables
     auditLogs: "7y",
-    hotAccountEntries: "24h",
     velocityLogs: "30d",
   }),
 ]

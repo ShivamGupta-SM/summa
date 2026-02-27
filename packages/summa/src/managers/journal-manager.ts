@@ -3,20 +3,25 @@
 // =============================================================================
 // Arbitrary N debits + M credits in one atomic entry.
 // Example: payroll with salary expense, PF, TDS — 5 legs in one entry.
+//
+// v2 changes:
+// - transaction_record → transfer table
+// - entries ARE events (no appendEvent)
+// - status is a direct column on transfer
 
 import { randomUUID } from "node:crypto";
 import type { JournalEntryLeg, LedgerTransaction, SummaContext } from "@summa-ledger/core";
-import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import { runAfterOperationHooks } from "../context/hooks.js";
-import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
+import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import {
 	checkIdempotencyKeyInTx,
 	isValidCachedResult,
 	saveIdempotencyKeyInTx,
 } from "./idempotency.js";
 import { getLedgerId } from "./ledger-helpers.js";
-import type { RawTransactionRow } from "./raw-types.js";
+import type { RawTransferRow } from "./raw-types.js";
 import { processJournalLegs, rawToTransactionResponse } from "./sql-helpers.js";
 
 // =============================================================================
@@ -31,7 +36,6 @@ export async function journalEntry(
 		description?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
@@ -41,7 +45,6 @@ export async function journalEntry(
 		throw SummaError.invalidArgument("Journal entry requires at least 2 legs (debits and credits)");
 	}
 
-	// Validate entries are balanced
 	let totalDebits = 0;
 	let totalCredits = 0;
 	for (const entry of entries) {
@@ -80,16 +83,15 @@ export async function journalEntry(
 
 		const correlationId = randomUUID();
 
-		// Create journal transaction record
-		// source_account_id and destination_account_id are null for journal entries
-		const txnRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, status, amount, currency, description, correlation_id, meta_data, posted_at, ledger_id, effective_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), $9, COALESCE($10::timestamptz, NOW()))
+		// Create journal transfer record (status = 'posted' directly)
+		const txnRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, correlation_id, metadata, posted_at, effective_date)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, NOW(), COALESCE($9::timestamptz, NOW()))
        RETURNING *`,
 			[
+				ledgerId,
 				"journal",
 				reference,
-				"posted",
 				totalDebits,
 				ctx.options.currency,
 				description,
@@ -99,7 +101,6 @@ export async function journalEntry(
 					type: "journal",
 					entries,
 				}),
-				ledgerId,
 				params.effectiveDate ?? null,
 			],
 		);
@@ -113,24 +114,6 @@ export async function journalEntry(
 			entries,
 			ctx.options.currency,
 			"journal",
-			ledgerId,
-		);
-
-		// Event store
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.TRANSACTION,
-				aggregateId: txnRecord.id,
-				eventType: TRANSACTION_EVENTS.POSTED,
-				eventData: {
-					postedAt: new Date().toISOString(),
-					entries,
-				},
-				correlationId,
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
 			ledgerId,
 		);
 

@@ -17,14 +17,14 @@ import type {
 	SummaPlugin,
 	TableDefinition,
 } from "@summa-ledger/core";
-import { AGGREGATE_TYPES, SCHEDULED_EVENTS, SummaError } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	getEntityStatus,
 	initializeEntityStatus,
 	transitionEntityStatus,
 } from "../infrastructure/entity-status.js";
-import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
+import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 import { creditAccount, debitAccount, transfer } from "../managers/transaction-manager.js";
 
@@ -390,29 +390,6 @@ async function createScheduledTransactionRecord(
 			last_retry_at: null,
 		});
 
-		// Append CREATED event
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-				aggregateId: row.id,
-				eventType: SCHEDULED_EVENTS.CREATED,
-				eventData: {
-					scheduledId: row.id,
-					sourceIdentifier,
-					destinationIdentifier: destinationIdentifier ?? null,
-					amount,
-					currency,
-					scheduledFor: scheduledForIso,
-					recurrence: recurrence ?? null,
-					reference: reference ?? null,
-				},
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
 		return row;
 	});
 
@@ -574,23 +551,6 @@ async function cancelScheduledTransactionRecord(
 			},
 		});
 
-		// Append CANCELLED event
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-				aggregateId: scheduledId,
-				eventType: SCHEDULED_EVENTS.CANCELLED,
-				eventData: {
-					scheduledId,
-					reason: reason ?? "Cancelled by user",
-				},
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
 		return rawToScheduledTransaction(row, "cancelled", {
 			...(currentStatus.metadata ?? {}),
 			next_execution_at: null,
@@ -701,9 +661,8 @@ async function processSingleScheduledTransaction(
 	maxRetries: number,
 ): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
-	const ledgerId = getLedgerId(ctx);
 	// -------------------------------------------------------------------------
-	// Phase 1: Lock row, mark as processing, append PROCESSING event
+	// Phase 1: Lock row, mark as processing
 	// -------------------------------------------------------------------------
 	let detail: RawScheduledDetailRow | null = null;
 
@@ -746,25 +705,6 @@ async function processSingleScheduledTransaction(
 				metadata: row.status_metadata ?? undefined,
 			});
 
-			// Append PROCESSING event
-			await appendEvent(
-				tx,
-				{
-					aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-					aggregateId: scheduledId,
-					eventType: SCHEDULED_EVENTS.PROCESSING,
-					eventData: {
-						scheduledId,
-						sourceIdentifier: row.source_identifier,
-						destinationIdentifier: row.destination_identifier,
-						amount: Number(row.amount),
-					},
-				},
-				ctx.options.schema,
-				ctx.options.advanced.hmacSecret,
-				ledgerId,
-			);
-
 			return row;
 		});
 	} catch (error) {
@@ -806,7 +746,7 @@ async function processSingleScheduledTransaction(
 	}
 
 	// -------------------------------------------------------------------------
-	// Phase 3: Mark completed or rescheduled, append event
+	// Phase 3: Mark completed or rescheduled
 	// -------------------------------------------------------------------------
 	try {
 		await withTransactionTimeout(ctx, async (tx) => {
@@ -835,24 +775,6 @@ async function processSingleScheduledTransaction(
 					},
 				});
 
-				await appendEvent(
-					tx,
-					{
-						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-						aggregateId: scheduledId,
-						eventType: SCHEDULED_EVENTS.RESCHEDULED,
-						eventData: {
-							scheduledId,
-							executionCount: newExecutionCount,
-							nextExecutionAt: nextExecution.toISOString(),
-							intervalMs: recurrence.intervalMs,
-						},
-					},
-					ctx.options.schema,
-					ctx.options.advanced.hmacSecret,
-					ledgerId,
-				);
-
 				ctx.logger.info("Scheduled transaction rescheduled", {
 					scheduledId,
 					executionCount: newExecutionCount,
@@ -874,22 +796,6 @@ async function processSingleScheduledTransaction(
 						last_retry_at: null,
 					},
 				});
-
-				await appendEvent(
-					tx,
-					{
-						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-						aggregateId: scheduledId,
-						eventType: SCHEDULED_EVENTS.COMPLETED,
-						eventData: {
-							scheduledId,
-							executionCount: newExecutionCount,
-						},
-					},
-					ctx.options.schema,
-					ctx.options.advanced.hmacSecret,
-					ledgerId,
-				);
 
 				ctx.logger.info("Scheduled transaction completed", {
 					scheduledId,
@@ -925,7 +831,6 @@ async function handleExecutionFailure(
 	const errorMessage = error instanceof Error ? error.message : String(error);
 	const currentRetryCount = counters.retryCount + 1;
 	const nowIso = new Date().toISOString();
-	const ledgerId = getLedgerId(ctx);
 
 	try {
 		await withTransactionTimeout(ctx, async (tx) => {
@@ -948,24 +853,7 @@ async function handleExecutionFailure(
 					},
 				});
 
-				await appendEvent(
-					tx,
-					{
-						aggregateType: AGGREGATE_TYPES.SCHEDULED_TRANSACTION,
-						aggregateId: scheduledId,
-						eventType: SCHEDULED_EVENTS.FAILED,
-						eventData: {
-							scheduledId,
-							retryCount: currentRetryCount,
-							error: errorMessage,
-						},
-					},
-					ctx.options.schema,
-					ctx.options.advanced.hmacSecret,
-					ledgerId,
-				);
-
-				ctx.logger.error("Scheduled transaction permanently failed", {
+					ctx.logger.error("Scheduled transaction permanently failed", {
 					scheduledId,
 					retryCount: currentRetryCount,
 					error: errorMessage,

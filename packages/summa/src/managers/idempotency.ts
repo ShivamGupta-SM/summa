@@ -131,7 +131,7 @@ export async function checkIdempotencyKeyInTx(
 				LIMIT 1
 			),
 			ref_check AS (
-				SELECT id FROM ${t("transaction_record")}
+				SELECT id FROM ${t("transfer")}
 				WHERE ledger_id = $1 AND reference = $3
 				LIMIT 1
 			)
@@ -188,7 +188,7 @@ export async function checkIdempotencyKeyInTx(
 
 	// No idempotency key — only check reference (single query, no CTE needed)
 	const existingTxRows = await tx.raw<{ id: string }>(
-		`SELECT id FROM ${t("transaction_record")}
+		`SELECT id FROM ${t("transfer")}
      WHERE ledger_id = $1 AND reference = $2
      LIMIT 1`,
 		[params.ledgerId, params.reference],

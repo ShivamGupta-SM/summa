@@ -6,7 +6,7 @@ icon: TableCells
 
 ## Overview
 
-The event store partition plugin converts `ledger_event` to a **PostgreSQL range-partitioned table**, partitioned by `created_at`. This enables partition pruning on time-range queries and keeps each partition at a manageable size — critical for ledgers with billions of events.
+The event store partition plugin converts `entry` to a **PostgreSQL range-partitioned table**, partitioned by `created_at`. This enables partition pruning on time-range queries and keeps each partition at a manageable size — critical for ledgers with billions of entries.
 
 The plugin wraps the core `partitionMaintenance()` function and provides a **daily background worker** that automatically creates future partitions and optionally detaches old ones.
 
@@ -67,7 +67,7 @@ import { partitionMaintenance } from "@summa-ledger/summa/db";
 // For advanced use with archive schema
 const plugin = partitionMaintenance({
   tables: {
-    ledger_event: { interval: "monthly" },
+    entry: { interval: "monthly" },
   },
   retainPartitions: 24,
   archiveSchema: "summa_archive",
@@ -86,7 +86,7 @@ npx summa partition generate --interval weekly
 This generates a SQL file that:
 
 1. Drops unique constraints incompatible with partitioning
-2. Renames the existing table to `ledger_event_old`
+2. Renames the existing table to `entry_old`
 3. Creates a new partitioned table with `PARTITION BY RANGE (created_at)`
 4. Creates initial partitions + a default partition
 5. Migrates data from the old table
@@ -103,7 +103,7 @@ This generates a SQL file that:
 npx summa partition status
 ```
 
-Shows whether `ledger_event` is partitioned, lists all child partitions with estimated row counts and sizes.
+Shows whether `entry` is partitioned, lists all child partitions with estimated row counts and sizes.
 
 ## Query Performance
 

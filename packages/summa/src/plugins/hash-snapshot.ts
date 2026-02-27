@@ -1,8 +1,8 @@
 // =============================================================================
 // VERIFICATION SNAPSHOTS PLUGIN — Automated hash snapshot creation
 // =============================================================================
-// Creates periodic hash snapshots for active aggregates, enabling O(recent)
-// verification instead of O(all events). Workers run on a configurable
+// Creates periodic hash snapshots for active accounts, enabling O(recent)
+// verification instead of O(all entries). Workers run on a configurable
 // interval and use distributed leasing to avoid duplicate work.
 //
 // NOTE: These are *cryptographic verification* snapshots (hash chain optimization),
@@ -19,7 +19,7 @@ import { createHashSnapshot } from "../infrastructure/hash-snapshot.js";
 export interface VerificationSnapshotsOptions {
 	/** How often the snapshot worker runs. Default: "6h" */
 	snapshotInterval?: string;
-	/** Max aggregates to snapshot per worker run. Default: 500 */
+	/** Max accounts to snapshot per worker run. Default: 500 */
 	batchSize?: number;
 }
 
@@ -35,8 +35,7 @@ const hashSnapshotSchema: Record<string, TableDefinition> = {
 		columns: {
 			id: { type: "uuid", primaryKey: true, notNull: true },
 			ledger_id: { type: "text", notNull: true },
-			aggregate_type: { type: "text", notNull: true },
-			aggregate_id: { type: "text", notNull: true },
+			account_id: { type: "text", notNull: true },
 			snapshot_version: { type: "bigint", notNull: true },
 			snapshot_hash: { type: "text", notNull: true },
 			event_count: { type: "integer", notNull: true },
@@ -44,8 +43,8 @@ const hashSnapshotSchema: Record<string, TableDefinition> = {
 		},
 		indexes: [
 			{
-				name: "uq_hash_snapshot_aggregate",
-				columns: ["ledger_id", "aggregate_type", "aggregate_id"],
+				name: "uq_hash_snapshot_account",
+				columns: ["ledger_id", "account_id"],
 				unique: true,
 			},
 			{
@@ -72,50 +71,48 @@ export function verificationSnapshots(options?: VerificationSnapshotsOptions): S
 		workers: [
 			{
 				id: "hash-snapshot-creator",
-				description: "Create hash snapshots for aggregates with recent events",
+				description: "Create hash snapshots for accounts with recent entries",
 				interval: snapshotInterval,
 				leaseRequired: true,
 				handler: async (ctx: SummaContext) => {
 					const t = createTableResolver(ctx.options.schema);
 
-					// Find aggregates that have events newer than their latest snapshot.
-					// LEFT JOIN ensures aggregates with no snapshot are included.
-					const staleAggregates = await ctx.adapter.raw<{
+					// Find accounts that have entries newer than their latest snapshot.
+					// Hash chains are per-account; entries ARE events in v2.
+					// LEFT JOIN ensures accounts with no snapshot are included.
+					const staleAccounts = await ctx.adapter.raw<{
+						account_id: string;
 						ledger_id: string;
-						aggregate_type: string;
-						aggregate_id: string;
 					}>(
-						`SELECT DISTINCT e.ledger_id, e.aggregate_type, e.aggregate_id
-						 FROM ${t("ledger_event")} e
+						`SELECT DISTINCT e.account_id, a.ledger_id
+						 FROM ${t("entry")} e
+						 JOIN ${t("account")} a ON a.id = e.account_id
 						 LEFT JOIN ${t("hash_snapshot")} hs
-						   ON hs.ledger_id = e.ledger_id
-						  AND hs.aggregate_type = e.aggregate_type
-						  AND hs.aggregate_id = e.aggregate_id
+						   ON hs.account_id = e.account_id
+						  AND hs.ledger_id = a.ledger_id
 						 WHERE hs.id IS NULL
 						    OR e.created_at > hs.created_at
 						 LIMIT $1`,
 						[batchSize],
 					);
 
-					if (staleAggregates.length === 0) {
-						ctx.logger.debug("Hash snapshot worker: no stale aggregates found");
+					if (staleAccounts.length === 0) {
+						ctx.logger.debug("Hash snapshot worker: no stale accounts found");
 						return;
 					}
 
 					let created = 0;
-					for (const agg of staleAggregates) {
+					for (const agg of staleAccounts) {
 						try {
 							const snapshot = await createHashSnapshot(
 								ctx,
-								agg.aggregate_type,
-								agg.aggregate_id,
+								agg.account_id,
 								agg.ledger_id,
 							);
 							if (snapshot) created++;
 						} catch (err) {
 							ctx.logger.error("Failed to create hash snapshot", {
-								aggregateType: agg.aggregate_type,
-								aggregateId: agg.aggregate_id,
+								accountId: agg.account_id,
 								ledgerId: agg.ledger_id,
 								error: err instanceof Error ? err.message : String(err),
 							});
@@ -125,7 +122,7 @@ export function verificationSnapshots(options?: VerificationSnapshotsOptions): S
 					if (created > 0) {
 						ctx.logger.info("Hash snapshots created", {
 							created,
-							checked: staleAggregates.length,
+							checked: staleAccounts.length,
 						});
 					}
 				},

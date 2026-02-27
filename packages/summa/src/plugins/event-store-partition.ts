@@ -2,7 +2,7 @@
 // EVENT STORE PARTITIONING PLUGIN
 // =============================================================================
 // Thin wrapper around the existing partitionMaintenance() utility, pre-configured
-// for the ledger_event table. Creates future partitions automatically and
+// for the entry table. Creates future partitions automatically and
 // optionally detaches old ones.
 //
 // Users must run the initial partition migration DDL separately (one-time).
@@ -34,7 +34,7 @@ export interface EventStorePartitionOptions {
 // =============================================================================
 
 /**
- * Plugin that automatically creates future partitions for the ledger_event table
+ * Plugin that automatically creates future partitions for the entry table
  * and optionally detaches old ones.
  *
  * @example
@@ -49,7 +49,7 @@ export interface EventStorePartitionOptions {
 export function eventStorePartition(options?: EventStorePartitionOptions): SummaPlugin {
 	return partitionMaintenance({
 		tables: {
-			ledger_event: { interval: options?.interval ?? "monthly" },
+			entry: { interval: options?.interval ?? "monthly" },
 		},
 		createAhead: options?.createAhead ?? 3,
 		retainPartitions: options?.retainPartitions ?? null,

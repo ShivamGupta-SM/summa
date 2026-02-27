@@ -10,7 +10,7 @@ The `@summa-ledger/projections` package provides a **CQRS projection runner** th
 
 This enables:
 - **Read replicas** serving projection tables (no contention with writes)
-- **Fast queries** on denormalized data (no joins across event tables)
+- **Fast queries** on denormalized data (no joins across entry tables)
 - **Custom read models** tailored to specific query patterns
 
 ## Installation
@@ -74,7 +74,7 @@ The projection runner creates two types of workers:
 
 ### Publisher Worker
 - Runs with a distributed lease (single instance)
-- Reads new events from `ledger_event` since the last watermark
+- Reads new events from `entry` since the last watermark
 - Publishes them to Redis Streams
 - Tracks progress in `projection_watermark` table
 
@@ -180,7 +180,7 @@ const cqrs = createCQRSAdapter({
 ┌──────────────┐
 │  Write Path  │
 │  (Primary)   │
-│  ledger_event│──────┐
+│  entry       │──────┐
 └──────────────┘      │
                       ▼
               ┌──────────────┐

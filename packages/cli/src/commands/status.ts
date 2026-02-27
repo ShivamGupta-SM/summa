@@ -78,8 +78,7 @@ export const statusCommand = new Command("status")
 					if (adv.hotAccountThreshold != null)
 						advParts.push(`hotThreshold=${adv.hotAccountThreshold}`);
 					if (adv.idempotencyTTL != null) advParts.push(`idempotencyTTL=${adv.idempotencyTTL}ms`);
-					if (adv.enableEventSourcing === false) advParts.push("eventSourcing=off");
-					if (adv.enableHashChain === false) advParts.push("hashChain=off");
+					if (adv.verifyEntryHashOnRead === false) advParts.push("verifyEntryHash=off");
 					if (advParts.length > 0) {
 						p.log.info(`  Advanced:      ${pc.dim(advParts.join(", "))}`);
 					}

@@ -145,7 +145,7 @@ async function getSpentInPeriod(ctx: SummaContext, budget: RawBudgetRow): Promis
 	const params: unknown[] = [budget.period_start, budget.period_end];
 	let idx = 3;
 
-	// Category is stored in meta_data jsonb on transaction_record
+	// Category is stored in metadata jsonb on transfer
 	const needsTxnJoin = !!budget.category;
 	const needsAcctJoin = !!budget.holder_id || !!budget.account_code;
 
@@ -158,19 +158,19 @@ async function getSpentInPeriod(ctx: SummaContext, budget: RawBudgetRow): Promis
 		params.push(budget.account_code);
 	}
 	if (budget.category) {
-		conditions.push(`tr.meta_data->>'category' = $${idx++}`);
+		conditions.push(`tr.metadata->>'category' = $${idx++}`);
 		params.push(budget.category);
 	}
 
-	const acctJoin = needsAcctJoin ? `JOIN ${t("account_balance")} ab ON er.account_id = ab.id` : "";
+	const acctJoin = needsAcctJoin ? `JOIN ${t("account")} ab ON er.account_id = ab.id` : "";
 	const txnJoin = needsTxnJoin
-		? `JOIN ${t("transaction_record")} tr ON er.transaction_id = tr.id`
+		? `JOIN ${t("transfer")} tr ON er.transfer_id = tr.id`
 		: "";
 	const whereExtra = conditions.length > 0 ? ` AND ${conditions.join(" AND ")}` : "";
 
 	const rows = await ctx.adapter.raw<{ total: number }>(
 		`SELECT COALESCE(SUM(er.amount), 0) as total
-		 FROM ${t("entry_record")} er
+		 FROM ${t("entry")} er
 		 ${acctJoin} ${txnJoin}
 		 WHERE er.entry_type = 'DEBIT'
 		   AND er.created_at >= $1::timestamptz

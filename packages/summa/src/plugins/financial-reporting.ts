@@ -120,7 +120,7 @@ export async function getTrialBalance(
 
 	const rows = await ctx.adapter.raw<RawReportRow>(
 		`SELECT id, account_code, holder_id, account_type, currency, debit_balance, credit_balance, balance
-     FROM ${t("account_balance")}
+     FROM ${t("account")}
      WHERE ledger_id = $1
        AND account_type IS NOT NULL
      ORDER BY account_code ASC NULLS LAST`,
@@ -160,7 +160,7 @@ export async function getBalanceSheet(
 
 	const rows = await ctx.adapter.raw<RawReportRow>(
 		`SELECT id, account_code, holder_id, account_type, currency, debit_balance, credit_balance, balance
-     FROM ${t("account_balance")}
+     FROM ${t("account")}
      WHERE ledger_id = $1
        AND account_type IN ('asset', 'liability', 'equity')
      ORDER BY account_type, account_code ASC NULLS LAST`,
@@ -221,8 +221,8 @@ export async function getIncomeStatement(
             COALESCE(SUM(CASE WHEN er.entry_type = 'DEBIT' THEN er.amount ELSE 0 END), 0) as debit_balance,
             COALESCE(SUM(CASE WHEN er.entry_type = 'CREDIT' THEN er.amount ELSE 0 END), 0) as credit_balance,
             COALESCE(SUM(CASE WHEN er.entry_type = 'CREDIT' THEN er.amount ELSE -er.amount END), 0) as balance
-     FROM ${t("account_balance")} ab
-     JOIN ${t("entry_record")} er ON er.account_id = ab.id
+     FROM ${t("account")} ab
+     JOIN ${t("entry")} er ON er.account_id = ab.id
      WHERE ab.ledger_id = $3
        AND ab.account_type IN ('revenue', 'expense')
        AND er.created_at >= $1::timestamptz

@@ -31,7 +31,6 @@ import {
   batchImport,
   accrualAccounting,
   dataRetention,
-  versionRetention,
   i18n,
   mcp,
   identity,
@@ -90,7 +89,6 @@ const summa = createSumma({
 | [`batchImport`](/docs/plugins/batch-import) | Operations | Yes | Bulk CSV/JSON transaction import with staged validation |
 | [`accrualAccounting`](/docs/plugins/accrual-accounting) | Finance | Yes | Revenue/expense recognition over time |
 | [`dataRetention`](/docs/plugins/data-retention) | Operations | Yes | Unified data retention policies across all tables |
-| [`versionRetention`](/docs/plugins/version-retention) | Performance | Yes | Archive and prune old `account_balance_version` rows to keep the table bounded |
 | [`i18n`](/docs/plugins/i18n) | Localization | No | Multi-locale error message translation with Accept-Language detection |
 | [`mcp`](/docs/plugins/mcp) | Integration | No | Model Context Protocol tools for AI agent access to the ledger |
 | [`identity`](/docs/plugins/identity) | Compliance | No | KYC identity management with AES-256-GCM PII tokenization |
@@ -320,7 +318,7 @@ Configure intervals via `coreWorkers` in [`createSumma()`](/docs/configuration#c
 
 #### Plugin Workers
 
-Plugin workers only run when their plugin is registered. Examples include outbox delivery, reconciliation checks, snapshot creation, and data retention cleanup. Each plugin's docs list its workers. The [outbox plugin](/docs/plugins/outbox) also handles `processed_event` dedup cleanup as part of its `outbox-cleanup` worker.
+Plugin workers only run when their plugin is registered. Examples include outbox delivery, reconciliation checks, snapshot creation, and data retention cleanup. Each plugin's docs list its workers.
 
 ### Type Inference
 

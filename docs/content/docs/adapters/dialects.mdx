@@ -91,20 +91,20 @@ import { createModelResolver } from "@summa-ledger/core/db";
 
 const resolver = createModelResolver({
   modelNames: {
-    account_balance: "accounts",
-    transaction_record: "transactions",
+    account: "accounts",
+    transfer: "transactions",
     hold: "authorizations",
   },
   fieldNames: {
-    account_balance: {
+    account: {
       holder_id: "user_id",
       holder_type: "user_type",
     },
   },
 });
 
-// resolver.getModelName("account_balance")  → "accounts"
-// resolver.getFieldName("account_balance", "holder_id") → "user_id"
+// resolver.getModelName("account")  → "accounts"
+// resolver.getFieldName("account", "holder_id") → "user_id"
 ```
 
 This is useful when integrating Summa into an existing database schema without renaming tables.

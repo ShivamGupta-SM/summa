@@ -29,15 +29,8 @@ const DEFAULT_ADVANCED: ResolvedAdvancedOptions = {
 	transactionTimeoutMs: 5000,
 	lockTimeoutMs: 3000,
 	maxTransactionAmount: 1_000_000_000_00,
-	// Event sourcing and hash chains are enabled by default.
-	// Setting these to false WILL skip event/hash logic. Only disable for development/testing.
-	enableEventSourcing: true,
-	enableHashChain: true,
 	hmacSecret: null,
-	verifyHashOnRead: true,
-	// Denormalized balance eliminates LATERAL JOIN on balance reads.
-	// Requires the column-aware immutability trigger on account_balance.
-	useDenormalizedBalance: true,
+	verifyEntryHashOnRead: true,
 	lockRetryCount: 0,
 	lockRetryBaseDelayMs: 50,
 	lockRetryMaxDelayMs: 500,
@@ -134,7 +127,7 @@ export async function buildContext(options: SummaOptions): Promise<SummaContext>
 	const hasSystemAccounts = Object.keys(options.systemAccounts ?? {}).length > 0;
 	if (hasSystemAccounts && !pluginIds.has("hot-accounts")) {
 		logger.warn(
-			"hot-accounts plugin is not registered but system accounts are configured. Core writes hot_account_entry rows that will accumulate without the hot-accounts plugin. For production deployments, register hotAccounts() in your plugins.",
+			"hot-accounts plugin is not registered but system accounts are configured. System account entries will not have their balances aggregated without the hot-accounts plugin. For production deployments, register hotAccounts() in your plugins.",
 		);
 	}
 

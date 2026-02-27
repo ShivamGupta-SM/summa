@@ -40,7 +40,7 @@ export async function getAccountsByType(
 ): Promise<Account[]> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND account_type = $2 ORDER BY account_code ASC NULLS LAST`,
+		`SELECT * FROM ${t("account")} WHERE ledger_id = $1 AND account_type = $2 ORDER BY account_code ASC NULLS LAST`,
 		[ledgerId, accountType],
 	);
 	return rows.map(rawRowToAccount);
@@ -56,7 +56,7 @@ export async function getChildAccounts(
 ): Promise<Account[]> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND parent_account_id = $2 ORDER BY account_code ASC NULLS LAST`,
+		`SELECT * FROM ${t("account")} WHERE ledger_id = $1 AND parent_account_id = $2 ORDER BY account_code ASC NULLS LAST`,
 		[ledgerId, parentAccountId],
 	);
 	return rows.map(rawRowToAccount);
@@ -75,7 +75,7 @@ export async function getAccountHierarchy(
 	const t = createTableResolver(ctx.options.schema);
 	// Fetch all accounts that have an account_type (i.e., are part of the CoA)
 	const rows = await ctx.readAdapter.raw<RawAccountRow>(
-		`SELECT * FROM ${t("account_balance")} WHERE ledger_id = $1 AND account_type IS NOT NULL ORDER BY account_code ASC NULLS LAST`,
+		`SELECT * FROM ${t("account")} WHERE ledger_id = $1 AND account_type IS NOT NULL ORDER BY account_code ASC NULLS LAST`,
 		[ledgerId],
 	);
 
@@ -119,7 +119,7 @@ export async function validateAccountingEquation(
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<{ account_type: string; total: number }>(
 		`SELECT account_type, SUM(balance) as total
-     FROM ${t("account_balance")}
+     FROM ${t("account")}
      WHERE ledger_id = $1 AND account_type IN ('asset', 'liability', 'equity')
      GROUP BY account_type`,
 		[ledgerId],

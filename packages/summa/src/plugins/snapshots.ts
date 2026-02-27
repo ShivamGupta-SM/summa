@@ -131,12 +131,12 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 	let changedAccountIds: Set<string> | null = null;
 
 	if (lastSnapshotDate) {
-		// Find accounts that had entry_record activity since last snapshot
+		// Find accounts that had entry activity since last snapshot
 		const changedRows = await ctx.adapter.raw<{
 			account_id: string;
 		}>(
 			`SELECT DISTINCT e.account_id
-			 FROM ${t("entry_record")} e
+			 FROM ${t("entry")} e
 			 WHERE e.account_id IS NOT NULL
 			   AND e.created_at > ($1::date + interval '1 day')::timestamptz
 			 LIMIT 100000`,
@@ -151,7 +151,7 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 		});
 	}
 
-	// ---- Batched processing using keyset pagination on account_balance.id ----
+	// ---- Batched processing using keyset pagination on account.id ----
 	let accountsSnapshotted = 0;
 	let skippedUnchanged = 0;
 	let lastAccountId = "";
@@ -170,8 +170,9 @@ async function triggerDailySnapshot(ctx: SummaContext): Promise<SnapshotResult> 
 		}>(
 			`SELECT id, holder_id, balance, credit_balance, debit_balance,
 			        pending_credit, pending_debit, currency, status
-			 FROM ${t("account_balance")}
+			 FROM ${t("account")}
 			 WHERE ledger_id = $1
+			   AND is_system = false
 			   AND id > $2
 			 ORDER BY id ASC
 			 LIMIT $3`,

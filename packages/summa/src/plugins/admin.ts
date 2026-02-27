@@ -217,14 +217,14 @@ export function admin(options?: AdminOptions): SummaPlugin {
 				const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
 				const countRows = await ctx.adapter.raw<{ cnt: string }>(
-					`SELECT COUNT(*) as cnt FROM ${tbl("transaction_record")} t ${whereClause}`,
+					`SELECT COUNT(*) as cnt FROM ${tbl("transfer")} t ${whereClause}`,
 					params,
 				);
 				const total = Number(countRows[0]?.cnt ?? 0);
 
 				const dataParams = [...params, perPage, offset];
 				const rows = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT * FROM ${tbl("transaction_record")} t ${whereClause} ORDER BY t.created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
+					`SELECT * FROM ${tbl("transfer")} t ${whereClause} ORDER BY t.created_at DESC LIMIT $${paramIdx++} OFFSET $${paramIdx}`,
 					dataParams,
 				);
 
@@ -238,7 +238,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 				const tbl = createTableResolver(ctx.options.schema);
 				const txn = await transactions.getTransaction(ctx, req.params.id ?? "");
 				const entries = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT * FROM ${tbl("entry_record")} WHERE transaction_id = $1 ORDER BY created_at ASC`,
+					`SELECT * FROM ${tbl("entry")} WHERE transfer_id = $1 ORDER BY created_at ASC`,
 					[txn.id],
 				);
 				return json(200, { transaction: txn, entries });
@@ -333,11 +333,10 @@ export function admin(options?: AdminOptions): SummaPlugin {
 			handler: async (_req, ctx) => {
 				const tbl = createTableResolver(ctx.options.schema);
 				const rows = await ctx.adapter.raw<Record<string, unknown>>(
-					`SELECT sa.id, sa.identifier, sa.name, sa.created_at,
-					        ab.currency, ab.balance, ab.available_balance, ab.status
-					 FROM ${tbl("system_account")} sa
-					 JOIN ${tbl("account_balance")} ab ON ab.id = sa.account_id
-					 ORDER BY sa.identifier ASC`,
+					`SELECT id, identifier, name, currency, balance, available_balance, status, created_at
+					 FROM ${tbl("account")}
+					 WHERE is_system = true
+					 ORDER BY identifier ASC`,
 					[],
 				);
 				return json(200, { systemAccounts: rows });
@@ -385,7 +384,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 							COUNT(*) FILTER (WHERE status = 'active') AS active,
 							COUNT(*) FILTER (WHERE status = 'frozen') AS frozen,
 							COUNT(*) FILTER (WHERE status = 'closed') AS closed
-						 FROM ${tbl("account_balance")}`,
+						 FROM ${tbl("account")}`,
 						[],
 					),
 					ctx.adapter.raw<Record<string, string>>(
@@ -394,7 +393,7 @@ export function admin(options?: AdminOptions): SummaPlugin {
 							COALESCE(SUM(amount), 0) AS total_volume,
 							COUNT(*) FILTER (WHERE created_at >= CURRENT_DATE) AS today_count,
 							COALESCE(SUM(amount) FILTER (WHERE created_at >= CURRENT_DATE), 0) AS today_volume
-						 FROM ${tbl("transaction_record")}
+						 FROM ${tbl("transfer")}
 						 WHERE status = 'posted'`,
 						[],
 					),

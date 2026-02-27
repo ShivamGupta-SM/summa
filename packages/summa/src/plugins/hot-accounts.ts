@@ -1,11 +1,15 @@
 // =============================================================================
 // HOT ACCOUNTS PLUGIN -- Batch processing for high-volume system accounts
 // =============================================================================
-// System accounts use a hot account pattern where individual entries are queued
-// in hot_account_entry and periodically batch-aggregated into the system_account
-// balance. This avoids row-level lock contention on high-throughput accounts.
+// In v2, system accounts live in the unified `account` table (is_system=true).
+// When insertEntryAndUpdateBalance is called with isHotAccount=true, only the
+// entry is inserted into the `entry` table -- the account balance is NOT updated.
+//
+// This plugin periodically aggregates unaggregated entries for system accounts
+// and UPDATEs the account balance in batch. A watermark table tracks the last
+// processed entry.id per system account to avoid re-processing.
 
-import { type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa-ledger/core";
+import { computeBalanceChecksum, type SummaContext, type SummaPlugin, validatePluginOptions } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import { getLedgerId } from "../managers/ledger-helpers.js";
 
@@ -16,8 +20,6 @@ import { getLedgerId } from "../managers/ledger-helpers.js";
 export interface HotAccountsOptions {
 	/** Max entries per batch. Default: 1000 */
 	batchSize?: number;
-	/** Retention hours for processed entries. Default: 24 */
-	retentionHours?: number;
 }
 
 // =============================================================================
@@ -25,8 +27,11 @@ export interface HotAccountsOptions {
 // =============================================================================
 
 export interface HotAccountStats {
+	/** Number of entries not yet aggregated into account balances */
 	pending: number;
-	processed: number;
+	/** Number of entries already aggregated */
+	aggregated: number;
+	/** Number of failed aggregation sequences */
 	failedSequences: number;
 }
 
@@ -37,10 +42,8 @@ export interface HotAccountStats {
 export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 	const opts = validatePluginOptions<HotAccountsOptions>("hot-accounts", options, {
 		batchSize: { type: "number", default: 1000 },
-		retentionHours: { type: "number", default: 24 },
 	});
 	const batchSize = opts.batchSize ?? 1000;
-	const retentionHours = opts.retentionHours ?? 24;
 
 	return {
 		id: "hot-accounts",
@@ -48,41 +51,34 @@ export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 		$Infer: {} as { HotAccountStats: HotAccountStats },
 
 		schema: {
-			hotAccountEntry: {
+			// Tracks the last aggregated entry ID per system account.
+			// Entries with id > last_entry_id are considered unaggregated.
+			hotAccountWatermark: {
 				columns: {
-					id: { type: "uuid", primaryKey: true, notNull: true },
-					sequence_number: { type: "bigint", notNull: true },
 					account_id: {
 						type: "uuid",
+						primaryKey: true,
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
-					amount: { type: "bigint", notNull: true },
-					entry_type: { type: "text", notNull: true },
-					transaction_id: {
+					last_entry_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "transaction_record", column: "id" },
+						references: { table: "entry", column: "id" },
 					},
-					status: { type: "text", notNull: true, default: "'pending'" },
-					created_at: { type: "timestamp", notNull: true, default: "NOW()" },
-					processed_at: { type: "timestamp" },
+					last_sequence_number: { type: "bigint", notNull: true },
+					entries_aggregated: { type: "bigint", notNull: true, default: "0" },
+					updated_at: { type: "timestamp", notNull: true, default: "NOW()" },
 				},
-				indexes: [
-					{
-						name: "idx_hot_account_pending",
-						columns: ["status", "account_id", "sequence_number"],
-					},
-					{ name: "idx_hot_account_entry_txn", columns: ["transaction_id"] },
-				],
 			},
+			// Error tracking for failed batch aggregations.
 			hotAccountFailedSequence: {
 				columns: {
 					id: { type: "uuid", primaryKey: true, notNull: true },
 					account_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
 					entry_ids: { type: "jsonb", notNull: true },
 					error_message: { type: "text" },
@@ -98,25 +94,14 @@ export function hotAccounts(options?: HotAccountsOptions): SummaPlugin {
 		workers: [
 			{
 				id: "hot-account-processor",
-				description: "Batch processes pending hot_account_entry rows into system account balances",
+				description:
+					"Batch aggregates unaggregated system account entries and updates account balances",
 				interval: "30s",
 				leaseRequired: true,
 				handler: async (ctx: SummaContext) => {
 					const count = await processHotAccountBatch(ctx, batchSize);
 					if (count > 0) {
 						ctx.logger.info("Hot account batch processed", { count });
-					}
-				},
-			},
-			{
-				id: "hot-account-cleanup",
-				description: "Cleans up processed hot account entries older than retention period",
-				interval: "6h",
-				leaseRequired: true,
-				handler: async (ctx: SummaContext) => {
-					const deleted = await cleanupProcessedHotEntries(ctx, retentionHours);
-					if (deleted > 0) {
-						ctx.logger.info("Hot account cleanup completed", { deleted, retentionHours });
 					}
 				},
 			},
@@ -133,38 +118,60 @@ interface AggregatedGroup {
 	net_delta: number;
 	credit_delta: number;
 	debit_delta: number;
+	entry_count: number;
+	max_entry_id: string;
+	max_sequence_number: number;
 	entry_ids: string[];
 }
 
 async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Promise<number> {
-	// Lock, aggregate, and process pending entries within a single transaction
-	// so that FOR UPDATE SKIP LOCKED locks are held through the entire processing.
 	const { dialect } = ctx;
 	const t = createTableResolver(ctx.options.schema);
 	const ledgerId = getLedgerId(ctx);
+	const hmacSecret = ctx.options.advanced.hmacSecret ?? null;
 
 	let totalProcessed = 0;
 
 	await ctx.adapter
 		.transaction(async (tx) => {
+			// Find system accounts that have entries beyond their watermark.
+			// For accounts without a watermark row, all entries are unaggregated.
+			// We lock the account rows FOR UPDATE to serialize concurrent aggregators.
+			//
+			// The query:
+			// 1. Selects entries from `entry` that belong to system accounts (via JOIN on account.is_system)
+			// 2. Filters to entries with sequence_number > the watermark (or all if no watermark exists)
+			// 3. Aggregates credit/debit deltas per account
+			// 4. Limits total entries processed to batchSize
 			const groups = await tx.raw<AggregatedGroup>(
-				`WITH locked_entries AS (
-         SELECT id, account_id, amount
-         FROM ${t("hot_account_entry")}
-         WHERE status = 'pending'
-         ORDER BY created_at ASC
-         LIMIT $1
-         ${dialect.forUpdateSkipLocked()}
-       )
-       SELECT
-         account_id,
-         SUM(amount)::bigint AS net_delta,
-         SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END)::bigint AS credit_delta,
-         SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END)::bigint AS debit_delta,
-         array_agg(id) AS entry_ids
-       FROM locked_entries
-       GROUP BY account_id`,
-				[batchSize],
+				`WITH system_entries AS (
+           SELECT
+             e.id AS entry_id,
+             e.account_id,
+             e.entry_type,
+             e.amount,
+             e.sequence_number
+           FROM ${t("entry")} e
+           INNER JOIN ${t("account")} a ON a.id = e.account_id
+           LEFT JOIN ${t("hot_account_watermark")} w ON w.account_id = e.account_id
+           WHERE a.ledger_id = $1
+             AND a.is_system = true
+             AND e.sequence_number > COALESCE(w.last_sequence_number, 0)
+           ORDER BY e.sequence_number ASC
+           LIMIT $2
+         )
+         SELECT
+           account_id,
+           SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE -amount END)::bigint AS net_delta,
+           SUM(CASE WHEN entry_type = 'CREDIT' THEN amount ELSE 0 END)::bigint AS credit_delta,
+           SUM(CASE WHEN entry_type = 'DEBIT' THEN amount ELSE 0 END)::bigint AS debit_delta,
+           COUNT(*)::int AS entry_count,
+           MAX(entry_id) AS max_entry_id,
+           MAX(sequence_number)::bigint AS max_sequence_number,
+           array_agg(entry_id) AS entry_ids
+         FROM system_entries
+         GROUP BY account_id`,
+				[ledgerId, batchSize],
 			);
 
 			if (groups.length === 0) {
@@ -175,87 +182,102 @@ async function processHotAccountBatch(ctx: SummaContext, batchSize: number): Pro
 				const entryIds: string[] =
 					typeof group.entry_ids === "string" ? JSON.parse(group.entry_ids) : group.entry_ids;
 
-				// INSERT new system_account_version row (APPEND-ONLY — replaces UPDATE system_account)
-				// Lock the immutable system_account parent, read latest version, insert new version.
-				await tx.raw(
-					`SELECT id FROM ${t("system_account")} WHERE id = $1 AND ledger_id = $2 FOR UPDATE`,
-					[group.account_id, ledgerId],
-				);
-				const versionRows = await tx.raw<{
+				// Lock the account row for this system account
+				const accountRows = await tx.raw<{
 					version: number;
 					balance: number;
 					credit_balance: number;
 					debit_balance: number;
+					pending_debit: number;
+					pending_credit: number;
 				}>(
-					`SELECT version, balance, credit_balance, debit_balance
-         FROM ${t("system_account_version")}
-         WHERE account_id = $1
-         ORDER BY version DESC LIMIT 1`,
-					[group.account_id],
+					`SELECT version, balance, credit_balance, debit_balance, pending_debit, pending_credit
+           FROM ${t("account")}
+           WHERE id = $1 AND ledger_id = $2
+           ${dialect.forUpdate()}`,
+					[group.account_id, ledgerId],
 				);
-				const current = versionRows[0];
-				const prevVersion = current ? Number(current.version) : 0;
-				const prevBalance = current ? Number(current.balance) : 0;
-				const prevCredit = current ? Number(current.credit_balance) : 0;
-				const prevDebit = current ? Number(current.debit_balance) : 0;
 
-				await tx.raw(
-					`INSERT INTO ${t("system_account_version")} (account_id, version, balance, credit_balance, debit_balance, change_type)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
+				const current = accountRows[0];
+				if (!current) {
+					ctx.logger.error("System account not found during batch aggregation", {
+						accountId: group.account_id,
+					});
+					continue;
+				}
+
+				const prevVersion = Number(current.version);
+				const prevBalance = Number(current.balance);
+				const prevCredit = Number(current.credit_balance);
+				const prevDebit = Number(current.debit_balance);
+
+				const newBalance = prevBalance + Number(group.net_delta);
+				const newCreditBalance = prevCredit + Number(group.credit_delta);
+				const newDebitBalance = prevDebit + Number(group.debit_delta);
+				const newVersion = prevVersion + 1;
+
+				// Compute balance checksum for tamper detection
+				const checksum = computeBalanceChecksum(
+					{
+						balance: newBalance,
+						creditBalance: newCreditBalance,
+						debitBalance: newDebitBalance,
+						pendingDebit: Number(current.pending_debit),
+						pendingCredit: Number(current.pending_credit),
+						lockVersion: newVersion,
+					},
+					hmacSecret,
+				);
+
+				// UPDATE account balance, version, and checksum
+				await tx.rawMutate(
+					`UPDATE ${t("account")} SET
+             balance = $1,
+             credit_balance = $2,
+             debit_balance = $3,
+             version = $4,
+             checksum = $5
+           WHERE id = $6 AND version = $7`,
 					[
+						newBalance,
+						newCreditBalance,
+						newDebitBalance,
+						newVersion,
+						checksum,
 						group.account_id,
-						prevVersion + 1,
-						prevBalance + Number(group.net_delta),
-						prevCredit + Number(group.credit_delta),
-						prevDebit + Number(group.debit_delta),
-						"batch_aggregate",
+						prevVersion,
 					],
 				);
 
-				// Mark all entries in this group as processed
+				// Upsert watermark: track the highest processed entry
 				await tx.rawMutate(
-					`UPDATE ${t("hot_account_entry")}
-         SET status = 'processed', processed_at = ${dialect.now()}
-         WHERE id = ANY($1::uuid[])`,
-					[entryIds],
+					`INSERT INTO ${t("hot_account_watermark")} (account_id, last_entry_id, last_sequence_number, entries_aggregated, updated_at)
+           VALUES ($1, $2, $3, $4, ${dialect.now()})
+           ON CONFLICT (account_id) DO UPDATE SET
+             last_entry_id = EXCLUDED.last_entry_id,
+             last_sequence_number = EXCLUDED.last_sequence_number,
+             entries_aggregated = ${t("hot_account_watermark")}.entries_aggregated + EXCLUDED.entries_aggregated,
+             updated_at = EXCLUDED.updated_at`,
+					[
+						group.account_id,
+						group.max_entry_id,
+						Number(group.max_sequence_number),
+						Number(group.entry_count),
+					],
 				);
 
 				totalProcessed += entryIds.length;
 			}
 		})
 		.catch((error) => {
-			// On failure, the entire transaction rolls back — all entries remain
-			// pending and will be retried on the next cycle.
+			// On failure, the entire transaction rolls back -- watermarks remain
+			// unchanged and entries will be retried on the next cycle.
 			const errorMessage = error instanceof Error ? error.message : String(error);
 			ctx.logger.error("Hot account batch processing failed", { error: errorMessage });
 		});
 
 	return totalProcessed;
 }
-
-// =============================================================================
-// CLEANUP PROCESSED HOT ENTRIES
-// =============================================================================
-
-async function cleanupProcessedHotEntries(
-	ctx: SummaContext,
-	retentionHours: number,
-): Promise<number> {
-	const { dialect } = ctx;
-	const t = createTableResolver(ctx.options.schema);
-	const deleted = await ctx.adapter.rawMutate(
-		`DELETE FROM ${t("hot_account_entry")}
-     WHERE processed_at IS NOT NULL
-       AND processed_at < ${dialect.now()} - ${dialect.interval("1 hour")} * $1`,
-		[retentionHours],
-	);
-
-	return deleted;
-}
-
-// =============================================================================
-// GET HOT ACCOUNT STATS
-// =============================================================================
 
 // =============================================================================
 // GET REALTIME BALANCE (committed + pending)
@@ -266,13 +288,16 @@ export interface RealtimeBalance {
 	pendingDelta: number;
 	realtimeBalance: number;
 	pendingEntryCount: number;
-	lastFlushAt: string | null;
+	lastAggregatedAt: string | null;
 }
 
 /**
- * Get the realtime balance for a system account, including pending hot entries.
- * Returns committed_balance + SUM(pending hot_account_entry amounts).
- * This eliminates the 30s stale window between batch flushes.
+ * Get the realtime balance for a system account, including unaggregated entries.
+ *
+ * In v2 the account balance is on the `account` table. The hot-accounts plugin
+ * periodically aggregates entries into that balance. Between aggregation cycles,
+ * some entries may exist that haven't been folded in yet. This function returns
+ * the committed balance + the pending delta from those unaggregated entries.
  */
 export async function getRealtimeBalance(
 	ctx: SummaContext,
@@ -281,30 +306,29 @@ export async function getRealtimeBalance(
 	const t = createTableResolver(ctx.options.schema);
 	const ledgerId = getLedgerId(ctx);
 
-	// Single query: committed balance from latest system_account_version + pending hot entries sum
+	// Single query: committed balance from account + pending unaggregated entries sum
 	const rows = await ctx.adapter.raw<{
 		committed_balance: number | null;
 		pending_delta: number | null;
 		pending_count: number;
-		last_flush_at: string | null;
+		last_aggregated_at: string | null;
 	}>(
 		`SELECT
-			v.balance AS committed_balance,
-			h.pending_delta,
-			COALESCE(h.pending_count, 0)::int AS pending_count,
-			v.created_at::text AS last_flush_at
-		 FROM ${t("system_account")} sa
+			a.balance AS committed_balance,
+			p.pending_delta,
+			COALESCE(p.pending_count, 0)::int AS pending_count,
+			w.updated_at::text AS last_aggregated_at
+		 FROM ${t("account")} a
+		 LEFT JOIN ${t("hot_account_watermark")} w ON w.account_id = a.id
 		 LEFT JOIN LATERAL (
-			 SELECT balance, created_at
-			 FROM ${t("system_account_version")}
-			 WHERE account_id = sa.id ORDER BY version DESC LIMIT 1
-		 ) v ON true
-		 LEFT JOIN LATERAL (
-			 SELECT SUM(amount)::bigint AS pending_delta, COUNT(*)::int AS pending_count
-			 FROM ${t("hot_account_entry")}
-			 WHERE account_id = sa.id AND status = 'pending'
-		 ) h ON true
-		 WHERE sa.ledger_id = $1 AND sa.identifier = $2`,
+			 SELECT
+				 SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE -e.amount END)::bigint AS pending_delta,
+				 COUNT(*)::int AS pending_count
+			 FROM ${t("entry")} e
+			 WHERE e.account_id = a.id
+			   AND e.sequence_number > COALESCE(w.last_sequence_number, 0)
+		 ) p ON true
+		 WHERE a.ledger_id = $1 AND a.system_identifier = $2 AND a.is_system = true`,
 		[ledgerId, systemAccountIdentifier],
 	);
 
@@ -321,7 +345,7 @@ export async function getRealtimeBalance(
 		pendingDelta: pending,
 		realtimeBalance: committed + pending,
 		pendingEntryCount: Number(row.pending_count),
-		lastFlushAt: row.last_flush_at,
+		lastAggregatedAt: row.last_aggregated_at,
 	};
 }
 
@@ -331,32 +355,41 @@ export async function getRealtimeBalance(
 
 export async function getHotAccountStats(ctx: SummaContext): Promise<HotAccountStats> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{
-		status: string;
-		count: number;
-	}>(
-		`SELECT status, ${ctx.dialect.countAsInt()} AS count
-     FROM ${t("hot_account_entry")}
-     GROUP BY status`,
-		[],
+	const ledgerId = getLedgerId(ctx);
+
+	// Count unaggregated (pending) entries: entries for system accounts beyond watermark
+	const pendingRows = await ctx.adapter.raw<{ count: number }>(
+		`SELECT ${ctx.dialect.countAsInt()} AS count
+     FROM ${t("entry")} e
+     INNER JOIN ${t("account")} a ON a.id = e.account_id
+     LEFT JOIN ${t("hot_account_watermark")} w ON w.account_id = e.account_id
+     WHERE a.ledger_id = $1
+       AND a.is_system = true
+       AND e.sequence_number > COALESCE(w.last_sequence_number, 0)`,
+		[ledgerId],
 	);
 
-	const stats: HotAccountStats = { pending: 0, processed: 0, failedSequences: 0 };
+	// Count aggregated entries from watermark totals
+	const aggregatedRows = await ctx.adapter.raw<{ total: number }>(
+		`SELECT COALESCE(SUM(entries_aggregated), 0)::bigint AS total
+     FROM ${t("hot_account_watermark")} w
+     INNER JOIN ${t("account")} a ON a.id = w.account_id
+     WHERE a.ledger_id = $1 AND a.is_system = true`,
+		[ledgerId],
+	);
 
-	for (const row of rows) {
-		if (row.status === "pending") stats.pending = Number(row.count);
-		else if (row.status === "processed") stats.processed = Number(row.count);
-	}
-
-	// Count failed sequences separately from the dedicated table
+	// Count failed sequences
 	const failedRows = await ctx.adapter.raw<{ count: number }>(
-		`SELECT ${ctx.dialect.countAsInt()} AS count FROM ${t("hot_account_failed_sequence")}`,
-		[],
+		`SELECT ${ctx.dialect.countAsInt()} AS count
+     FROM ${t("hot_account_failed_sequence")} f
+     INNER JOIN ${t("account")} a ON a.id = f.account_id
+     WHERE a.ledger_id = $1 AND a.is_system = true`,
+		[ledgerId],
 	);
 
-	if (failedRows[0]) {
-		stats.failedSequences = Number(failedRows[0].count);
-	}
-
-	return stats;
+	return {
+		pending: Number(pendingRows[0]?.count ?? 0),
+		aggregated: Number(aggregatedRows[0]?.total ?? 0),
+		failedSequences: Number(failedRows[0]?.count ?? 0),
+	};
 }

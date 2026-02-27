@@ -1,12 +1,16 @@
 ---
 title: Immutability Architecture
-description: Summa's append-only design — every state change creates a new row, enforced at the application, database, and cryptographic layers.
+description: Summa's integrity architecture — entries are the immutable source of truth, balances are mutable with checksum protection.
 icon: Map
 ---
 
 ## Overview
 
-This document describes Summa's immutability architecture. Core financial tables use an **append-only design** — every state change creates a new row instead of updating in place. This matches the immutability guarantees of purpose-built financial databases, while retaining the flexibility of PostgreSQL.
+This document describes Summa's integrity architecture. The design follows a TigerBeetle-inspired philosophy: **entries are the immutable source of truth**, while balances are mutable projections protected by HMAC checksums and optimistic locking.
+
+<Callout type="info" title="v2 Architecture">
+  Summa v2 simplified the data model from 17 core tables to 10. The append-only version tables (`account_balance_version`, `system_account_version`, `transaction_status`) were removed. Instead, the `entry` table serves as both the double-entry journal and the tamper-proof event log (with per-account hash chains). The `account` table has mutable balance fields protected by HMAC checksums. The historical content below documents the v1 approach for reference — v2 achieves the same security guarantees with fewer tables.
+</Callout>
 
 Each section describes the design rationale, implementation approach, and impact.
 
@@ -206,11 +210,9 @@ Immutability was enforced only at the application layer. A direct SQL connection
 An `IMMUTABLE_MODELS` set in the adapter wrapper (`internal-adapter.ts`) throws an error if any code path attempts to call `update()` or `delete()` on an immutable model. This catches bugs during development.
 
 ```ts
+// v2 immutable models
 const IMMUTABLE_MODELS = new Set([
-  'account_balance', 'account_balance_version',
-  'system_account', 'system_account_version',
-  'transaction_record', 'transaction_status',
-  'entry_record', 'ledger_event', 'block_checkpoint',
+  'entry', 'block_checkpoint', 'merkle_node',
   'entity_status_log',
 ]);
 ```
@@ -234,9 +236,9 @@ Applied to all immutable tables. To modify the data, an attacker would need to f
 PostgreSQL RLS policies with `FORCE` enabled deny UPDATE and DELETE operations even for table owners. This is available as an optional additional layer of protection:
 
 ```sql
-ALTER TABLE ledger_event ENABLE ROW LEVEL SECURITY;
-ALTER TABLE ledger_event FORCE ROW LEVEL SECURITY;
-CREATE POLICY ledger_event_insert ON ledger_event FOR INSERT WITH CHECK (true);
+ALTER TABLE entry ENABLE ROW LEVEL SECURITY;
+ALTER TABLE entry FORCE ROW LEVEL SECURITY;
+CREATE POLICY entry_insert ON entry FOR INSERT WITH CHECK (true);
 -- No UPDATE or DELETE policy = denied by default
 ```
 

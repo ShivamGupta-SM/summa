@@ -137,7 +137,7 @@ Manage event store partitioning. Has two subcommands.
 
 #### `summa partition generate`
 
-Generate SQL for converting `ledger_event` to a PostgreSQL range-partitioned table. Does NOT auto-execute — writes a SQL file for manual review.
+Generate SQL for converting the `entry` table to a PostgreSQL range-partitioned table. Does NOT auto-execute — writes a SQL file for manual review.
 
 ```bash
 npx summa partition generate
@@ -165,7 +165,7 @@ The generated SQL includes:
 
 #### `summa partition status`
 
-Show current partition status for `ledger_event`.
+Show current partition status for the `entry` table.
 
 ```bash
 npx summa partition status
@@ -178,7 +178,7 @@ npx summa partition status --url postgres://...
 | `--schema <schema>` | PostgreSQL schema name (default: `summa`) |
 
 Displays:
-- Whether `ledger_event` is partitioned (checks `pg_class.relkind`)
+- Whether `entry` is partitioned (checks `pg_class.relkind`)
 - List of child partitions with estimated row counts and sizes
 - Guidance on next steps if not yet partitioned
 
@@ -231,7 +231,7 @@ npx summa verify --full
 - Event hash chain per aggregate (samples up to 50 aggregates by default; use `--full` to audit every aggregate)
 
 **Trigger checks** (`--triggers`):
-- Verifies that `trg_immutable_*` triggers exist on all 11 immutable core tables (`account_balance`, `account_balance_version`, `system_account`, `system_account_version`, `transaction_record`, `transaction_status`, `entry_record`, `ledger_event`, `block_checkpoint`, `merkle_node`, `entity_status_log`)
+- Verifies that `trg_immutable_*` triggers exist on all immutable core tables (`entry`, `block_checkpoint`, `merkle_node`, `entity_status_log`)
 - Reports missing triggers as failures
 
 Shows a summary at the end: `3 passed / 0 failed / 1 skipped`
@@ -282,7 +282,7 @@ Checks performed:
 | **`.env` files** | Checks for `.env`, `.env.local`, `.env.development`, `.env.production` |
 | **Database connection** | TCP connectivity to PostgreSQL |
 | **Schema existence** | Target schema exists in the database |
-| **Core tables** | `account_balance`, `transaction_record`, `entry_record`, `ledger_event` |
+| **Core tables** | `account`, `transfer`, `entry`, `block_checkpoint` |
 | **Migration count** | Number of applied migrations and freshness |
 | **Immutability triggers** | Count of `trg_immutable_*` triggers on financial tables |
 

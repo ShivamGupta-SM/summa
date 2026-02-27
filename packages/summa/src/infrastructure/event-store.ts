@@ -1,12 +1,14 @@
 // =============================================================================
-// EVENT STORE -- Core event sourcing engine
+// EVENT STORE -- Entry-based event sourcing
 // =============================================================================
-// Append-only event log with hash chain integrity.
-// All state mutations produce immutable events.
+// In v2, entries ARE events. The entry table carries hash chain fields directly.
+// This module provides:
+//   1. Transaction timeout wrapper (withTransactionTimeout)
+//   2. Entry query functions that replace the old event store queries
+//   3. Hash verification on read
 
-import { randomUUID, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import type {
-	AppendEventParams,
 	StoredEvent,
 	SummaContext,
 	SummaTransactionAdapter,
@@ -17,8 +19,6 @@ import { createTableResolver, runWithTransactionContext } from "@summa-ledger/co
 // =============================================================================
 // TRANSACTION TIMEOUT WRAPPER
 // =============================================================================
-// Prevents long-running transactions from blocking operations.
-// Supports configurable retry with exponential backoff on lock contention.
 
 export async function withTransactionTimeout<T>(
 	ctx: SummaContext,
@@ -26,8 +26,6 @@ export async function withTransactionTimeout<T>(
 	options?: { statementTimeoutMs?: number; lockTimeoutMs?: number },
 ): Promise<T> {
 	const { advanced } = ctx.options;
-	// In optimistic mode, use optimisticRetryCount (default 3) for version conflict retries.
-	// In pessimistic modes, use lockRetryCount (default 0).
 	const retryCount =
 		advanced.lockMode === "optimistic" ? advanced.optimisticRetryCount : advanced.lockRetryCount;
 	const baseDelay = advanced.lockRetryBaseDelayMs;
@@ -52,7 +50,6 @@ export async function withTransactionTimeout<T>(
 		}
 	}
 
-	// Unreachable — loop always returns or throws
 	throw new Error("Unexpected: retry loop exited without result");
 }
 
@@ -69,9 +66,6 @@ async function executeTransaction<T>(
 	return await runWithTransactionContext(
 		() =>
 			ctx.adapter.transaction(async (tx) => {
-				// Set isolation level for financial consistency
-				// REPEATABLE READ prevents dirty reads and non-repeatable reads,
-				// ensuring balance checks are consistent within the transaction.
 				await tx.raw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", []);
 
 				const safeStatementTimeout = Number(statementTimeout);
@@ -94,14 +88,9 @@ async function executeTransaction<T>(
 	);
 }
 
-/**
- * Check if a database error is retryable (lock contention, serialization failure, deadlock).
- * PostgreSQL error codes: 55P03 (lock_not_available), 40001 (serialization_failure), 40P01 (deadlock_detected)
- */
 function isRetryableError(err: unknown): boolean {
 	if (!(err instanceof Error)) return false;
 	const msg = err.message;
-	// Check for PG error codes embedded in error messages
 	if (msg.includes("55P03") || msg.includes("lock_not_available")) return true;
 	if (
 		msg.includes("40001") ||
@@ -110,14 +99,10 @@ function isRetryableError(err: unknown): boolean {
 	)
 		return true;
 	if (msg.includes("40P01") || msg.includes("deadlock")) return true;
-	// Check for lock timeout messages
 	if (msg.includes("lock timeout") || msg.includes("canceling statement due to lock timeout"))
 		return true;
-	// Unique constraint violation (23505) — retryable in optimistic lock mode
-	// when two transactions race to insert the same account_balance_version
 	if (msg.includes("23505") || msg.includes("unique_violation") || msg.includes("duplicate key"))
 		return true;
-	// Check for code property on error (common in pg drivers)
 	if ("code" in err) {
 		const code = (err as { code: string }).code;
 		if (code === "55P03" || code === "40001" || code === "40P01" || code === "23505") return true;
@@ -129,189 +114,67 @@ function isRetryableError(err: unknown): boolean {
 // HASH VERIFICATION
 // =============================================================================
 
-/** Verify a single event's hash against its stored data. Throws on mismatch. */
-function verifyEventHash(
-	eventData: Record<string, unknown>,
+/** Verify a single entry's hash against its stored data. Throws on mismatch. */
+function verifyEntryHash(
+	entryData: Record<string, unknown>,
 	storedHash: string,
 	prevHash: string | null,
 	hmacSecret: string | null,
 ): void {
-	const expected = computeHash(prevHash, eventData, hmacSecret);
+	const expected = computeHash(prevHash, entryData, hmacSecret);
 	if (
 		expected.length !== storedHash.length ||
 		!timingSafeEqual(Buffer.from(expected), Buffer.from(storedHash))
 	) {
 		throw SummaError.chainIntegrityViolation(
-			"Hash mismatch detected: event data may have been tampered with",
+			"Hash mismatch detected: entry data may have been tampered with",
 		);
 	}
 }
 
 // =============================================================================
-// APPEND EVENT
+// QUERY ENTRIES (replaces old event queries)
 // =============================================================================
 
-/**
- * Append an event to the event store within a transaction.
- * Computes hash chain automatically.
- *
- * @param tx - Transaction adapter
- * @param params - Event parameters
- * @param schema - PostgreSQL schema name
- * @param hmacSecret - HMAC secret for tamper-proof hashing (null = plain SHA-256)
- * @param ledgerId - Ledger ID for multi-tenant isolation
- * @returns The stored event with computed fields
- */
-const MAX_VERSION_RETRIES = 3;
-
-export async function appendEvent(
-	tx: SummaTransactionAdapter,
-	params: AppendEventParams,
-	schema = "public",
-	hmacSecret: string | null = null,
-	ledgerId?: string,
-): Promise<StoredEvent> {
-	const t = createTableResolver(schema);
-	const correlationId = params.correlationId ?? randomUUID();
-
-	// Retry loop handles the rare case where two concurrent transactions
-	// compute the same aggregateVersion. The unique constraint
-	// (uq_ledger_event_aggregate_version) blocks one; we retry with
-	// the correct version to avoid gaps.
-	for (let attempt = 0; attempt < MAX_VERSION_RETRIES; attempt++) {
-		// Get the latest event for this aggregate to compute version + hash chain
-		const latestRows = await tx.raw<{
-			aggregate_version: number;
-			hash: string;
-		}>(
-			`SELECT aggregate_version, hash
-       FROM ${t("ledger_event")}
-       WHERE ledger_id = $1
-         AND aggregate_type = $2
-         AND aggregate_id = $3
-       ORDER BY aggregate_version DESC
-       LIMIT 1`,
-			[ledgerId ?? null, params.aggregateType, params.aggregateId],
-		);
-
-		const latestEvent = latestRows[0];
-		const aggregateVersion = latestEvent ? Number(latestEvent.aggregate_version) + 1 : 1;
-		const prevHash = latestEvent?.hash ?? null;
-
-		// Compute hash -- always enabled, no feature flag.
-		// Hash chain is critical for tamper detection and MUST NOT be disabled.
-		// Uses HMAC-SHA256 when secret is provided for tamper-proof integrity.
-		const hash = computeHash(prevHash, params.eventData, hmacSecret);
-
-		const eventId = randomUUID();
-
-		try {
-			const insertedRows = await tx.raw<{
-				id: string;
-				sequence_number: number;
-				aggregate_type: string;
-				aggregate_id: string;
-				aggregate_version: number;
-				event_type: string;
-				event_data: Record<string, unknown>;
-				correlation_id: string;
-				hash: string;
-				prev_hash: string | null;
-				created_at: string | Date;
-			}>(
-				`INSERT INTO ${t("ledger_event")} (id, ledger_id, aggregate_type, aggregate_id, aggregate_version, event_type, event_data, correlation_id, hash, prev_hash)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-         RETURNING *`,
-				[
-					eventId,
-					ledgerId ?? null,
-					params.aggregateType,
-					params.aggregateId,
-					aggregateVersion,
-					params.eventType,
-					JSON.stringify(params.eventData),
-					correlationId,
-					hash,
-					prevHash,
-				],
-			);
-
-			const inserted = insertedRows[0]!;
-
-			return {
-				id: inserted.id,
-				sequenceNumber: Number(inserted.sequence_number),
-				aggregateType: inserted.aggregate_type,
-				aggregateId: inserted.aggregate_id,
-				aggregateVersion: Number(inserted.aggregate_version),
-				eventType: inserted.event_type,
-				eventData: (typeof inserted.event_data === "string"
-					? JSON.parse(inserted.event_data)
-					: inserted.event_data) as Record<string, unknown>,
-				correlationId: inserted.correlation_id,
-				hash: inserted.hash,
-				prevHash: inserted.prev_hash,
-				createdAt: new Date(inserted.created_at),
-			};
-		} catch (error) {
-			// Check if this is a unique constraint violation on version
-			const msg = error instanceof Error ? error.message : String(error);
-			if (msg.includes("uq_ledger_event_aggregate_version") && attempt < MAX_VERSION_RETRIES - 1) {
-				// Re-read immediately without sleeping inside the transaction.
-				continue;
-			}
-			throw error;
-		}
-	}
-
-	throw new Error(
-		`Failed to append event after ${MAX_VERSION_RETRIES} retries (version collision)`,
-	);
+interface RawEntryEventRow {
+	id: string;
+	sequence_number: number;
+	account_id: string;
+	transfer_id: string;
+	entry_type: string;
+	amount: number;
+	currency: string;
+	balance_before: number | null;
+	balance_after: number | null;
+	account_version: number | null;
+	hash: string;
+	prev_hash: string | null;
+	created_at: string | Date;
 }
 
-// =============================================================================
-// QUERY EVENTS
-// =============================================================================
-
 /**
- * Get all events for an aggregate, ordered by version.
- * When verifyHashOnRead is enabled, verifies the full hash chain.
+ * Get all entries for an account, ordered by sequence.
+ * When verifyEntryHashOnRead is enabled, verifies the full hash chain.
  */
-export async function getEvents(
+export async function getEntriesForAccount(
 	ctx: SummaContext,
-	aggregateType: string,
-	aggregateId: string,
-	ledgerId: string,
+	accountId: string,
 ): Promise<StoredEvent[]> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{
-		id: string;
-		sequence_number: number;
-		aggregate_type: string;
-		aggregate_id: string;
-		aggregate_version: number;
-		event_type: string;
-		event_data: Record<string, unknown>;
-		correlation_id: string;
-		hash: string;
-		prev_hash: string | null;
-		created_at: string | Date;
-	}>(
-		`SELECT * FROM ${t("ledger_event")}
-     WHERE ledger_id = $1
-       AND aggregate_type = $2
-       AND aggregate_id = $3
-     ORDER BY aggregate_version ASC`,
-		[ledgerId, aggregateType, aggregateId],
+	const rows = await ctx.adapter.raw<RawEntryEventRow>(
+		`SELECT * FROM ${t("entry")}
+     WHERE account_id = $1
+     ORDER BY sequence_number ASC`,
+		[accountId],
 	);
 
-	const events = rows.map(rowToStoredEvent);
+	const events = rows.map(entryRowToStoredEvent);
 
-	if (ctx.options.advanced.verifyHashOnRead && events.length > 0) {
+	if (ctx.options.advanced.verifyEntryHashOnRead && events.length > 0) {
 		const hmacSecret = ctx.options.advanced.hmacSecret;
 		let prevHash: string | null = null;
 		for (const event of events) {
-			verifyEventHash(event.eventData, event.hash, prevHash, hmacSecret);
+			verifyEntryHash(event.eventData, event.hash, prevHash, hmacSecret);
 			prevHash = event.hash;
 		}
 	}
@@ -320,121 +183,112 @@ export async function getEvents(
 }
 
 /**
+ * Get entries by transfer ID (all entries from a single transaction).
+ */
+export async function getEntriesByTransfer(
+	ctx: SummaContext,
+	transferId: string,
+): Promise<StoredEvent[]> {
+	const t = createTableResolver(ctx.options.schema);
+	const rows = await ctx.adapter.raw<RawEntryEventRow>(
+		`SELECT * FROM ${t("entry")}
+     WHERE transfer_id = $1
+     ORDER BY sequence_number ASC`,
+		[transferId],
+	);
+
+	return rows.map(entryRowToStoredEvent);
+}
+
+// =============================================================================
+// BACKWARD COMPAT — Event query functions mapped to entry table
+// =============================================================================
+
+/**
+ * Get all events for an aggregate. In v2, aggregate_type maps to account_id queries.
+ * For transaction aggregates, we query by transfer_id. For account aggregates, by account_id.
+ */
+export async function getEvents(
+	ctx: SummaContext,
+	aggregateType: string,
+	aggregateId: string,
+	_ledgerId: string,
+): Promise<StoredEvent[]> {
+	if (aggregateType === "account") {
+		return getEntriesForAccount(ctx, aggregateId);
+	}
+	// For transaction aggregates, query entries by transfer_id
+	return getEntriesByTransfer(ctx, aggregateId);
+}
+
+/**
  * Get the latest event for an aggregate.
- * When verifyHashOnRead is enabled, verifies the event's hash.
  */
 export async function getLatestEvent(
 	ctx: SummaContext,
 	aggregateType: string,
 	aggregateId: string,
-	ledgerId: string,
+	_ledgerId: string,
 ): Promise<StoredEvent | null> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{
-		id: string;
-		sequence_number: number;
-		aggregate_type: string;
-		aggregate_id: string;
-		aggregate_version: number;
-		event_type: string;
-		event_data: Record<string, unknown>;
-		correlation_id: string;
-		hash: string;
-		prev_hash: string | null;
-		created_at: string | Date;
-	}>(
-		`SELECT * FROM ${t("ledger_event")}
-     WHERE ledger_id = $1
-       AND aggregate_type = $2
-       AND aggregate_id = $3
-     ORDER BY aggregate_version DESC
+
+	const column = aggregateType === "account" ? "account_id" : "transfer_id";
+	const rows = await ctx.adapter.raw<RawEntryEventRow>(
+		`SELECT * FROM ${t("entry")}
+     WHERE ${column} = $1
+     ORDER BY sequence_number DESC
      LIMIT 1`,
-		[ledgerId, aggregateType, aggregateId],
+		[aggregateId],
 	);
 
 	const row = rows[0];
 	if (!row) return null;
-
-	const event = rowToStoredEvent(row);
-
-	if (ctx.options.advanced.verifyHashOnRead) {
-		verifyEventHash(event.eventData, event.hash, event.prevHash, ctx.options.advanced.hmacSecret);
-	}
-
-	return event;
+	return entryRowToStoredEvent(row);
 }
 
 /**
- * Get events by correlation ID (all events from a single command).
- * When verifyHashOnRead is enabled, verifies each event's hash individually.
+ * Get entries by correlation ID (from the transfer's correlation_id field).
+ * In v2, entries don't have their own correlation_id — it lives on the transfer.
  */
 export async function getEventsByCorrelation(
 	ctx: SummaContext,
 	correlationId: string,
-	ledgerId: string,
+	_ledgerId: string,
 ): Promise<StoredEvent[]> {
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.adapter.raw<{
-		id: string;
-		sequence_number: number;
-		aggregate_type: string;
-		aggregate_id: string;
-		aggregate_version: number;
-		event_type: string;
-		event_data: Record<string, unknown>;
-		correlation_id: string;
-		hash: string;
-		prev_hash: string | null;
-		created_at: string | Date;
-	}>(
-		`SELECT * FROM ${t("ledger_event")}
-     WHERE ledger_id = $1
-       AND correlation_id = $2
-     ORDER BY sequence_number ASC`,
-		[ledgerId, correlationId],
+	const rows = await ctx.adapter.raw<RawEntryEventRow>(
+		`SELECT e.* FROM ${t("entry")} e
+     JOIN ${t("transfer")} tr ON e.transfer_id = tr.id
+     WHERE tr.correlation_id = $1
+     ORDER BY e.sequence_number ASC`,
+		[correlationId],
 	);
 
-	const events = rows.map(rowToStoredEvent);
-
-	if (ctx.options.advanced.verifyHashOnRead) {
-		const hmacSecret = ctx.options.advanced.hmacSecret;
-		for (const event of events) {
-			// Verify each event individually (not chain — events may span aggregates)
-			verifyEventHash(event.eventData, event.hash, event.prevHash, hmacSecret);
-		}
-	}
-
-	return events;
+	return rows.map(entryRowToStoredEvent);
 }
 
 // =============================================================================
 // HELPERS
 // =============================================================================
 
-function rowToStoredEvent(row: {
-	id: string;
-	sequence_number: number;
-	aggregate_type: string;
-	aggregate_id: string;
-	aggregate_version: number;
-	event_type: string;
-	event_data: Record<string, unknown>;
-	correlation_id: string;
-	hash: string;
-	prev_hash: string | null;
-	created_at: string | Date;
-}): StoredEvent {
+function entryRowToStoredEvent(row: RawEntryEventRow): StoredEvent {
 	return {
 		id: row.id,
 		sequenceNumber: Number(row.sequence_number),
-		aggregateType: row.aggregate_type,
-		aggregateId: row.aggregate_id,
-		aggregateVersion: Number(row.aggregate_version),
-		eventType: row.event_type,
-		eventData: (typeof row.event_data === "string"
-			? JSON.parse(row.event_data)
-			: row.event_data) as Record<string, unknown>,
-		correlationId: row.correlation_id,
+		aggregateType: "entry",
+		aggregateId: row.account_id,
+		aggregateVersion: Number(row.account_version ?? row.sequence_number),
+		eventType: `entry:${row.entry_type.toLowerCase()}`,
+		eventData: {
+			transferId: row.transfer_id,
+			accountId: row.account_id,
+			entryType: row.entry_type,
+			amount: Number(row.amount),
+			currency: row.currency,
+			balanceBefore: row.balance_before != null ? Number(row.balance_before) : null,
+			balanceAfter: row.balance_after != null ? Number(row.balance_after) : null,
+		},
+		correlationId: row.transfer_id,
 		hash: row.hash,
 		prevHash: row.prev_hash,
 		createdAt: new Date(row.created_at),

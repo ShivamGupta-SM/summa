@@ -6,7 +6,7 @@ icon: TableCells
 
 ## Overview
 
-The statements plugin generates **account statements** for any date range. It combines entry records and transaction data to produce line-item statements with computed summaries (opening/closing balance, totals). Supports JSON, CSV, and PDF output formats.
+The statements plugin generates **account statements** for any date range. It combines entries and transfer data to produce line-item statements with computed summaries (opening/closing balance, totals). Supports JSON, CSV, and PDF output formats.
 
 For large statements, use the **async background generation** feature to avoid request timeouts — submit a job and poll for the result.
 
@@ -322,7 +322,7 @@ interface StatementResult {
 
 ## Notes
 
-- The plugin creates a `statement_job` table for async generation. Other queries use existing `entry_record`, `transaction_record`, and `account_balance` tables.
+- The plugin creates a `statement_job` table for async generation. Other queries use existing `entry`, `transfer`, and `account` tables.
 - Default date range is the last 30 days if `dateFrom`/`dateTo` are not specified
 - CSV and PDF formats fetch all entries (no pagination limit) in 500-row batches
 - JSON format respects `page`/`perPage` with a maximum of 500 entries per page

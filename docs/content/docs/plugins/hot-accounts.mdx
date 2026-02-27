@@ -24,7 +24,7 @@ const summa = createSumma({
 ```
 
 <Callout type="warn" title="Required when using system accounts">
-  If you configure `systemAccounts` (e.g., `@World`, `@Fees`), Summa logs a startup warning if the hot accounts plugin is not registered. System accounts typically receive high transaction volume and benefit significantly from optimistic concurrency. While the warning is non-blocking, registering this plugin is strongly recommended for production deployments with system accounts.
+  If you configure system accounts (accounts with `is_system = true`, e.g., `@World`, `@Fees`), Summa logs a startup warning if the hot accounts plugin is not registered. System accounts typically receive high transaction volume and benefit significantly from optimistic concurrency. While the warning is non-blocking, registering this plugin is strongly recommended for production deployments with system accounts.
 </Callout>
 
 ## Configuration
@@ -32,38 +32,38 @@ const summa = createSumma({
 ```ts
 hotAccounts({
   batchSize: 1000,          // Entries processed per aggregation batch (default: 1000)
-  retentionHours: 24,       // Keep processed entries for 24 hours (default)
+  retentionHours: 24,       // Keep watermark history for 24 hours (default)
 })
 ```
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `batchSize` | `number` | `1000` | Hot entries processed per aggregation batch |
-| `retentionHours` | `number` | `24` | Hours to retain processed hot account entries |
+| `batchSize` | `number` | `1000` | Entries processed per aggregation batch |
+| `retentionHours` | `number` | `24` | Hours to retain watermark history for replay safety |
 
 ## How It Works
 
-1. Transactions to hot accounts write to a `hot_account_entry` staging table instead of directly updating the account balance
+1. Transactions to hot accounts write entries to the `entry` table without immediately updating the `account` balance
 2. This avoids row-level lock contention — many concurrent transactions can write simultaneously
-3. A background worker periodically aggregates pending entries and applies the net balance change to the account
-4. The reconciliation plugin includes hot entries in its balance verification
+3. A background worker uses watermark-based batching to periodically aggregate pending entries and applies the net balance change to the `account` row
+4. The reconciliation plugin includes pending entries in its balance verification
 
 ## How Accounts Become Hot
 
-Hot account detection is **automatic**. When an account exceeds `advanced.hotAccountThreshold` transactions per minute (default: 1000), the core transaction pipeline routes subsequent writes through the `hot_account_entry` staging table instead of directly updating the account balance.
+Hot account detection is **automatic**. When an account exceeds `advanced.hotAccountThreshold` transactions per minute (default: 1000), the core transaction pipeline defers balance updates on the `account` row and relies on watermark-based batching to aggregate pending entries from the `entry` table.
 
 No manual marking is needed — accounts transition to the hot path transparently based on traffic patterns.
 
 ## Realtime Balance
 
-System account balances are updated every flush cycle (~30s). If you need the up-to-the-moment balance including unflushed hot entries, use `getRealtimeBalance()`:
+System account (accounts with `is_system = true` in the unified `account` table) balances are updated every flush cycle (~30s). If you need the up-to-the-moment balance including unflushed entries, use `getRealtimeBalance()`:
 
 ```ts
 import { getRealtimeBalance } from "@summa-ledger/summa/plugins";
 
 const balance = await getRealtimeBalance(summa.$context, "@Fees");
-console.log(balance.committedBalance);   // Last flushed balance
-console.log(balance.pendingDelta);       // SUM of unflushed hot entries
+console.log(balance.committedBalance);   // Last flushed balance on the account row
+console.log(balance.pendingDelta);       // SUM of unflushed entries past the watermark
 console.log(balance.realtimeBalance);    // committedBalance + pendingDelta
 console.log(balance.pendingEntryCount);  // Number of unflushed entries
 console.log(balance.lastFlushAt);        // ISO timestamp of last flush (or null)
@@ -74,7 +74,7 @@ This runs a single CTE query — no extra round-trips. The `realtimeBalance` fie
 Also available via API:
 
 ```
-GET /system-accounts/:identifier/realtime-balance
+GET /accounts/:identifier/realtime-balance
 ```
 
 ### `RealtimeBalance` type

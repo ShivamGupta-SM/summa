@@ -43,7 +43,7 @@ npx summa generate --adapter kysely --out src/db/summa-types.ts
 This outputs typed interfaces and a `Database` type you can merge with your own Kysely database type. If you have plugins configured in your `summa.config.ts`, the generated types include their tables too.
 
 ```ts title="src/db/summa-types.ts (generated)"
-export interface AccountBalanceTable {
+export interface AccountTable {
   id: string;
   holder_id: string;
   holder_type: string;
@@ -52,7 +52,7 @@ export interface AccountBalanceTable {
   // ... more columns
 }
 
-export interface TransactionRecordTable {
+export interface TransferTable {
   id: string;
   source_holder_id: string;
   destination_holder_id: string;
@@ -64,8 +64,8 @@ export interface TransactionRecordTable {
 
 // Keys are schema-qualified when using a non-public schema (default: "summa")
 export interface Database {
-  "summa.account_balance": AccountBalanceTable;
-  "summa.transaction_record": TransactionRecordTable;
+  "summa.account": AccountTable;
+  "summa.transfer": TransferTable;
   // ... all tables
 }
 ```

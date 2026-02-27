@@ -1,15 +1,16 @@
 // =============================================================================
 // MEGA CTE — Combine all transaction writes into a single SQL round-trip
 // =============================================================================
-// Reduces per-transaction sequential DB round-trips from ~6-7 to 1 (plus 1
-// for the denormalized cache UPDATE). All INSERTs happen atomically via a
-// PostgreSQL CTE chain.
+// v2 reduces per-transaction writes from ~10 to ~5:
+//   1. transfer INSERT (status is a column, no separate transaction_status table)
+//   2. entry INSERT for user account (with hash chain)
+//   3. entry INSERT for system account (hot path, no balance update)
+//   4. account UPDATE for user account (balance + version + checksum)
+//   5. (optional) outbox, idempotency
 //
-// For credit/debit transactions where aggregate_type = "transaction", each
-// transaction is its own event aggregate (version=1, prevHash=null), so no
-// prior event lookup is needed.
+// Removed: transaction_status INSERT, account_balance_version INSERT,
+//          hot_account_entry INSERT, ledger_event INSERT, velocity log INSERT
 
-import { randomUUID } from "node:crypto";
 import type { SummaTransactionAdapter } from "@summa-ledger/core";
 import { computeBalanceChecksum, computeHash } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
@@ -24,7 +25,7 @@ export interface MegaCTEParams {
 	ledgerId: string;
 	hmacSecret: string | null;
 
-	// Transaction record fields
+	// Transfer fields
 	txnType: "credit" | "debit";
 	reference: string;
 	amount: number;
@@ -33,11 +34,9 @@ export interface MegaCTEParams {
 	metadata: Record<string, unknown>;
 	correlationId: string;
 
-	// Account fields
+	// Account fields (unified — no more system account FK columns)
 	sourceAccountId: string | null;
 	destinationAccountId: string | null;
-	sourceSystemAccountId: string | null;
-	destinationSystemAccountId: string | null;
 
 	// Entry + balance update (user account side)
 	userAccountId: string;
@@ -49,29 +48,18 @@ export interface MegaCTEParams {
 	newDebitBalance: number;
 	pendingDebit: number;
 	pendingCredit: number;
-	accountStatus: string;
-	freezeReason: string | null;
-	frozenAt: string | Date | null;
-	frozenBy: string | null;
-	closedAt: string | Date | null;
-	closedBy: string | null;
-	closureReason: string | null;
 
 	// System account entry (hot side)
 	systemAccountId: string;
 	systemEntryType: "CREDIT" | "DEBIT";
 
-	// Event store
-	enableEventSourcing: boolean;
-	eventData: Record<string, unknown>;
+	// Previous hashes for chain continuity (looked up before calling mega CTE)
+	userPrevHash: string | null;
+	systemPrevHash: string | null;
 
 	// Outbox
 	outboxTopic: string;
 	outboxPayload: Record<string, unknown>;
-
-	// Velocity log
-	velocityAccountId: string;
-	velocityTxnType: "credit" | "debit";
 
 	// Idempotency (optional)
 	idempotencyKey?: string;
@@ -88,7 +76,7 @@ export interface MegaCTEParams {
 }
 
 export interface MegaCTEResult {
-	transactionId: string;
+	transferId: string;
 	createdAt: Date;
 	effectiveDate: Date;
 }
@@ -98,17 +86,16 @@ export interface MegaCTEResult {
 // =============================================================================
 
 /**
- * Executes all transaction writes (transaction_record, transaction_status,
- * entry_record, account_balance_version, hot entries, ledger_event, outbox,
- * velocity log, idempotency key) in a single SQL CTE round-trip.
+ * Executes all transaction writes (transfer, entry x2, account UPDATE,
+ * outbox, idempotency) in a single SQL CTE round-trip.
  *
- * Returns the new transaction ID and creation timestamp.
+ * Returns the new transfer ID and creation timestamp.
  */
 export async function executeMegaCTE(params: MegaCTEParams): Promise<MegaCTEResult> {
 	const { tx, schema, ledgerId, hmacSecret } = params;
 	const t = createTableResolver(schema);
 
-	// Pre-compute checksum and event hash in-memory (CPU, not DB)
+	// Pre-compute checksum and entry hashes in-memory (CPU, not DB)
 	const checksum = computeBalanceChecksum(
 		{
 			balance: params.balanceAfter,
@@ -121,15 +108,29 @@ export async function executeMegaCTE(params: MegaCTEParams): Promise<MegaCTEResu
 		hmacSecret,
 	);
 
-	// For aggregate_type = "transaction", each transaction is its own aggregate.
-	// Version is always 1, prevHash is always null.
-	const eventHash = params.enableEventSourcing
-		? computeHash(null, params.eventData, hmacSecret)
-		: null;
+	// User entry hash (per-account chain)
+	const userEntryData = {
+		transferId: "__PENDING__", // placeholder — real ID comes from CTE
+		accountId: params.userAccountId,
+		entryType: params.userEntryType,
+		amount: params.amount,
+		currency: params.currency,
+		balanceBefore: params.balanceBefore,
+		balanceAfter: params.balanceAfter,
+		version: params.newVersion,
+	};
+	const userHash = computeHash(params.userPrevHash, userEntryData, hmacSecret);
 
-	const eventId = randomUUID();
-	const changeType = params.userEntryType === "CREDIT" ? "credit" : "debit";
-	const signedHotAmount = params.systemEntryType === "DEBIT" ? -params.amount : params.amount;
+	// System entry hash (per-account chain, hot path)
+	const systemEntryData = {
+		transferId: "__PENDING__",
+		accountId: params.systemAccountId,
+		entryType: params.systemEntryType,
+		amount: params.amount,
+		currency: params.currency,
+		isHot: true,
+	};
+	const systemHash = computeHash(params.systemPrevHash, systemEntryData, hmacSecret);
 
 	const hasFx = params.originalAmount != null;
 
@@ -144,107 +145,63 @@ export async function executeMegaCTE(params: MegaCTEParams): Promise<MegaCTEResu
 	// --- Build CTE parts ---
 	const cteParts: string[] = [];
 
-	// 1. new_txn: INSERT transaction_record
-	cteParts.push(`new_txn AS (
-    INSERT INTO ${t("transaction_record")} (
-      type, reference, amount, currency, description,
+	// 1. new_transfer: INSERT transfer
+	cteParts.push(`new_transfer AS (
+    INSERT INTO ${t("transfer")} (
+      ledger_id, type, status, reference, amount, currency, description,
       source_account_id, destination_account_id,
-      source_system_account_id, destination_system_account_id,
-      correlation_id, meta_data, ledger_id, effective_date
+      correlation_id, metadata, posted_at, effective_date
     ) VALUES (
-      ${p(params.txnType)}, ${p(params.reference)}, ${p(params.amount)}, ${p(params.currency)}, ${p(params.description)},
+      ${p(ledgerId)}, ${p(params.txnType)}, 'posted', ${p(params.reference)}, ${p(params.amount)}, ${p(params.currency)}, ${p(params.description)},
       ${p(params.sourceAccountId)}, ${p(params.destinationAccountId)},
-      ${p(params.sourceSystemAccountId)}, ${p(params.destinationSystemAccountId)},
-      ${p(params.correlationId)}, ${p(JSON.stringify(params.metadata))}, ${p(ledgerId)},
-      COALESCE(${p(params.effectiveDate ?? null)}::timestamptz, NOW())
+      ${p(params.correlationId)}, ${p(JSON.stringify(params.metadata))},
+      NOW(), COALESCE(${p(params.effectiveDate ?? null)}::timestamptz, NOW())
     ) RETURNING id, created_at, effective_date
   )`);
 
-	// 2. new_status: INSERT transaction_status
-	cteParts.push(`new_status AS (
-    INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-    SELECT id, 'posted', NOW() FROM new_txn
-  )`);
-
-	// 3. new_entry: INSERT entry_record for user account
+	// 2. new_entry: INSERT entry for user account (with hash chain)
 	const entryColsBase =
-		"transaction_id, account_id, entry_type, amount, currency, is_hot_account, balance_before, balance_after, account_lock_version, effective_date";
+		"transfer_id, account_id, entry_type, amount, currency, balance_before, balance_after, account_version, sequence_number, hash, prev_hash, effective_date";
 	const entryCols = hasFx
 		? `${entryColsBase}, original_amount, original_currency, exchange_rate`
 		: entryColsBase;
 
-	const entryValsBase = `id, ${p(params.userAccountId)}, ${p(params.userEntryType)}, ${p(params.amount)}, ${p(params.currency)}, false, ${p(params.balanceBefore)}, ${p(params.balanceAfter)}, ${p(params.newVersion)}, effective_date`;
+	const entryValsBase = `id, ${p(params.userAccountId)}, ${p(params.userEntryType)}, ${p(params.amount)}, ${p(params.currency)}, ${p(params.balanceBefore)}, ${p(params.balanceAfter)}, ${p(params.newVersion)}, nextval('${t("entry")}_sequence_number_seq'), ${p(userHash)}, ${p(params.userPrevHash)}, effective_date`;
 	const entryVals = hasFx
 		? `${entryValsBase}, ${p(params.originalAmount)}, ${p(params.originalCurrency)}, ${p(params.exchangeRate)}`
 		: entryValsBase;
 
 	cteParts.push(`new_entry AS (
-    INSERT INTO ${t("entry_record")} (${entryCols})
-    SELECT ${entryVals} FROM new_txn
+    INSERT INTO ${t("entry")} (${entryCols})
+    SELECT ${entryVals} FROM new_transfer
     RETURNING id
   )`);
 
-	// 4. new_version: INSERT account_balance_version
-	cteParts.push(`new_version AS (
-    INSERT INTO ${t("account_balance_version")} (
-      account_id, version, balance, credit_balance, debit_balance,
-      pending_debit, pending_credit, status, checksum,
-      freeze_reason, frozen_at, frozen_by,
-      closed_at, closed_by, closure_reason,
-      change_type, caused_by_transaction_id
-    ) SELECT
-      ${p(params.userAccountId)}, ${p(params.newVersion)}, ${p(params.balanceAfter)},
-      ${p(params.newCreditBalance)}, ${p(params.newDebitBalance)},
-      ${p(params.pendingDebit)}, ${p(params.pendingCredit)},
-      ${p(params.accountStatus)}, ${p(checksum)},
-      ${p(params.freezeReason)}, ${p(params.frozenAt)}, ${p(params.frozenBy)},
-      ${p(params.closedAt)}, ${p(params.closedBy)}, ${p(params.closureReason)},
-      ${p(changeType)}, id
-    FROM new_txn
+	// 3. new_sys_entry: INSERT entry for system account (hot path, no balance_before/after)
+	cteParts.push(`new_sys_entry AS (
+    INSERT INTO ${t("entry")} (transfer_id, account_id, entry_type, amount, currency, sequence_number, hash, prev_hash, effective_date)
+    SELECT id, ${p(params.systemAccountId)}, ${p(params.systemEntryType)}, ${p(params.amount)}, ${p(params.currency)}, nextval('${t("entry")}_sequence_number_seq'), ${p(systemHash)}, ${p(params.systemPrevHash)}, effective_date
+    FROM new_transfer
   )`);
 
-	// 5. new_hot_entry: INSERT entry_record for system account (hot)
-	cteParts.push(`new_hot_entry AS (
-    INSERT INTO ${t("entry_record")} (transaction_id, system_account_id, entry_type, amount, currency, is_hot_account, effective_date)
-    SELECT id, ${p(params.systemAccountId)}, ${p(params.systemEntryType)}, ${p(params.amount)}, ${p(params.currency)}, true, effective_date
-    FROM new_txn
+	// 4. update_account: UPDATE account balance + version + checksum
+	cteParts.push(`update_account AS (
+    UPDATE ${t("account")} SET
+      balance = ${p(params.balanceAfter)},
+      credit_balance = ${p(params.newCreditBalance)},
+      debit_balance = ${p(params.newDebitBalance)},
+      version = ${p(params.newVersion)},
+      checksum = ${p(checksum)}
+    WHERE id = ${p(params.userAccountId)} AND version = ${p(Number(params.newVersion) - 1)}
   )`);
 
-	// 6. new_hot_account: INSERT hot_account_entry
-	cteParts.push(`new_hot_account AS (
-    INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
-    SELECT ${p(params.systemAccountId)}, ${p(signedHotAmount)}, ${p(params.systemEntryType)}, id, 'pending'
-    FROM new_txn
-  )`);
-
-	// 7. new_event: INSERT ledger_event (if event sourcing enabled)
-	if (params.enableEventSourcing) {
-		cteParts.push(`new_event AS (
-      INSERT INTO ${t("ledger_event")} (
-        id, ledger_id, aggregate_type, aggregate_id, aggregate_version,
-        event_type, event_data, correlation_id, hash, prev_hash
-      ) SELECT
-        ${p(eventId)}, ${p(ledgerId)}, 'transaction', id, 1,
-        'transaction:posted', ${p(JSON.stringify(params.eventData))},
-        ${p(params.correlationId)}, ${p(eventHash)}, NULL
-      FROM new_txn
-    )`);
-	}
-
-	// 8. new_outbox: INSERT outbox event
+	// 5. new_outbox: INSERT outbox event
 	cteParts.push(`new_outbox AS (
     INSERT INTO ${t("outbox")} (topic, payload)
     VALUES (${p(params.outboxTopic)}, ${p(JSON.stringify(params.outboxPayload))})
   )`);
 
-	// 9. new_velocity: INSERT velocity log
-	cteParts.push(`new_velocity AS (
-    INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
-    SELECT ${p(params.velocityAccountId)}, id, ${p(params.velocityTxnType)}, ${p(params.amount)}, ${p((params.metadata as Record<string, unknown>).category ?? params.velocityTxnType)}, ${p(params.reference)}
-    FROM new_txn
-  )`);
-
-	// 10. new_idem: UPSERT idempotency key (optional)
+	// 6. new_idem: UPSERT idempotency key (optional)
 	if (params.idempotencyKey) {
 		const ttl = params.idempotencyTTLSeconds ?? 86400;
 		cteParts.push(`new_idem AS (
@@ -259,7 +216,7 @@ export async function executeMegaCTE(params: MegaCTEParams): Promise<MegaCTEResu
 
 	// Assemble final SQL
 	const sql = `WITH ${cteParts.join(",\n")}
-    SELECT id, created_at, effective_date FROM new_txn`;
+    SELECT id, created_at, effective_date FROM new_transfer`;
 
 	const rows = await tx.raw<{
 		id: string;
@@ -268,62 +225,12 @@ export async function executeMegaCTE(params: MegaCTEParams): Promise<MegaCTEResu
 	}>(sql, sqlParams);
 	const row = rows[0];
 	if (!row) {
-		throw new Error("Mega CTE failed to return transaction record");
+		throw new Error("Mega CTE failed to return transfer record");
 	}
 
 	return {
-		transactionId: row.id,
+		transferId: row.id,
 		createdAt: new Date(row.created_at),
 		effectiveDate: new Date(row.effective_date),
 	};
-}
-
-// =============================================================================
-// DENORMALIZED CACHE UPDATE (separate from CTE due to trigger)
-// =============================================================================
-
-/**
- * Update the denormalized cached_* columns on account_balance.
- * Must be called separately from the mega CTE because account_balance has a
- * column-aware immutability trigger that blocks INSERTs from modifying it.
- */
-export async function updateDenormalizedCache(
-	tx: SummaTransactionAdapter,
-	schema: string,
-	accountId: string,
-	data: {
-		balance: number;
-		creditBalance: number;
-		debitBalance: number;
-		pendingDebit: number;
-		pendingCredit: number;
-		version: number;
-		status: string;
-		checksum: string;
-	},
-): Promise<void> {
-	const t = createTableResolver(schema);
-	await tx.raw(
-		`UPDATE ${t("account_balance")} SET
-		   cached_balance = $1,
-		   cached_credit_balance = $2,
-		   cached_debit_balance = $3,
-		   cached_pending_debit = $4,
-		   cached_pending_credit = $5,
-		   cached_version = $6,
-		   cached_status = $7,
-		   cached_checksum = $8
-		 WHERE id = $9`,
-		[
-			data.balance,
-			data.creditBalance,
-			data.debitBalance,
-			data.pendingDebit,
-			data.pendingCredit,
-			data.version,
-			data.status,
-			data.checksum,
-			accountId,
-		],
-	);
 }

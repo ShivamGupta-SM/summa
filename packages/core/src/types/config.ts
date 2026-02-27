@@ -65,19 +65,13 @@ export interface SummaAdvancedOptions {
 	lockTimeoutMs?: number;
 	/** Maximum single transaction amount. Default: 1_000_000_000_00 */
 	maxTransactionAmount?: number;
-	/** Enable event sourcing. Default: true */
-	enableEventSourcing?: boolean;
-	/** Enable hash chain integrity. Default: true */
-	enableHashChain?: boolean;
 	/** HMAC secret for tamper-proof hash chain. Strongly recommended for production. */
 	hmacSecret?: string;
-	/** Verify event hash integrity on every read. Default: true */
-	verifyHashOnRead?: boolean;
+	/** Verify entry hash integrity on every read. Default: true */
+	verifyEntryHashOnRead?: boolean;
 
 	// --- Performance scaling options ---
 
-	/** Use denormalized balance columns on account_balance for O(1) reads. Default: true */
-	useDenormalizedBalance?: boolean;
 	/** Number of retry attempts when a transaction fails due to lock contention. Default: 0 (no retry) */
 	lockRetryCount?: number;
 	/** Base delay in ms between lock retries (doubled each attempt + jitter). Default: 50 */

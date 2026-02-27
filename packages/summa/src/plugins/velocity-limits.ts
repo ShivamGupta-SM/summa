@@ -1,8 +1,9 @@
 // =============================================================================
 // VELOCITY LIMITS PLUGIN -- Transaction velocity controls as a Summa plugin
 // =============================================================================
-// Wraps the limit-manager enforcement and cleanup logic into a composable
-// plugin with lifecycle hooks and a background worker.
+// Wraps the limit-manager enforcement logic into a composable plugin with
+// lifecycle hooks. In v2 velocity queries run directly against the `entry`
+// table, so no separate transaction log or cleanup worker is needed.
 
 import type { SummaPlugin } from "@summa-ledger/core";
 
@@ -11,8 +12,6 @@ import type { SummaPlugin } from "@summa-ledger/core";
 // =============================================================================
 
 export interface VelocityLimitsOptions {
-	/** Retention days for transaction logs. Default: 90 */
-	cleanupRetentionDays?: number;
 	/** Auto-enforce limits on transactions. Default: true */
 	autoEnforce?: boolean;
 }
@@ -22,7 +21,6 @@ export interface VelocityLimitsOptions {
 // =============================================================================
 
 export function velocityLimits(options?: VelocityLimitsOptions): SummaPlugin {
-	const retentionDays = options?.cleanupRetentionDays ?? 90;
 	const autoEnforce = options?.autoEnforce ?? true;
 
 	return {
@@ -58,18 +56,5 @@ export function velocityLimits(options?: VelocityLimitsOptions): SummaPlugin {
 					},
 				}
 			: undefined,
-
-		workers: [
-			{
-				id: "velocity-log-cleanup",
-				description: "Remove old transaction log entries beyond retention period",
-				handler: async (ctx) => {
-					const { cleanupOldTransactionLogs } = await import("../managers/limit-manager.js");
-					await cleanupOldTransactionLogs(ctx, retentionDays);
-				},
-				interval: "1d",
-				leaseRequired: true,
-			},
-		],
 	};
 }

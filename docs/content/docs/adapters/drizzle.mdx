@@ -44,7 +44,7 @@ import { pgSchema, uuid, text, bigint, boolean, timestamp, jsonb, index, uniqueI
 
 export const summaSchema = pgSchema("summa");
 
-export const accountBalance = summaSchema.table("account_balance", {
+export const account = summaSchema.table("account", {
   id: uuid("id").primaryKey(),
   holderId: text("holder_id").notNull(),
   holderType: text("holder_type").notNull(),
@@ -52,7 +52,7 @@ export const accountBalance = summaSchema.table("account_balance", {
   balance: bigint("balance", { mode: "number" }).notNull(),
   // ... more columns
 }, (table) => [
-  index("account_balance_holder_id_idx").on(table.holderId),
+  index("account_holder_id_idx").on(table.holderId),
 ]);
 
 // ... all other tables

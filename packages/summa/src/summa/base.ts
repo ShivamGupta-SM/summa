@@ -287,19 +287,29 @@ export interface Summa<TInfer = Record<string, never>> {
 		}) => Promise<{ holds: Hold[]; hasMore: boolean; total: number }>;
 	};
 	events: {
+		/** @deprecated Use getForAccount or getForTransfer instead */
 		getForAggregate: (type: string, id: string) => Promise<StoredEvent[]>;
+		/** Get all entries for an account, ordered by sequence. */
+		getForAccount: (accountId: string) => Promise<StoredEvent[]>;
+		/** Get all entries for a transfer (transaction). */
+		getForTransfer: (transferId: string) => Promise<StoredEvent[]>;
 		getByCorrelation: (correlationId: string) => Promise<StoredEvent[]>;
+		/** @deprecated Use verifyAccountChain instead */
 		verifyChain: (
 			type: string,
 			id: string,
+		) => Promise<{ valid: boolean; brokenAtVersion?: number; eventCount: number }>;
+		/** Verify the per-account entry hash chain. */
+		verifyAccountChain: (
+			accountId: string,
 		) => Promise<{ valid: boolean; brokenAtVersion?: number; eventCount: number }>;
 		verifyExternalAnchor: (
 			blockSequence: number,
 			externalBlockHash: string,
 		) => Promise<{ valid: boolean; storedBlockHash: string; storedMerkleRoot: string | null }>;
-		/** Generate a Merkle proof for a specific event (O(log n) siblings). */
+		/** Generate a Merkle proof for a specific entry (O(log n) siblings). */
 		generateProof: (
-			eventId: string,
+			entryId: string,
 		) => Promise<MerkleProof & { blockId: string; blockSequence: number }>;
 		/** Verify a Merkle proof, optionally cross-checking against the stored block root. */
 		verifyProof: (
@@ -540,6 +550,14 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				const ledgerId = getLedgerId(ctx);
 				return events.getEvents(ctx, type, id, ledgerId);
 			},
+			getForAccount: async (accountId) => {
+				const ctx = await getCtx();
+				return events.getEntriesForAccount(ctx, accountId);
+			},
+			getForTransfer: async (transferId) => {
+				const ctx = await getCtx();
+				return events.getEntriesByTransfer(ctx, transferId);
+			},
 			getByCorrelation: async (correlationId) => {
 				const ctx = await getCtx();
 				const ledgerId = getLedgerId(ctx);
@@ -550,15 +568,20 @@ export function createSumma<const TPlugins extends readonly SummaPlugin[] = Summ
 				const ledgerId = getLedgerId(ctx);
 				return hashChain.verifyHashChain(ctx, type.toLowerCase(), id, ledgerId);
 			},
+			verifyAccountChain: async (accountId) => {
+				const ctx = await getCtx();
+				const ledgerId = getLedgerId(ctx);
+				return hashChain.verifyHashChain(ctx, "account", accountId, ledgerId);
+			},
 			verifyExternalAnchor: async (blockSequence: number, externalBlockHash: string) => {
 				const ctx = await getCtx();
 				const ledgerId = getLedgerId(ctx);
 				return hashChain.verifyExternalAnchor(ctx, blockSequence, externalBlockHash, ledgerId);
 			},
-			generateProof: async (eventId) => {
+			generateProof: async (entryId) => {
 				const ctx = await getCtx();
 				const ledgerId = getLedgerId(ctx);
-				return hashChain.generateEventProof(ctx, eventId, ledgerId);
+				return hashChain.generateEventProof(ctx, entryId, ledgerId);
 			},
 			verifyProof: async (proof, blockId) => {
 				const ctx = await getCtx();

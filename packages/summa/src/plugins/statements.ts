@@ -1,8 +1,8 @@
 // =============================================================================
 // STATEMENTS PLUGIN — Account statement generation with CSV/JSON download
 // =============================================================================
-// Generates account statements for any date range. Combines entry_record and
-// transaction_record data to produce line-item statements with computed
+// Generates account statements for any date range. Combines entry and
+// transfer data to produce line-item statements with computed
 // summaries (opening/closing balance, totals).
 //
 // Supports async background generation for CSV/PDF via the statement_job table
@@ -149,7 +149,7 @@ async function resolveAccount(
 	const t = createTableResolver(ctx.options.schema);
 	const ledgerId = getLedgerId(ctx);
 	const rows = await ctx.readAdapter.raw<{ id: string; currency: string }>(
-		`SELECT id, currency FROM ${t("account_balance")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1`,
+		`SELECT id, currency FROM ${t("account")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1`,
 		[ledgerId, holderId],
 	);
 	return rows[0] ?? null;
@@ -172,7 +172,7 @@ async function queryEntries(
 	return ctx.readAdapter.raw<RawEntryRow>(
 		`SELECT
 			e.id            AS entry_id,
-			e.transaction_id,
+			e.transfer_id   AS transaction_id,
 			t.reference     AS transaction_ref,
 			t.description,
 			e.entry_type,
@@ -181,8 +181,8 @@ async function queryEntries(
 			e.balance_before,
 			e.balance_after,
 			e.created_at
-		FROM ${t("entry_record")} e
-		JOIN ${t("transaction_record")} t ON t.id = e.transaction_id
+		FROM ${t("entry")} e
+		JOIN ${t("transfer")} t ON t.id = e.transfer_id
 		WHERE t.ledger_id = $6
 			AND e.account_id = $1
 			AND e.created_at >= $2::timestamptz
@@ -202,7 +202,7 @@ async function queryEntryCount(
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<RawCountRow>(
 		`SELECT COUNT(*)::int AS cnt
-		FROM ${t("entry_record")} e
+		FROM ${t("entry")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz`,
@@ -222,9 +222,9 @@ async function queryAggregates(
 		`SELECT
 			COALESCE(SUM(CASE WHEN e.entry_type = 'CREDIT' THEN e.amount ELSE 0 END), 0)::bigint AS total_credits,
 			COALESCE(SUM(CASE WHEN e.entry_type = 'DEBIT'  THEN e.amount ELSE 0 END), 0)::bigint AS total_debits,
-			COUNT(DISTINCT e.transaction_id)::int AS transaction_count,
+			COUNT(DISTINCT e.transfer_id)::int AS transaction_count,
 			COUNT(*)::int AS entry_count
-		FROM ${t("entry_record")} e
+		FROM ${t("entry")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz`,
@@ -246,7 +246,7 @@ async function queryOpeningBalance(
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
-		FROM ${t("entry_record")} e
+		FROM ${t("entry")} e
 		WHERE e.account_id = $1
 			AND e.created_at < $2::timestamptz
 		ORDER BY e.created_at DESC, e.id DESC
@@ -266,7 +266,7 @@ async function queryClosingBalance(
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.readAdapter.raw<RawBalanceRow>(
 		`SELECT e.balance_after
-		FROM ${t("entry_record")} e
+		FROM ${t("entry")} e
 		WHERE e.account_id = $1
 			AND e.created_at >= $2::timestamptz
 			AND e.created_at < $3::timestamptz

@@ -265,7 +265,7 @@ export async function runAutoMatch(
 	for (const ext of unmatched) {
 		// Strategy 1: Exact reference + amount match
 		const exactMatch = await ctx.adapter.raw<{ id: string }>(
-			`SELECT tr.id FROM ${t("transaction_record")} tr
+			`SELECT tr.id FROM ${t("transfer")} tr
 			 WHERE tr.reference = $1 AND tr.amount = $2
 			   AND NOT EXISTS (
 			     SELECT 1 FROM ${t("match_result")} mr
@@ -298,7 +298,7 @@ export async function runAutoMatch(
 				description: string;
 			}>(
 				`SELECT tr.id, tr.reference, COALESCE(tr.description, '') as description
-				 FROM ${t("transaction_record")} tr
+				 FROM ${t("transfer")} tr
 				 WHERE tr.amount = $1
 				   AND tr.created_at >= $2::timestamptz - INTERVAL '${dateWindowDays} days'
 				   AND tr.created_at <= $2::timestamptz + INTERVAL '${dateWindowDays} days'

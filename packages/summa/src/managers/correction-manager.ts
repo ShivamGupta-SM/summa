@@ -1,11 +1,14 @@
 // =============================================================================
-// CORRECTION MANAGER -- Reversals & Corrections (APPEND-ONLY)
+// CORRECTION MANAGER -- Reversals & Corrections
 // =============================================================================
 // Provides atomic correct() (reverse + re-post) and typed adjustment() entries.
 //
-// After the immutability refactor:
-// - transaction_record is IMMUTABLE (no status, committed_amount, refunded_amount, posted_at)
-// - transaction_status is APPEND-ONLY (each status transition = new row)
+// v2 changes:
+// - transfer table has status as a mutable column
+// - no separate transaction_status table
+// - entries ARE events (no appendEvent)
+// - unified account model (no system account FK columns)
+// - status transitions logged to entity_status_log
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -14,10 +17,10 @@ import type {
 	SummaContext,
 	SummaTransactionAdapter,
 } from "@summa-ledger/core";
-import { AGGREGATE_TYPES, SummaError, TRANSACTION_EVENTS } from "@summa-ledger/core";
+import { SummaError } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import { runAfterOperationHooks } from "../context/hooks.js";
-import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
+import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import {
 	checkIdempotencyKeyInTx,
@@ -25,14 +28,12 @@ import {
 	saveIdempotencyKeyInTx,
 } from "./idempotency.js";
 import { getLedgerId } from "./ledger-helpers.js";
-import type { RawTransactionRow } from "./raw-types.js";
-import { processJournalLegs, rawToTransactionResponse, txnWithStatusSql } from "./sql-helpers.js";
+import type { RawTransferRow } from "./raw-types.js";
+import { processJournalLegs, rawToTransactionResponse } from "./sql-helpers.js";
 
 // =============================================================================
 // CORRECT TRANSACTION
 // =============================================================================
-// Atomic: reverse original + post correcting entries in one DB transaction.
-// Links all three records (original, reversal, correction) via correlationId.
 
 export async function correctTransaction(
 	ctx: SummaContext,
@@ -50,7 +51,6 @@ export async function correctTransaction(
 		throw SummaError.invalidArgument("Correction requires at least 2 entries (debits and credits)");
 	}
 
-	// Validate entries are balanced
 	let totalDebits = 0;
 	let totalCredits = 0;
 	for (const entry of correctionEntries) {
@@ -88,9 +88,9 @@ export async function correctTransaction(
 			return idem.cachedResult as { reversal: LedgerTransaction; correction: LedgerTransaction };
 		}
 
-		// Lock original transaction + read latest status
-		const originalRows = await tx.raw<RawTransactionRow>(
-			`${txnWithStatusSql(t)} WHERE tr.id = $1 AND tr.ledger_id = $2 FOR UPDATE OF tr`,
+		// Lock original transfer + read status (status is directly on transfer row)
+		const originalRows = await tx.raw<RawTransferRow>(
+			`SELECT * FROM ${t("transfer")} WHERE id = $1 AND ledger_id = $2 FOR UPDATE`,
 			[transactionId, ledgerId],
 		);
 
@@ -112,19 +112,26 @@ export async function correctTransaction(
 		const correlationId = randomUUID();
 
 		// === STEP 1: Full reversal of original ===
-		// Mark original as reversed via new transaction_status row (APPEND-ONLY)
+		// Mark original as reversed (mutable status in v2)
 		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, refunded_amount, reason)
-       VALUES ($1, $2, $3, $4)`,
-			[transactionId, "reversed", originalAmount, `Correction: ${reason}`],
+			`UPDATE ${t("transfer")} SET status = 'reversed', refunded_amount = $1 WHERE id = $2`,
+			[originalAmount, transactionId],
 		);
 
-		// Create reversal transaction record (IMMUTABLE — no status)
-		const reversalRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		// Log status transition
+		await tx.raw(
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason)
+       VALUES ('transfer', $1, 'reversed', 'posted', $2)`,
+			[transactionId, `Correction: ${reason}`],
+		);
+
+		// Create reversal transfer record
+		const reversalRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, source_account_id, destination_account_id, parent_id, is_reversal, correlation_id, metadata, posted_at)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        RETURNING *`,
 			[
+				ledgerId,
 				"correction",
 				`reversal_${original.reference}`,
 				originalAmount,
@@ -132,40 +139,25 @@ export async function correctTransaction(
 				`Reversal for correction: ${reason}`,
 				original.destination_account_id,
 				original.source_account_id,
-				original.destination_system_account_id,
-				original.source_system_account_id,
 				original.id,
 				true,
 				correlationId,
 				JSON.stringify({ reason, correctionOf: transactionId, type: "correction" }),
-				ledgerId,
 			],
 		);
 		const reversal = reversalRows[0];
 		if (!reversal) throw SummaError.internal("Failed to insert reversal record");
 
-		// INSERT initial status for reversal (posted immediately)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[reversal.id, "posted"],
-		);
-
 		// Reverse user account entries
-		await reverseAccountEntries(
-			tx,
-			original,
-			reversal,
-			originalAmount,
-			ctx.options.advanced.useDenormalizedBalance,
-		);
+		await reverseAccountEntries(tx, original, reversal, originalAmount);
 
 		// === STEP 2: Post correcting entries ===
-		const correctionRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		const correctionRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, parent_id, is_reversal, correlation_id, metadata, posted_at)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, $9, $10, NOW())
        RETURNING *`,
 			[
+				ledgerId,
 				"correction",
 				correctionReference,
 				totalDebits,
@@ -180,18 +172,10 @@ export async function correctTransaction(
 					type: "correction",
 					entries: correctionEntries,
 				}),
-				ledgerId,
 			],
 		);
 		const correction = correctionRows[0];
 		if (!correction) throw SummaError.internal("Failed to insert correction record");
-
-		// INSERT initial status for correction (posted immediately)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[correction.id, "posted"],
-		);
 
 		// Process each correction leg
 		await processJournalLegs(
@@ -204,68 +188,9 @@ export async function correctTransaction(
 			ledgerId,
 		);
 
-		// Event store: mark original as corrected
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.TRANSACTION,
-				aggregateId: original.id,
-				eventType: TRANSACTION_EVENTS.CORRECTED,
-				eventData: {
-					reversalId: reversal.id,
-					correctionId: correction.id,
-					reason,
-				},
-				correlationId,
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
-		// Event for reversal transaction
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.TRANSACTION,
-				aggregateId: reversal.id,
-				eventType: TRANSACTION_EVENTS.POSTED,
-				eventData: {
-					postedAt: new Date().toISOString(),
-					entries: [],
-				},
-				correlationId,
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
-		// Event for correction transaction
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.TRANSACTION,
-				aggregateId: correction.id,
-				eventType: TRANSACTION_EVENTS.POSTED,
-				eventData: {
-					postedAt: new Date().toISOString(),
-					entries: correctionEntries,
-				},
-				correlationId,
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
-		const reversalResponse = rawToTransactionResponse(
-			{ ...reversal, status: "posted", posted_at: new Date() },
-			"correction",
-			original.currency,
-		);
+		const reversalResponse = rawToTransactionResponse(reversal, "correction", original.currency);
 		const correctionResponse = rawToTransactionResponse(
-			{ ...correction, status: "posted", posted_at: new Date() },
+			correction,
 			"correction",
 			original.currency,
 		);
@@ -294,7 +219,6 @@ export async function correctTransaction(
 // =============================================================================
 // ADJUSTMENT ENTRY
 // =============================================================================
-// Creates a balanced journal-style entry with adjustmentType metadata.
 
 export async function adjustmentEntry(
 	ctx: SummaContext,
@@ -305,7 +229,6 @@ export async function adjustmentEntry(
 		description?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
@@ -327,7 +250,6 @@ export async function adjustmentEntry(
 		throw SummaError.invalidArgument("Adjustment requires at least 2 entries (debits and credits)");
 	}
 
-	// Validate entries are balanced
 	let totalDebits = 0;
 	let totalCredits = 0;
 	for (const entry of entries) {
@@ -366,12 +288,13 @@ export async function adjustmentEntry(
 
 		const correlationId = randomUUID();
 
-		// Create adjustment transaction record (IMMUTABLE — no status)
-		const txnRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, correlation_id, meta_data, ledger_id, effective_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9::timestamptz, NOW()))
+		// Create adjustment transfer record (status = 'posted' directly)
+		const txnRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, correlation_id, metadata, posted_at, effective_date)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, NOW(), COALESCE($9::timestamptz, NOW()))
        RETURNING *`,
 			[
+				ledgerId,
 				"adjustment",
 				reference,
 				totalDebits,
@@ -384,19 +307,11 @@ export async function adjustmentEntry(
 					type: "adjustment",
 					entries,
 				}),
-				ledgerId,
 				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRows[0];
 		if (!txnRecord) throw SummaError.internal("Failed to insert adjustment record");
-
-		// INSERT initial status (posted immediately, APPEND-ONLY)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[txnRecord.id, "posted"],
-		);
 
 		// Process each leg
 		await processJournalLegs(
@@ -409,30 +324,7 @@ export async function adjustmentEntry(
 			ledgerId,
 		);
 
-		// Event store
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.TRANSACTION,
-				aggregateId: txnRecord.id,
-				eventType: TRANSACTION_EVENTS.POSTED,
-				eventData: {
-					postedAt: new Date().toISOString(),
-					adjustmentType,
-					entries,
-				},
-				correlationId,
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
-		);
-
-		const response = rawToTransactionResponse(
-			{ ...txnRecord, status: "posted", posted_at: new Date() },
-			"adjustment",
-			ctx.options.currency,
-		);
+		const response = rawToTransactionResponse(txnRecord, "adjustment", ctx.options.currency);
 
 		// Save idempotency key
 		if (params.idempotencyKey) {
@@ -460,84 +352,37 @@ export async function adjustmentEntry(
 // =============================================================================
 
 /**
- * Reverse all account entries from an original transaction within the same DB transaction.
+ * Reverse all account entries from an original transfer.
+ * In v2, both user and system accounts use the unified entry table.
  */
 async function reverseAccountEntries(
 	tx: SummaTransactionAdapter,
-	original: RawTransactionRow,
-	reversal: RawTransactionRow,
+	original: RawTransferRow,
+	reversal: RawTransferRow,
 	amount: number,
-	updateDenormalizedCache = false,
 ): Promise<void> {
-	const t = createTableResolver(tx.options?.schema ?? "summa");
-
-	// User account entries are sequential (SELECT+INSERT+UPDATE)
+	// Reverse user account entries
 	if (original.destination_account_id) {
 		await insertEntryAndUpdateBalance({
 			tx,
-			transactionId: reversal.id,
+			transferId: reversal.id,
 			accountId: original.destination_account_id,
 			entryType: "DEBIT",
 			amount,
 			currency: original.currency,
 			isHotAccount: false,
-			updateDenormalizedCache,
 		});
 	}
 
 	if (original.source_account_id) {
 		await insertEntryAndUpdateBalance({
 			tx,
-			transactionId: reversal.id,
+			transferId: reversal.id,
 			accountId: original.source_account_id,
 			entryType: "CREDIT",
 			amount,
 			currency: original.currency,
 			isHotAccount: false,
-			updateDenormalizedCache,
 		});
 	}
-
-	// Reverse system account entries via hot account pattern (batchable)
-	const hotOps: Promise<unknown>[] = [];
-
-	if (original.source_system_account_id) {
-		hotOps.push(
-			tx.raw(
-				`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
-         VALUES ($1, $2, $3, $4, $5)`,
-				[original.source_system_account_id, amount, "CREDIT", reversal.id, "pending"],
-			),
-			insertEntryAndUpdateBalance({
-				tx,
-				transactionId: reversal.id,
-				systemAccountId: original.source_system_account_id,
-				entryType: "CREDIT",
-				amount,
-				currency: original.currency,
-				isHotAccount: true,
-			}),
-		);
-	}
-
-	if (original.destination_system_account_id) {
-		hotOps.push(
-			tx.raw(
-				`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
-         VALUES ($1, $2, $3, $4, $5)`,
-				[original.destination_system_account_id, -amount, "DEBIT", reversal.id, "pending"],
-			),
-			insertEntryAndUpdateBalance({
-				tx,
-				transactionId: reversal.id,
-				systemAccountId: original.destination_system_account_id,
-				entryType: "DEBIT",
-				amount,
-				currency: original.currency,
-				isHotAccount: true,
-			}),
-		);
-	}
-
-	if (hotOps.length > 0) await Promise.all(hotOps);
 }

@@ -1,13 +1,8 @@
 // =============================================================================
-// ACCOUNT MANAGER -- Account lifecycle operations (APPEND-ONLY)
+// ACCOUNT MANAGER -- Account lifecycle operations
 // =============================================================================
 // Creates, reads, freezes, unfreezes, closes, and lists accounts.
-// Uses ctx.adapter for all database operations.
-//
-// After the immutability refactor:
-// - account_balance is IMMUTABLE (static properties only)
-// - account_balance_version is APPEND-ONLY (each row = full state snapshot)
-// - All state changes INSERT a new version row instead of UPDATE-ing
+// Uses the unified `account` table with mutable balance + HMAC checksum.
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -21,14 +16,11 @@ import type {
 	SummaTransactionAdapter,
 } from "@summa-ledger/core";
 import {
-	ACCOUNT_EVENTS,
-	AGGREGATE_TYPES,
 	computeBalanceChecksum,
 	decodeCursor,
 	encodeCursor,
 	hashLockKey,
 	SummaError,
-	TRANSACTION_EVENTS,
 } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import {
@@ -36,50 +28,18 @@ import {
 	runAfterOperationHooks,
 	runBeforeAccountCreateHooks,
 } from "../context/hooks.js";
-import { appendEvent, withTransactionTimeout } from "../infrastructure/event-store.js";
+import { withTransactionTimeout } from "../infrastructure/event-store.js";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { getLedgerId } from "./ledger-helpers.js";
 import type { RawAccountRow } from "./raw-types.js";
-import { readLatestVersion } from "./sql-helpers.js";
 
 // =============================================================================
 // SQL HELPERS
 // =============================================================================
 
-/** Build a SELECT that joins account_balance (static) with the latest account_balance_version. */
-function accountSelectSql(t: (name: string) => string, denormalized = false): string {
-	if (denormalized) {
-		// Read balance state directly from cached columns on account_balance.
-		// Avoids the LATERAL JOIN entirely — O(1) on the already-indexed parent row.
-		return `SELECT a.*,
-       a.cached_version AS version,
-       a.cached_balance AS balance,
-       a.cached_credit_balance AS credit_balance,
-       a.cached_debit_balance AS debit_balance,
-       a.cached_pending_credit AS pending_credit,
-       a.cached_pending_debit AS pending_debit,
-       a.cached_status AS status,
-       a.cached_checksum AS checksum,
-       a.cached_freeze_reason AS freeze_reason,
-       a.cached_frozen_at AS frozen_at,
-       a.cached_frozen_by AS frozen_by,
-       a.cached_closed_at AS closed_at,
-       a.cached_closed_by AS closed_by,
-       a.cached_closure_reason AS closure_reason
-FROM ${t("account_balance")} a`;
-	}
-
-	return `SELECT a.*, v.version, v.balance, v.credit_balance, v.debit_balance,
-       v.pending_credit, v.pending_debit, v.status, v.checksum,
-       v.freeze_reason, v.frozen_at, v.frozen_by,
-       v.closed_at, v.closed_by, v.closure_reason
-FROM ${t("account_balance")} a
-JOIN LATERAL (
-  SELECT * FROM ${t("account_balance_version")}
-  WHERE account_id = a.id
-  ORDER BY version DESC
-  LIMIT 1
-) v ON true`;
+/** Build a SELECT for the unified account table. Direct read — no LATERAL JOIN needed. */
+function accountSelectSql(t: (name: string) => string): string {
+	return `SELECT * FROM ${t("account")}`;
 }
 
 // =============================================================================
@@ -143,11 +103,9 @@ export async function createAccount(
 
 	const t = createTableResolver(ctx.options.schema);
 
-	const dn = ctx.options.advanced.useDenormalizedBalance;
-
 	// Fast path: check if account already exists (no lock needed)
 	const existingRows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 AND a.holder_type = $3 LIMIT 1`,
+		`${accountSelectSql(t)} WHERE ledger_id = $1 AND holder_id = $2 AND holder_type = $3 AND is_system = false LIMIT 1`,
 		[ledgerId, holderId, holderType],
 	);
 
@@ -163,7 +121,7 @@ export async function createAccount(
 
 		// Re-check inside lock
 		const existingInLockRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 AND a.holder_type = $3 LIMIT 1`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND holder_id = $2 AND holder_type = $3 AND is_system = false LIMIT 1`,
 			[ledgerId, holderId, holderType],
 		);
 
@@ -174,7 +132,7 @@ export async function createAccount(
 		// Validate parent account if specified
 		if (parentAccountId) {
 			const parentRows = await tx.raw<{ id: string; account_type: string | null }>(
-				`SELECT id, account_type FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 LIMIT 1`,
+				`SELECT id, account_type FROM ${t("account")} WHERE ledger_id = $1 AND id = $2 LIMIT 1`,
 				[ledgerId, parentAccountId],
 			);
 			const parent = parentRows[0];
@@ -186,8 +144,7 @@ export async function createAccount(
 			}
 		}
 
-		// Step 1: INSERT into account_balance (IMMUTABLE — static properties only)
-		// When denormalized balance is enabled, initialize cached columns too.
+		// Compute initial checksum for version 0
 		const initialChecksum = computeBalanceChecksum(
 			{
 				balance: 0,
@@ -195,83 +152,59 @@ export async function createAccount(
 				debitBalance: 0,
 				pendingDebit: 0,
 				pendingCredit: 0,
-				lockVersion: 1,
+				lockVersion: 0,
 			},
 			ctx.options.advanced.hmacSecret,
 		);
 
-		const baseCols =
-			"ledger_id, holder_id, holder_type, currency, allow_overdraft, overdraft_limit, indicator, account_type, account_code, parent_account_id, normal_balance, metadata";
-		const baseVals = "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12";
-		const baseParams: unknown[] = [
-			ledgerId,
-			holderId,
-			holderType,
-			currency,
-			allowOverdraft,
-			overdraftLimit,
-			indicator ?? null,
-			accountType ?? null,
-			accountCode ?? null,
-			parentAccountId ?? null,
-			normalBalance,
-			JSON.stringify(metadata),
-		];
-
-		let insertSql: string;
-		let insertParams: unknown[];
-		if (dn) {
-			insertSql = `INSERT INTO ${t("account_balance")} (${baseCols}, cached_balance, cached_credit_balance, cached_debit_balance, cached_pending_debit, cached_pending_credit, cached_version, cached_status, cached_checksum)
-       VALUES (${baseVals}, $13, $14, $15, $16, $17, $18, $19, $20)
-       RETURNING id`;
-			insertParams = [...baseParams, 0, 0, 0, 0, 0, 1, "active", initialChecksum];
-		} else {
-			insertSql = `INSERT INTO ${t("account_balance")} (${baseCols})
-       VALUES (${baseVals})
-       RETURNING id`;
-			insertParams = baseParams;
-		}
-
-		const insertedRows = await tx.raw<{ id: string }>(insertSql, insertParams);
+		// INSERT into account (unified table — static + mutable balance in one row)
+		const insertedRows = await tx.raw<{ id: string }>(
+			`INSERT INTO ${t("account")} (
+				ledger_id, holder_id, holder_type, currency,
+				allow_overdraft, overdraft_limit, indicator,
+				account_type, account_code, parent_account_id,
+				normal_balance, metadata,
+				balance, credit_balance, debit_balance,
+				pending_debit, pending_credit,
+				version, status, checksum
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+			RETURNING id`,
+			[
+				ledgerId,
+				holderId,
+				holderType,
+				currency,
+				allowOverdraft,
+				overdraftLimit,
+				indicator ?? null,
+				accountType ?? null,
+				accountCode ?? null,
+				parentAccountId ?? null,
+				normalBalance,
+				JSON.stringify(metadata),
+				0, 0, 0, 0, 0,
+				0,
+				"active",
+				initialChecksum,
+			],
+		);
 
 		const inserted = insertedRows[0];
 		if (!inserted) throw SummaError.internal("Failed to insert account");
 		const accountId = inserted.id;
 
-		// Step 2: INSERT initial account_balance_version (version 1, active, zero balances)
-
+		// Log status transition
 		await tx.raw(
-			`INSERT INTO ${t("account_balance_version")} (account_id, version, balance, credit_balance, debit_balance, pending_credit, pending_debit, status, checksum, change_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-			[accountId, 1, 0, 0, 0, 0, 0, "active", initialChecksum, "create"],
-		);
-
-		// Append event to event store
-		const event = await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.ACCOUNT,
-				aggregateId: accountId,
-				eventType: ACCOUNT_EVENTS.CREATED,
-				eventData: {
-					holderId,
-					holderType,
-					currency,
-					allowOverdraft,
-					indicator,
-				},
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, reason)
+			 VALUES ($1, $2, $3, $4)`,
+			["account", accountId, "active", "Account created"],
 		);
 
 		// Write to outbox for async publishing
 		await tx.raw(
-			`INSERT INTO ${t("outbox")} (event_id, topic, payload)
-       VALUES ($1, $2, $3)`,
+			`INSERT INTO ${t("outbox")} (topic, payload)
+       VALUES ($1, $2)`,
 			[
-				event.id,
 				"ledger-account-created",
 				JSON.stringify({
 					accountId,
@@ -283,9 +216,9 @@ export async function createAccount(
 			],
 		);
 
-		// Read back the combined row for response
+		// Read back the row for response
 		const createdRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2`,
 			[ledgerId, accountId],
 		);
 		const created = createdRows[0];
@@ -308,9 +241,8 @@ export async function createAccount(
 export async function getAccountByHolder(ctx: SummaContext, holderId: string): Promise<Account> {
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 	const rows = await ctx.readAdapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.holder_id = $2 LIMIT 1`,
+		`${accountSelectSql(t)} WHERE ledger_id = $1 AND holder_id = $2 AND is_system = false LIMIT 1`,
 		[ledgerId, holderId],
 	);
 
@@ -318,106 +250,28 @@ export async function getAccountByHolder(ctx: SummaContext, holderId: string): P
 	return rawRowToAccount(rows[0]);
 }
 
-/** Resolve account by holderId inside a transaction with FOR UPDATE lock on immutable parent. */
+/** Resolve account by holderId inside a transaction with FOR UPDATE lock. */
 export async function resolveAccountForUpdate(
 	tx: SummaTransactionAdapter,
 	ledgerId: string,
 	holderId: string,
 	schema: string,
 	lockMode: "wait" | "nowait" | "optimistic" = "wait",
-	useDenormalizedBalance = false,
 ): Promise<RawAccountRow> {
 	const t = createTableResolver(schema);
 
-	// Optimistic mode: read WITHOUT any lock. Rely on UNIQUE(account_id, version)
-	// constraint on account_balance_version INSERT to detect conflicts.
 	const isOptimistic = lockMode === "optimistic";
 	const lockSuffix = isOptimistic ? "" : lockMode === "nowait" ? "FOR UPDATE NOWAIT" : "FOR UPDATE";
 
-	if (useDenormalizedBalance) {
-		// Denormalized path: lock + read cached balance in a single query.
-		// No LATERAL JOIN needed — all state lives on account_balance.
-		const rows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, true)} WHERE a.ledger_id = $1 AND a.holder_id = $2 LIMIT 1 ${lockSuffix}`,
-			[ledgerId, holderId],
-		);
-		if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
-		const row = rows[0];
-
-		if (row.checksum) {
-			const hmacSecret = tx.options?.hmacSecret ?? null;
-			const expected = computeBalanceChecksum(
-				{
-					balance: Number(row.balance),
-					creditBalance: Number(row.credit_balance),
-					debitBalance: Number(row.debit_balance),
-					pendingDebit: Number(row.pending_debit),
-					pendingCredit: Number(row.pending_credit),
-					lockVersion: Number(row.version),
-				},
-				hmacSecret,
-			);
-			if (expected !== row.checksum) {
-				throw SummaError.chainIntegrityViolation(
-					`Balance checksum mismatch for account ${row.id}: balance data may have been tampered with`,
-				);
-			}
-		}
-
-		return row;
-	}
-
-	if (isOptimistic) {
-		// Optimistic path: read without locking. Conflict detected at INSERT time.
-		const rows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t)} WHERE a.ledger_id = $1 AND a.holder_id = $2`,
-			[ledgerId, holderId],
-		);
-		if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
-		const row = rows[0];
-
-		if (row.checksum) {
-			const hmacSecret = tx.options?.hmacSecret ?? null;
-			const expected = computeBalanceChecksum(
-				{
-					balance: Number(row.balance),
-					creditBalance: Number(row.credit_balance),
-					debitBalance: Number(row.debit_balance),
-					pendingDebit: Number(row.pending_debit),
-					pendingCredit: Number(row.pending_credit),
-					lockVersion: Number(row.version),
-				},
-				hmacSecret,
-			);
-			if (expected !== row.checksum) {
-				throw SummaError.chainIntegrityViolation(
-					`Balance checksum mismatch for account ${row.id}: balance data may have been tampered with`,
-				);
-			}
-		}
-
-		return row;
-	}
-
-	// Standard path: lock parent row, then LATERAL JOIN for latest version.
-	const parentRows = await tx.raw<{ id: string }>(
-		`SELECT id FROM ${t("account_balance")}
-     WHERE ledger_id = $1 AND holder_id = $2
-     LIMIT 1
-     ${lockSuffix}`,
+	// Direct read from unified account table — no LATERAL JOIN needed
+	const rows = await tx.raw<RawAccountRow>(
+		`${accountSelectSql(t)} WHERE ledger_id = $1 AND holder_id = $2 AND is_system = false LIMIT 1 ${lockSuffix}`,
 		[ledgerId, holderId],
 	);
-	if (!parentRows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
-	const accountId = parentRows[0].id;
-
-	const rows = await tx.raw<RawAccountRow>(
-		`${accountSelectSql(t)} WHERE a.ledger_id = $1 AND a.id = $2`,
-		[ledgerId, accountId],
-	);
 	if (!rows[0]) throw SummaError.notFound(`Account not found for holder ${holderId}`);
-
 	const row = rows[0];
 
+	// Verify balance checksum (tamper detection)
 	if (row.checksum) {
 		const hmacSecret = tx.options?.hmacSecret ?? null;
 		const expected = computeBalanceChecksum(
@@ -444,9 +298,8 @@ export async function resolveAccountForUpdate(
 export async function getAccountById(ctx: SummaContext, accountId: string): Promise<Account> {
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 	const rows = await ctx.readAdapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2 LIMIT 1`,
+		`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2 LIMIT 1`,
 		[ledgerId, accountId],
 	);
 
@@ -480,9 +333,8 @@ export async function getAccountBalance(
 
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 	const rows = await ctx.adapter.raw<RawAccountRow>(
-		`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2 LIMIT 1`,
+		`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2 LIMIT 1`,
 		[ledgerId, account.id],
 	);
 
@@ -539,28 +391,23 @@ export async function freezeAccount(
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 
-	const dn = ctx.options.advanced.useDenormalizedBalance;
-
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		// Lock and read inside transaction to prevent TOCTOU race
 		const lockedRow = await resolveAccountForUpdate(
 			tx,
 			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			dn,
 		);
 
 		if (lockedRow.status === "frozen") {
-			// Idempotent retry -- account already frozen
 			return rawRowToAccount(lockedRow);
 		}
 		if (lockedRow.status === "closed") {
 			throw SummaError.accountClosed("Account is closed");
 		}
 
-		// INSERT new version row with frozen status (APPEND-ONLY — no UPDATE)
+		// UPDATE account with frozen status
 		const newVersion = Number(lockedRow.version) + 1;
 		const checksum = computeBalanceChecksum(
 			{
@@ -575,62 +422,18 @@ export async function freezeAccount(
 		);
 
 		await tx.raw(
-			`INSERT INTO ${t("account_balance_version")} (
-         account_id, version, balance, credit_balance, debit_balance,
-         pending_credit, pending_debit, status, checksum,
-         freeze_reason, frozen_at, frozen_by,
-         closed_at, closed_by, closure_reason,
-         change_type
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), $11, $12, $13, $14, $15)`,
-			[
-				lockedRow.id,
-				newVersion,
-				Number(lockedRow.balance),
-				Number(lockedRow.credit_balance),
-				Number(lockedRow.debit_balance),
-				Number(lockedRow.pending_credit),
-				Number(lockedRow.pending_debit),
-				"frozen",
-				checksum,
-				reason,
-				frozenBy,
-				lockedRow.closed_at ?? null,
-				lockedRow.closed_by ?? null,
-				lockedRow.closure_reason ?? null,
-				"freeze",
-			],
+			`UPDATE ${t("account")} SET
+				status = $1, version = $2, checksum = $3,
+				freeze_reason = $4, frozen_at = NOW(), frozen_by = $5
+			 WHERE id = $6 AND version = $7`,
+			["frozen", newVersion, checksum, reason, frozenBy, lockedRow.id, Number(lockedRow.version)],
 		);
 
-		if (dn) {
-			await updateDenormalizedCache(tx, t, lockedRow.id, {
-				balance: Number(lockedRow.balance),
-				creditBalance: Number(lockedRow.credit_balance),
-				debitBalance: Number(lockedRow.debit_balance),
-				pendingDebit: Number(lockedRow.pending_debit),
-				pendingCredit: Number(lockedRow.pending_credit),
-				version: newVersion,
-				status: "frozen",
-				checksum,
-				freezeReason: reason,
-				frozenAt: new Date().toISOString(),
-				frozenBy,
-				closedAt: lockedRow.closed_at ?? null,
-				closedBy: lockedRow.closed_by ?? null,
-				closureReason: lockedRow.closure_reason ?? null,
-			});
-		}
-
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.ACCOUNT,
-				aggregateId: lockedRow.id,
-				eventType: ACCOUNT_EVENTS.FROZEN,
-				eventData: { reason, frozenBy },
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
+		// Log status transition
+		await tx.raw(
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason, metadata)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			["account", lockedRow.id, "frozen", lockedRow.status, reason, JSON.stringify({ frozenBy })],
 		);
 
 		await tx.raw(
@@ -650,7 +453,7 @@ export async function freezeAccount(
 
 		// Read back to return
 		const updatedRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2`,
 			[ledgerId, lockedRow.id],
 		);
 		const frozen = updatedRows[0];
@@ -676,7 +479,6 @@ export async function unfreezeAccount(
 	const { holderId, unfrozenBy } = params;
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const lockedRow = await resolveAccountForUpdate(
@@ -685,18 +487,16 @@ export async function unfreezeAccount(
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			dn,
 		);
 
 		if (lockedRow.status === "active") {
-			// Idempotent retry -- account already active
 			return rawRowToAccount(lockedRow);
 		}
 		if (lockedRow.status !== "frozen") {
 			throw SummaError.conflict(`Cannot unfreeze account in status: ${lockedRow.status}`);
 		}
 
-		// INSERT new version row with active status (APPEND-ONLY — no UPDATE)
+		// UPDATE account with active status, clear freeze fields
 		const newVersion = Number(lockedRow.version) + 1;
 		const checksum = computeBalanceChecksum(
 			{
@@ -711,63 +511,18 @@ export async function unfreezeAccount(
 		);
 
 		await tx.raw(
-			`INSERT INTO ${t("account_balance_version")} (
-         account_id, version, balance, credit_balance, debit_balance,
-         pending_credit, pending_debit, status, checksum,
-         freeze_reason, frozen_at, frozen_by,
-         closed_at, closed_by, closure_reason,
-         change_type
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-			[
-				lockedRow.id,
-				newVersion,
-				Number(lockedRow.balance),
-				Number(lockedRow.credit_balance),
-				Number(lockedRow.debit_balance),
-				Number(lockedRow.pending_credit),
-				Number(lockedRow.pending_debit),
-				"active",
-				checksum,
-				null,
-				null,
-				null, // Clear freeze fields
-				lockedRow.closed_at ?? null,
-				lockedRow.closed_by ?? null,
-				lockedRow.closure_reason ?? null,
-				"unfreeze",
-			],
+			`UPDATE ${t("account")} SET
+				status = $1, version = $2, checksum = $3,
+				freeze_reason = NULL, frozen_at = NULL, frozen_by = NULL
+			 WHERE id = $4 AND version = $5`,
+			["active", newVersion, checksum, lockedRow.id, Number(lockedRow.version)],
 		);
 
-		if (dn) {
-			await updateDenormalizedCache(tx, t, lockedRow.id, {
-				balance: Number(lockedRow.balance),
-				creditBalance: Number(lockedRow.credit_balance),
-				debitBalance: Number(lockedRow.debit_balance),
-				pendingDebit: Number(lockedRow.pending_debit),
-				pendingCredit: Number(lockedRow.pending_credit),
-				version: newVersion,
-				status: "active",
-				checksum,
-				freezeReason: null,
-				frozenAt: null,
-				frozenBy: null,
-				closedAt: lockedRow.closed_at ?? null,
-				closedBy: lockedRow.closed_by ?? null,
-				closureReason: lockedRow.closure_reason ?? null,
-			});
-		}
-
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.ACCOUNT,
-				aggregateId: lockedRow.id,
-				eventType: ACCOUNT_EVENTS.UNFROZEN,
-				eventData: { unfrozenBy },
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
+		// Log status transition
+		await tx.raw(
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason, metadata)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			["account", lockedRow.id, "active", "frozen", "unfrozen", JSON.stringify({ unfrozenBy })],
 		);
 
 		await tx.raw(
@@ -784,9 +539,8 @@ export async function unfreezeAccount(
 			],
 		);
 
-		// Read back to return
 		const updatedRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2`,
 			[ledgerId, lockedRow.id],
 		);
 		const unfrozen = updatedRows[0];
@@ -814,7 +568,6 @@ export async function closeAccount(
 	const { holderId, closedBy, reason } = params;
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		let sweepTxnId: string | null = null;
@@ -823,25 +576,23 @@ export async function closeAccount(
 		let destAccountId: string | null = null;
 		if (params.transferToHolderId) {
 			const destRows = await tx.raw<{ id: string }>(
-				`SELECT id FROM ${t("account_balance")}
-         WHERE ledger_id = $1 AND holder_id = $2
+				`SELECT id FROM ${t("account")}
+         WHERE ledger_id = $1 AND holder_id = $2 AND is_system = false
          LIMIT 1`,
 				[ledgerId, params.transferToHolderId],
 			);
 			if (destRows[0]) destAccountId = destRows[0].id;
 		}
 
-		// Lock the source account inside the transaction (prevents TOCTOU race)
+		// Lock the source account
 		const sourceRow = await resolveAccountForUpdate(
 			tx,
 			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			dn,
 		);
 
-		// Status checks INSIDE transaction after acquiring lock
 		if (sourceRow.status === "closed") {
 			return rawRowToAccount(sourceRow);
 		}
@@ -849,18 +600,12 @@ export async function closeAccount(
 			throw SummaError.accountFrozen("Cannot close a frozen account. Unfreeze first.");
 		}
 
-		// Check for active holds using LATERAL JOIN to get latest transaction_status
+		// Check for active holds
 		const activeHoldRows = await tx.raw<{ count: number }>(
-			`SELECT ${ctx.dialect.countAsInt()} AS count FROM ${t("transaction_record")} tr
-       JOIN LATERAL (
-         SELECT status FROM ${t("transaction_status")}
-         WHERE transaction_id = tr.id
-         ORDER BY created_at DESC
-         LIMIT 1
-       ) ts ON true
-       WHERE tr.source_account_id = $1
-         AND tr.is_hold = true
-         AND ts.status = 'inflight'`,
+			`SELECT ${ctx.dialect.countAsInt()} AS count FROM ${t("transfer")}
+       WHERE source_account_id = $1
+         AND is_hold = true
+         AND status = 'inflight'`,
 			[sourceRow.id],
 		);
 
@@ -873,48 +618,17 @@ export async function closeAccount(
 		// Lock destination if needed
 		let destRow: { id: string; status: string; currency: string } | null = null;
 		if (destAccountId && destAccountId !== sourceRow.id) {
-			if (dn) {
-				// Denormalized: lock + read status from cached columns in one query
-				const destRows = await tx.raw<{ id: string; cached_status: string; currency: string }>(
-					`SELECT id, cached_status, currency FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 FOR UPDATE`,
-					[ledgerId, destAccountId],
-				);
-				if (destRows[0]) {
-					destRow = {
-						id: destAccountId,
-						status: destRows[0].cached_status,
-						currency: destRows[0].currency,
-					};
-				}
-			} else {
-				// Standard: lock parent, then LATERAL JOIN for latest version
-				await tx.raw(
-					`SELECT id FROM ${t("account_balance")} WHERE ledger_id = $1 AND id = $2 FOR UPDATE`,
-					[ledgerId, destAccountId],
-				);
-				const destVersionRows = await tx.raw<{ status: string; currency: string }>(
-					`SELECT v.status, a.currency
-           FROM ${t("account_balance")} a
-           JOIN LATERAL (
-             SELECT status FROM ${t("account_balance_version")}
-             WHERE account_id = a.id ORDER BY version DESC LIMIT 1
-           ) v ON true
-           WHERE a.ledger_id = $1 AND a.id = $2`,
-					[ledgerId, destAccountId],
-				);
-				if (destVersionRows[0]) {
-					destRow = {
-						id: destAccountId,
-						status: destVersionRows[0].status,
-						currency: destVersionRows[0].currency,
-					};
-				}
+			const destRows = await tx.raw<{ id: string; status: string; currency: string }>(
+				`SELECT id, status, currency FROM ${t("account")} WHERE ledger_id = $1 AND id = $2 FOR UPDATE`,
+				[ledgerId, destAccountId],
+			);
+			if (destRows[0]) {
+				destRow = destRows[0];
 			}
 		}
 
 		const sweepAmount = Number(sourceRow.balance);
 
-		// If there's a balance, require a sweep destination
 		if (sweepAmount > 0 && !params.transferToHolderId) {
 			throw SummaError.invalidArgument(
 				`Cannot close account with balance of ${sweepAmount}. Provide transferToHolderId to sweep funds.`,
@@ -935,13 +649,17 @@ export async function closeAccount(
 				);
 			}
 
-			// Create sweep transaction record (IMMUTABLE — no status field)
-			const sweepTxnRows = await tx.raw<{ id: string; reference: string }>(
-				`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, meta_data)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, reference`,
+			// Create sweep transfer
+			const sweepTxnRows = await tx.raw<{ id: string }>(
+				`INSERT INTO ${t("transfer")} (
+					type, status, reference, amount, currency, description,
+					source_account_id, destination_account_id,
+					correlation_id, metadata, ledger_id, posted_at, effective_date
+				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())
+				RETURNING id`,
 				[
 					"transfer",
+					"posted",
 					`sweep_close_${sourceRow.id}`,
 					sweepAmount,
 					sourceRow.currency,
@@ -950,144 +668,77 @@ export async function closeAccount(
 					destRow.id,
 					correlationId,
 					JSON.stringify({ type: "closure_sweep", closedBy, reason }),
+					ledgerId,
 				],
 			);
 
 			sweepTxnId = sweepTxnRows[0]?.id ?? "";
 
-			// INSERT initial transaction_status for sweep (APPEND-ONLY)
-			await tx.raw(
-				`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-         VALUES ($1, $2, NOW())`,
-				[sweepTxnId, "posted"],
-			);
-
 			// Debit source + update balance
 			await insertEntryAndUpdateBalance({
 				tx,
-				transactionId: sweepTxnId,
+				transferId: sweepTxnId,
 				accountId: sourceRow.id,
 				entryType: "DEBIT",
 				amount: sweepAmount,
 				currency: sourceRow.currency,
 				isHotAccount: false,
 				skipLock: true,
-				updateDenormalizedCache: dn,
 			});
 
 			// Credit destination + update balance
 			await insertEntryAndUpdateBalance({
 				tx,
-				transactionId: sweepTxnId,
+				transferId: sweepTxnId,
 				accountId: destRow.id,
 				entryType: "CREDIT",
 				amount: sweepAmount,
 				currency: sourceRow.currency,
 				isHotAccount: false,
-				updateDenormalizedCache: dn,
 			});
-
-			// Event for sweep
-			if (!sweepTxnId) throw SummaError.internal("Sweep transaction ID missing after insert");
-			await appendEvent(
-				tx,
-				{
-					aggregateType: AGGREGATE_TYPES.TRANSACTION,
-					aggregateId: sweepTxnId,
-					eventType: TRANSACTION_EVENTS.POSTED,
-					eventData: {
-						reference: `sweep_close_${sourceRow.id}`,
-						amount: sweepAmount,
-						source: holderId,
-						destination: params.transferToHolderId,
-						category: "closure_sweep",
-					},
-					correlationId,
-				},
-				ctx.options.schema,
-				ctx.options.advanced.hmacSecret,
-				ledgerId,
-			);
 		}
 
-		// Close the account by inserting a new version with closed status
-		// Re-read the latest version since sweep may have changed the balance
-		const latest = await readLatestVersion(tx, t, sourceRow.id);
-		const closeVersion = Number(latest.version) + 1;
+		// Close the account — re-read balance (sweep may have changed it)
+		const currentRow = await tx.raw<RawAccountRow>(
+			`${accountSelectSql(t)} WHERE id = $1`,
+			[sourceRow.id],
+		);
+		const current = currentRow[0];
+		if (!current) throw SummaError.internal("Failed to re-read account for close");
+
+		const closeVersion = Number(current.version) + 1;
 		const closeChecksum = computeBalanceChecksum(
 			{
-				balance: Number(latest.balance),
-				creditBalance: Number(latest.credit_balance),
-				debitBalance: Number(latest.debit_balance),
-				pendingDebit: Number(latest.pending_debit),
-				pendingCredit: Number(latest.pending_credit),
+				balance: Number(current.balance),
+				creditBalance: Number(current.credit_balance),
+				debitBalance: Number(current.debit_balance),
+				pendingDebit: Number(current.pending_debit),
+				pendingCredit: Number(current.pending_credit),
 				lockVersion: closeVersion,
 			},
 			ctx.options.advanced.hmacSecret,
 		);
 
 		await tx.raw(
-			`INSERT INTO ${t("account_balance_version")} (
-         account_id, version, balance, credit_balance, debit_balance,
-         pending_credit, pending_debit, status, checksum,
-         freeze_reason, frozen_at, frozen_by,
-         closed_at, closed_by, closure_reason,
-         change_type
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), $13, $14, $15)`,
-			[
-				sourceRow.id,
-				closeVersion,
-				Number(latest.balance),
-				Number(latest.credit_balance),
-				Number(latest.debit_balance),
-				Number(latest.pending_credit),
-				Number(latest.pending_debit),
-				"closed",
-				closeChecksum,
-				latest.freeze_reason ?? null,
-				latest.frozen_at ?? null,
-				latest.frozen_by ?? null,
-				closedBy,
-				reason ?? null,
-				"close",
-			],
+			`UPDATE ${t("account")} SET
+				status = $1, version = $2, checksum = $3,
+				closed_at = NOW(), closed_by = $4, closure_reason = $5
+			 WHERE id = $6 AND version = $7`,
+			["closed", closeVersion, closeChecksum, closedBy, reason ?? null, sourceRow.id, Number(current.version)],
 		);
 
-		if (dn) {
-			await updateDenormalizedCache(tx, t, sourceRow.id, {
-				balance: Number(latest.balance),
-				creditBalance: Number(latest.credit_balance),
-				debitBalance: Number(latest.debit_balance),
-				pendingDebit: Number(latest.pending_debit),
-				pendingCredit: Number(latest.pending_credit),
-				version: closeVersion,
-				status: "closed",
-				checksum: closeChecksum,
-				freezeReason: latest.freeze_reason ?? null,
-				frozenAt: latest.frozen_at ?? null,
-				frozenBy: latest.frozen_by ?? null,
-				closedAt: new Date().toISOString(),
-				closedBy,
-				closureReason: reason ?? null,
-			});
-		}
-
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.ACCOUNT,
-				aggregateId: sourceRow.id,
-				eventType: ACCOUNT_EVENTS.CLOSED,
-				eventData: {
-					closedBy,
-					reason,
-					finalBalance: sweepAmount,
-					sweepTransactionId: sweepTxnId,
-				},
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
+		// Log status transition
+		await tx.raw(
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason, metadata)
+			 VALUES ($1, $2, $3, $4, $5, $6)`,
+			[
+				"account",
+				sourceRow.id,
+				"closed",
+				current.status,
+				reason ?? "Account closed",
+				JSON.stringify({ closedBy, sweepTransactionId: sweepTxnId }),
+			],
 		);
 
 		await tx.raw(
@@ -1116,7 +767,7 @@ export async function closeAccount(
 
 		// Read back final state
 		const closedRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2`,
 			[ledgerId, sourceRow.id],
 		);
 		const closed = closedRows[0];
@@ -1143,9 +794,7 @@ export async function listAccounts(
 		status?: AccountStatus;
 		holderType?: HolderType;
 		search?: string;
-		/** Opaque cursor for keyset pagination (faster than page/perPage at depth). */
 		cursor?: string;
-		/** Items per page when using cursor pagination. Default: 20, max: 100. */
 		limit?: number;
 	},
 ): Promise<{ accounts: Account[]; hasMore: boolean; total: number; nextCursor?: string }> {
@@ -1165,32 +814,30 @@ export async function listAccounts(
 
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const dn = ctx.options.advanced.useDenormalizedBalance;
 
-	// Build dynamic WHERE conditions.
-	// Conditions reference output column names of the subquery (via "combined" alias).
 	const conditions: string[] = [];
 	const queryParams: unknown[] = [];
 	let paramIdx = 1;
 
-	// Mandatory ledger_id filter
-	conditions.push(`combined.ledger_id = $${paramIdx++}`);
+	conditions.push(`ledger_id = $${paramIdx++}`);
 	queryParams.push(ledgerId);
 
+	// Exclude system accounts from listing
+	conditions.push(`is_system = false`);
+
 	if (params.status) {
-		conditions.push(`combined.status = $${paramIdx++}`);
+		conditions.push(`status = $${paramIdx++}`);
 		queryParams.push(params.status);
 	}
 	if (params.holderType) {
-		conditions.push(`combined.holder_type = $${paramIdx++}`);
+		conditions.push(`holder_type = $${paramIdx++}`);
 		queryParams.push(params.holderType);
 	}
 	if (params.search) {
-		conditions.push(`combined.holder_id = $${paramIdx++}`);
+		conditions.push(`holder_id = $${paramIdx++}`);
 		queryParams.push(params.search);
 	}
 
-	// Cursor-based pagination: use keyset filtering instead of OFFSET
 	const useCursor = params.cursor != null;
 	const cursorData = useCursor && params.cursor ? decodeCursor(params.cursor) : null;
 	if (useCursor && !cursorData) {
@@ -1199,25 +846,21 @@ export async function listAccounts(
 
 	if (cursorData) {
 		conditions.push(
-			`(combined.created_at, combined.id) > ($${paramIdx}::timestamptz, $${paramIdx + 1})`,
+			`(created_at, id) > ($${paramIdx}::timestamptz, $${paramIdx + 1})`,
 		);
 		queryParams.push(cursorData.ca, cursorData.id);
 		paramIdx += 2;
 	}
 
-	const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+	const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
 	const perPage = Math.min(params.limit ?? params.perPage ?? 20, 100);
 
 	if (useCursor) {
-		// Cursor-based: no OFFSET, no COUNT(*) OVER() (faster)
 		queryParams.push(perPage + 1);
 		const rows = await ctx.readAdapter.raw<RawAccountRow>(
-			`SELECT combined.* FROM (
-           ${accountSelectSql(t, dn)}
-         ) combined
-         ${whereClause}
-         ORDER BY combined.created_at ASC, combined.id ASC
+			`${accountSelectSql(t)} ${whereClause}
+         ORDER BY created_at ASC, id ASC
          LIMIT $${paramIdx}`,
 			queryParams,
 		);
@@ -1230,18 +873,15 @@ export async function listAccounts(
 		return { accounts: data, hasMore, total: -1, nextCursor };
 	}
 
-	// OFFSET/LIMIT pagination
 	const page = Math.max(1, params.page ?? 1);
 	const offset = (page - 1) * perPage;
 
 	queryParams.push(perPage + 1);
 	queryParams.push(offset);
 	const rows = await ctx.readAdapter.raw<RawAccountRow & { _total_count: number }>(
-		`SELECT combined.*, COUNT(*) OVER()::int AS _total_count FROM (
-       ${accountSelectSql(t, dn)}
-     ) combined
+		`SELECT *, COUNT(*) OVER()::int AS _total_count FROM ${t("account")}
      ${whereClause}
-     ORDER BY combined.created_at ASC
+     ORDER BY created_at ASC
      LIMIT $${paramIdx++}
      OFFSET $${paramIdx}`,
 		queryParams,
@@ -1277,49 +917,27 @@ export async function updateOverdraft(
 	}
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		const dn = ctx.options.advanced.useDenormalizedBalance;
 		const lockedRow = await resolveAccountForUpdate(
 			tx,
 			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			dn,
 		);
 
 		if (lockedRow.status === "closed") {
 			throw SummaError.accountClosed("Cannot update overdraft on a closed account");
 		}
 
-		// Update the static overdraft fields on account_balance
+		// Update the overdraft fields directly on account
 		await tx.raw(
-			`UPDATE ${t("account_balance")} SET allow_overdraft = $1, overdraft_limit = $2 WHERE id = $3`,
+			`UPDATE ${t("account")} SET allow_overdraft = $1, overdraft_limit = $2 WHERE id = $3`,
 			[allowOverdraft, overdraftLimit, lockedRow.id],
-		);
-
-		// Append event
-		await appendEvent(
-			tx,
-			{
-				aggregateType: AGGREGATE_TYPES.ACCOUNT,
-				aggregateId: lockedRow.id,
-				eventType: ACCOUNT_EVENTS.CREATED, // re-use; no dedicated event type needed
-				eventData: {
-					action: "update_overdraft",
-					allowOverdraft,
-					overdraftLimit,
-					previousAllowOverdraft: lockedRow.allow_overdraft,
-					previousOverdraftLimit: Number(lockedRow.overdraft_limit ?? 0),
-				},
-			},
-			ctx.options.schema,
-			ctx.options.advanced.hmacSecret,
-			ledgerId,
 		);
 
 		// Read back
 		const updatedRows = await tx.raw<RawAccountRow>(
-			`${accountSelectSql(t, dn)} WHERE a.ledger_id = $1 AND a.id = $2`,
+			`${accountSelectSql(t)} WHERE ledger_id = $1 AND id = $2`,
 			[ledgerId, lockedRow.id],
 		);
 		const updated = updatedRows[0];
@@ -1371,66 +989,4 @@ function rawRowToAccount(row: RawAccountRow): Account {
 
 function deriveNormalBalance(accountType: AccountType): NormalBalance {
 	return accountType === "asset" || accountType === "expense" ? "debit" : "credit";
-}
-
-/**
- * Update the denormalized cached_* columns on account_balance.
- * Called after inserting a new account_balance_version row in freeze/unfreeze/close paths.
- */
-async function updateDenormalizedCache(
-	tx: SummaTransactionAdapter,
-	t: (name: string) => string,
-	accountId: string,
-	data: {
-		balance: number;
-		creditBalance: number;
-		debitBalance: number;
-		pendingDebit: number;
-		pendingCredit: number;
-		version: number;
-		status: string;
-		checksum: string;
-		freezeReason: string | null;
-		frozenAt: string | Date | null;
-		frozenBy: string | null;
-		closedAt: string | Date | null;
-		closedBy: string | null;
-		closureReason: string | null;
-	},
-): Promise<void> {
-	await tx.raw(
-		`UPDATE ${t("account_balance")} SET
-		   cached_balance = $1,
-		   cached_credit_balance = $2,
-		   cached_debit_balance = $3,
-		   cached_pending_debit = $4,
-		   cached_pending_credit = $5,
-		   cached_version = $6,
-		   cached_status = $7,
-		   cached_checksum = $8,
-		   cached_freeze_reason = $9,
-		   cached_frozen_at = $10,
-		   cached_frozen_by = $11,
-		   cached_closed_at = $12,
-		   cached_closed_by = $13,
-		   cached_closure_reason = $14
-		 WHERE id = $15`,
-		[
-			data.balance,
-			data.creditBalance,
-			data.debitBalance,
-			data.pendingDebit,
-			data.pendingCredit,
-			data.version,
-			data.status,
-			data.checksum,
-			data.freezeReason,
-			data.frozenAt,
-			data.frozenBy,
-			data.closedAt,
-			data.closedBy,
-			data.closureReason,
-			accountId,
-		],
-	);
 }

@@ -57,7 +57,7 @@ Plugin workers only run when their plugin is registered. Each plugin page docume
 
 | Plugin | Workers | Description |
 |--------|---------|-------------|
-| [`outbox`](/docs/plugins/outbox) | `outbox-processor` (5s), `outbox-cleanup` (6h), `webhook-delivery-processor` (5s), `webhook-delivery-cleanup` (1d) | Event delivery, outbox + processed_event cleanup, webhook delivery |
+| [`outbox`](/docs/plugins/outbox) | `outbox-processor` (5s), `outbox-cleanup` (6h), `webhook-delivery-processor` (5s), `webhook-delivery-cleanup` (1d) | Event delivery, outbox cleanup, webhook delivery |
 | [`reconciliation`](/docs/plugins/reconciliation) | `daily-reconciliation` (1d), `fast-reconciliation` (1h) | Full and fast balance reconciliation |
 | [`snapshots`](/docs/plugins/snapshots) | `daily-snapshots` (1d) | Point-in-time balance snapshots |
 | [`hotAccounts`](/docs/plugins/hot-accounts) | `hot-account-processor` (30s), `hot-account-cleanup` (6h) | Aggregates staged entries, cleans processed entries |
@@ -71,7 +71,6 @@ Plugin workers only run when their plugin is registered. Each plugin page docume
 | [`approvalWorkflow`](/docs/plugins/approval-workflow) | `approval-expiry` (5m) | Expires timed-out approval requests |
 | [`batchImport`](/docs/plugins/batch-import) | `batch-processor` (30s) | Processes staged batch imports |
 | [`accrualAccounting`](/docs/plugins/accrual-accounting) | `accrual-processor` (1d) | Posts due accrual entries |
-| [`versionRetention`](/docs/plugins/version-retention) | `version-retention-worker` (1h) | Prunes old `account_balance_version` rows |
 | [`search`](/docs/plugins/search) | `search-indexer` (3s), `search-queue-cleanup` (6h) | Indexes documents, cleans processed queue entries |
 | [`backup`](/docs/plugins/backup) | `scheduled-backup` (1d), `backup-cleanup` (1d) | Runs scheduled backups, removes old backup records |
 | [`statements`](/docs/plugins/statements) | `statement-generator` (5s) | Processes pending statement generation jobs |

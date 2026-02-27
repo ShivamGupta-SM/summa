@@ -144,15 +144,15 @@ export async function generateSaftReport(
 	// Fetch all accounts for this ledger
 	const accounts = await ctx.adapter.raw<RawAccountRow>(
 		`SELECT id, account_code, holder_id, account_type, balance, currency
-		 FROM ${t("account_balance")} WHERE ledger_id = $1`,
+		 FROM ${t("account")} WHERE ledger_id = $1`,
 		[ledgerId],
 	);
 
 	// Fetch entries in the reporting period
 	const entries = await ctx.adapter.raw<RawEntryRow>(
 		`SELECT er.id, er.transaction_id, er.account_id, er.entry_type, er.amount, er.created_at
-		 FROM ${t("entry_record")} er
-		 JOIN ${t("account_balance")} ab ON er.account_id = ab.id
+		 FROM ${t("entry")} er
+		 JOIN ${t("account")} ab ON er.account_id = ab.id
 		 WHERE ab.ledger_id = $1
 		   AND er.created_at >= $2::timestamptz
 		   AND er.created_at <= $3::timestamptz
@@ -239,7 +239,7 @@ export async function generateXbrlReport(
 		        SUM(balance) as total_balance,
 		        SUM(debit_balance) as total_debit,
 		        SUM(credit_balance) as total_credit
-		 FROM ${t("account_balance")}
+		 FROM ${t("account")}
 		 WHERE ledger_id = $1 AND account_type IS NOT NULL
 		 GROUP BY account_type`,
 		[ledgerId],

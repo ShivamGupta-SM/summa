@@ -12,18 +12,17 @@ This is the same isolation pattern used by production financial ledgers and bank
 
 ## How It Works
 
-Six boundary tables carry a `ledger_id` column:
+Five boundary tables carry a `ledger_id` column:
 
 | Table | Purpose |
 |-------|---------|
-| `account_balance` | All account lookups filter by ledger |
-| `system_account` | Each ledger gets its own @World, @Fees, etc. |
-| `transaction_record` | Same reference is OK across different ledgers |
+| `account` | All account lookups filter by ledger (includes system accounts with `is_system = true`) |
+| `transfer` | Same reference is OK across different ledgers |
 | `idempotency_key` | Same key is OK across different ledgers |
-| `ledger_event` | Hash chain integrity is per-ledger |
+| `entry` | Hash chain integrity is per-ledger (via `sequence_number`) |
 | `block_checkpoint` | Merkle tree blocks are per-ledger |
 
-All other tables (`entry_record`, `account_balance_version`, `transaction_status`, etc.) are isolated through foreign key chains — no `ledger_id` needed.
+Other tables (`merkle_node`, `entity_status_log`, etc.) are isolated through foreign key chains — no `ledger_id` needed.
 
 ## Creating a Ledger
 
@@ -125,5 +124,5 @@ The `ledger` table stores tenant metadata:
 | `created_at` | TIMESTAMPTZ | Creation time |
 
 <Callout type="info" title="Indirect FK Isolation">
-  Only 6 tables carry a `ledger_id` column. The remaining ~15 tables inherit isolation through foreign key chains — for example, `entry_record` belongs to a `transaction_record` which belongs to a ledger. This keeps the schema clean and minimizes the migration surface.
+  Only 5 tables carry a `ledger_id` column. The remaining tables inherit isolation through foreign key chains — for example, `merkle_node` belongs to a `block_checkpoint` which belongs to a ledger. This keeps the schema clean and minimizes the migration surface.
 </Callout>

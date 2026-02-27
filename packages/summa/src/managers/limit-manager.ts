@@ -2,7 +2,12 @@
 // LIMIT MANAGER -- Transaction velocity controls and limit enforcement
 // =============================================================================
 // Enforces per-transaction, daily, and monthly limits for compliance.
-// Limits are stored in account_limit table; aggregates from account_transaction_log.
+// Limits are stored in account_limit table; aggregates from entry table.
+//
+// v2 changes:
+// - Velocity queries use `entry` table instead of `account_transaction_log`
+// - logTransaction/logTransactionInTx removed (no separate velocity log needed)
+// - entry_type maps to txnType: CREDIT → credit, DEBIT → debit
 
 import type {
 	AccountLimitInfo,
@@ -166,20 +171,10 @@ export async function enforceLimits(
 
 /**
  * Enforce limits using an already-known account ID (from a FOR UPDATE row).
- * Avoids the redundant getAccountByHolder() lookup that checkLimits() does.
- * Call this inside transactions where the account is already locked.
- *
- * Requires `tx` to run limit queries within the same database transaction,
- * preventing TOCTOU races where two concurrent requests could both pass
- * the limit check before either commits.
- */
-/**
- * In-memory cache for accounts with no limits. Avoids the account_limit SELECT
- * on every transaction for accounts that have no limits (the common case).
- * Key: accountId, Value: timestamp when cached (for TTL expiry).
+ * Avoids the redundant getAccountByHolder() lookup.
  */
 const noLimitsCache = new Map<string, number>();
-const NO_LIMITS_CACHE_TTL_MS = 60_000; // 60 seconds
+const NO_LIMITS_CACHE_TTL_MS = 60_000;
 
 /** Clear the no-limits cache (useful for testing or after limit changes). */
 export function clearNoLimitsCache(): void {
@@ -224,7 +219,6 @@ export async function enforceLimitsWithAccountId(
 		return;
 	}
 
-	// Account has limits — remove from no-limits cache (limits may have been added)
 	noLimitsCache.delete(accountId);
 
 	const now = new Date();
@@ -275,81 +269,6 @@ export async function enforceLimitsWithAccountId(
 }
 
 // =============================================================================
-// LOG TRANSACTION (call after successful transactions)
-// =============================================================================
-
-export async function logTransaction(
-	ctx: SummaContext,
-	params: {
-		accountId: string;
-		ledgerTxnId: string;
-		txnType: "credit" | "debit" | "hold";
-		amount: number;
-		category?: string;
-		reference?: string;
-	},
-): Promise<void> {
-	const t = createTableResolver(ctx.options.schema);
-	try {
-		await ctx.adapter.raw(
-			`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-			[
-				params.accountId,
-				params.ledgerTxnId,
-				params.txnType,
-				params.amount,
-				params.category ?? null,
-				params.reference ?? null,
-			],
-		);
-	} catch (error) {
-		// Log but don't fail -- velocity tracking is auxiliary
-		ctx.logger.warn("Failed to log transaction for velocity tracking", {
-			ledgerTxnId: params.ledgerTxnId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-	}
-}
-
-/**
- * Log transaction inside an existing database transaction for atomicity.
- * Ensures velocity tracking is committed/rolled back with the parent transaction.
- */
-export async function logTransactionInTx(
-	tx: SummaTransactionAdapter,
-	params: {
-		accountId: string;
-		ledgerTxnId: string;
-		txnType: "credit" | "debit" | "hold";
-		amount: number;
-		category?: string;
-		reference?: string;
-	},
-): Promise<void> {
-	const VALID_TXN_TYPES: ReadonlySet<string> = new Set(["credit", "debit", "hold"]);
-	if (!VALID_TXN_TYPES.has(params.txnType)) {
-		throw SummaError.invalidArgument(
-			`Invalid txnType: "${params.txnType}". Must be one of: credit, debit, hold`,
-		);
-	}
-
-	const t = createTableResolver(tx.options?.schema ?? "summa");
-	await tx.raw(
-		`INSERT INTO ${t("account_transaction_log")} (account_id, ledger_txn_id, txn_type, amount, category, reference)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-		[
-			params.accountId,
-			params.ledgerTxnId,
-			params.txnType,
-			params.amount,
-			params.category ?? null,
-			params.reference ?? null,
-		],
-	);
-}
-
-// =============================================================================
 // SET LIMIT
 // =============================================================================
 
@@ -379,7 +298,6 @@ export async function setLimit(
 	const t = createTableResolver(ctx.options.schema);
 	const account = await getAccountByHolder(ctx, holderId);
 
-	// Check for existing limit (handles NULL category correctly since NULL != NULL in SQL)
 	const existingRows =
 		category === null
 			? await ctx.adapter.raw<RawLimitRow>(
@@ -397,7 +315,6 @@ export async function setLimit(
 
 	let rows: RawLimitRow[];
 	if (existingRows[0]) {
-		// Update existing
 		rows = await ctx.adapter.raw<RawLimitRow>(
 			`UPDATE ${t("account_limit")}
        SET max_amount = $1, enabled = $2, updated_at = NOW()
@@ -406,7 +323,6 @@ export async function setLimit(
 			[maxAmount, enabled, existingRows[0].id],
 		);
 	} else {
-		// Insert new
 		rows = await ctx.adapter.raw<RawLimitRow>(
 			`INSERT INTO ${t("account_limit")} (account_id, limit_type, max_amount, category, enabled)
        VALUES ($1, $2, $3, $4, $5)
@@ -497,61 +413,13 @@ export async function getUsageSummary(
 }
 
 // =============================================================================
-// CLEANUP -- Remove old transaction log entries beyond retention period
-// =============================================================================
-
-/**
- * Delete transaction log entries older than the retention period.
- * Velocity limits only use current day and current month data,
- * so entries older than 90 days are safe to remove.
- *
- * Uses batched deletion to avoid holding a long lock on the table.
- */
-export async function cleanupOldTransactionLogs(
-	ctx: SummaContext,
-	retentionDays = 90,
-): Promise<number> {
-	const t = createTableResolver(ctx.options.schema);
-	const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
-	let totalDeleted = 0;
-	const BATCH_SIZE = 5000;
-
-	while (true) {
-		const count = await ctx.adapter.rawMutate(
-			`DELETE FROM ${t("account_transaction_log")}
-       WHERE id IN (
-         SELECT id FROM ${t("account_transaction_log")}
-         WHERE created_at < $1
-         LIMIT $2
-       )`,
-			[cutoff.toISOString(), BATCH_SIZE],
-		);
-
-		totalDeleted += count;
-
-		if (count < BATCH_SIZE) break;
-
-		// Brief pause between batches to avoid monopolizing the table
-		await new Promise((r) => setTimeout(r, 100));
-	}
-
-	if (totalDeleted > 0) {
-		ctx.logger.info("Cleaned up old transaction log entries", {
-			deleted: totalDeleted,
-			retentionDays,
-		});
-	}
-
-	return totalDeleted;
-}
-
-// =============================================================================
 // HELPERS
 // =============================================================================
 
 /**
  * Single query for both daily and monthly usage via conditional aggregation.
- * Avoids 2 separate SUM queries when both limits exist.
+ * In v2, queries the `entry` table directly instead of `account_transaction_log`.
+ * Maps txnType to entry_type: "credit" → "CREDIT", "debit" → "DEBIT".
  */
 async function getUsageBoth(
 	queryRunner: Pick<SummaTransactionAdapter, "raw">,
@@ -559,22 +427,20 @@ async function getUsageBoth(
 	startOfDay: Date,
 	startOfMonth: Date,
 	txnType?: "credit" | "debit" | "hold",
-	category?: string,
+	_category?: string,
 	t?: ReturnType<typeof createTableResolver>,
 ): Promise<{ daily: number; monthly: number }> {
 	if (!t) t = createTableResolver("summa");
-	// Build dynamic query
+
+	// Map txnType to entry_type for querying the entry table
 	const conditions: string[] = ["account_id = $1", "created_at >= $2"];
 	const params: unknown[] = [accountId, startOfMonth.toISOString()];
 	let paramIdx = 3;
 
-	if (txnType) {
-		conditions.push(`txn_type = $${paramIdx++}`);
-		params.push(txnType);
-	}
-	if (category) {
-		conditions.push(`category = $${paramIdx++}`);
-		params.push(category);
+	if (txnType && txnType !== "hold") {
+		// Map: "credit" → "CREDIT", "debit" → "DEBIT"
+		conditions.push(`entry_type = $${paramIdx++}`);
+		params.push(txnType.toUpperCase());
 	}
 
 	// Add startOfDay as last param for the CASE expression
@@ -585,7 +451,7 @@ async function getUsageBoth(
 		`SELECT
        COALESCE(SUM(CASE WHEN created_at >= $${startOfDayParam} THEN amount ELSE 0 END)::bigint, 0) as daily,
        COALESCE(SUM(amount)::bigint, 0) as monthly
-     FROM ${t("account_transaction_log")}
+     FROM ${t("entry")}
      WHERE ${conditions.join(" AND ")}`,
 		params,
 	);

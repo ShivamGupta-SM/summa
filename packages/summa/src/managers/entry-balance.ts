@@ -1,21 +1,20 @@
 // =============================================================================
-// ENTRY + BALANCE UPDATE — Single Mutation Point (APPEND-ONLY)
+// ENTRY + BALANCE UPDATE — Single Mutation Point
 // =============================================================================
-// Every balance change in Summa flows through this function. Instead of UPDATE-ing
-// account_balance rows, we INSERT a new account_balance_version row.
+// Every balance change in Summa flows through this function.
 //
 // For user accounts:
-//   1. (Optional) SELECT ... FROM account_balance FOR UPDATE — skipped when caller
+//   1. (Optional) SELECT ... FROM account FOR UPDATE — skipped when caller
 //      already locked via resolveAccountForUpdate (skipLock=true)
-//   2. SELECT latest version FROM account_balance_version
-//   3. INSERT entry_record + account_balance_version via CTE (single round-trip)
+//   2. READ current balance from account row
+//   3. CTE: INSERT entry (with hash chain) + UPDATE account balance (single round-trip)
 //
-// For hot/system accounts: INSERT entry only (hot_account_entry batching is separate)
+// For hot/system accounts: INSERT entry only (batch flush updates balance later)
 
 import type { SummaTransactionAdapter } from "@summa-ledger/core";
-import { computeBalanceChecksum } from "@summa-ledger/core";
+import { computeBalanceChecksum, computeHash } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
-import { readLatestVersion } from "./sql-helpers.js";
+import { readAccountBalance } from "./sql-helpers.js";
 
 // =============================================================================
 // TYPES
@@ -25,8 +24,8 @@ export interface InsertEntryParams {
 	/** The DB transaction handle */
 	tx: SummaTransactionAdapter;
 
-	/** transaction_record.id */
-	transactionId: string;
+	/** transfer.id */
+	transferId: string;
 
 	/** CREDIT or DEBIT */
 	entryType: "CREDIT" | "DEBIT";
@@ -37,13 +36,10 @@ export interface InsertEntryParams {
 	/** Currency code */
 	currency: string;
 
-	/** User account ID (mutually exclusive with systemAccountId) */
-	accountId?: string | null;
+	/** Account ID (unified — works for both user and system accounts) */
+	accountId: string;
 
-	/** System account ID (mutually exclusive with accountId) */
-	systemAccountId?: string | null;
-
-	/** true for system/hot accounts — skips balance logic */
+	/** true for system/hot accounts — skips balance update */
 	isHotAccount: boolean;
 
 	/** FX fields — only for cross-currency transfers */
@@ -51,32 +47,22 @@ export interface InsertEntryParams {
 	originalCurrency?: string | null;
 	exchangeRate?: number | null;
 
-	/** Event ID that caused this change (for version tracking) */
-	causedByEventId?: string | null;
-
 	/**
-	 * Skip the FOR UPDATE lock on account_balance. Set to true when the caller
+	 * Skip the FOR UPDATE lock on account. Set to true when the caller
 	 * has already locked the account via resolveAccountForUpdate(). Saves one
 	 * round-trip per call. Default: false (lock acquired here for safety).
 	 */
 	skipLock?: boolean;
 
 	/**
-	 * When true, also UPDATE the denormalized cached_* columns on account_balance
-	 * in the same transaction. Eliminates LATERAL JOIN for balance reads.
-	 * Controlled by ctx.options.advanced.useDenormalizedBalance.
-	 */
-	updateDenormalizedCache?: boolean;
-
-	/**
 	 * Lock acquisition mode. When "optimistic", the FOR UPDATE lock is skipped
-	 * and conflict is detected via the UNIQUE(account_id, version) constraint.
+	 * and conflict is detected via the UNIQUE(account_id, account_version) constraint.
 	 */
 	lockMode?: "wait" | "nowait" | "optimistic";
 
 	/**
 	 * Pre-fetched balance state from resolveAccountForUpdate(). When provided
-	 * together with skipLock=true, the readLatestVersion() SELECT is skipped
+	 * together with skipLock=true, the readAccountBalance() SELECT is skipped
 	 * entirely — saving one DB round-trip per transaction.
 	 */
 	existingBalance?: {
@@ -107,51 +93,61 @@ export interface InsertEntryResult {
 // =============================================================================
 
 /**
- * Single mutation point: insert an entry_record and (for user accounts) insert
- * a new account_balance_version row with the updated state.
+ * Single mutation point: insert an entry (with hash chain) and (for user accounts)
+ * update the account balance in-place.
  *
  * For user accounts (isHotAccount=false):
- *   1. SELECT ... FOR UPDATE (unless skipLock=true — caller already locked)
- *   2. SELECT latest account_balance_version
- *   3. Compute balance_before, balance_after, new version
- *   4. CTE: INSERT entry_record + INSERT account_balance_version (one round-trip)
+ *   1. SELECT ... FOR UPDATE (unless skipLock=true)
+ *   2. Read current balance from account row
+ *   3. Compute entry hash (per-account chain)
+ *   4. CTE: INSERT entry + UPDATE account (one round-trip)
  *
  * For hot/system accounts (isHotAccount=true):
- *   Just INSERT the entry_record. Balance logic is handled by hot_account_entry batching.
+ *   Just INSERT the entry. Balance update is handled by batch flush.
  */
 export async function insertEntryAndUpdateBalance(
 	params: InsertEntryParams,
 ): Promise<InsertEntryResult> {
-	const { tx, transactionId, entryType, amount, currency, isHotAccount } = params;
+	const { tx, transferId, entryType, amount, currency, isHotAccount, accountId } = params;
 	const t = createTableResolver(params.tx.options?.schema ?? "summa");
+	const hmacSecret = params.tx.options?.hmacSecret ?? null;
 
-	// --- HOT ACCOUNT PATH: just insert the entry, no balance logic ---
+	// --- HOT ACCOUNT PATH: just insert the entry, no balance update ---
 	if (isHotAccount) {
+		// Get the previous hash for this account's chain
+		const prevRows = await tx.raw<{ hash: string }>(
+			`SELECT hash FROM ${t("entry")} WHERE account_id = $1 ORDER BY sequence_number DESC LIMIT 1`,
+			[accountId],
+		);
+		const prevHash = prevRows[0]?.hash ?? null;
+
+		// Compute entry hash
+		const entryData = { transferId, accountId, entryType, amount, currency, isHot: true };
+		const hash = computeHash(prevHash, entryData, hmacSecret);
+
 		await tx.raw(
-			`INSERT INTO ${t("entry_record")} (transaction_id, system_account_id, entry_type, amount, currency, is_hot_account)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-			[transactionId, params.systemAccountId, entryType, amount, currency, true],
+			`INSERT INTO ${t("entry")} (
+				transfer_id, account_id, entry_type, amount, currency,
+				sequence_number, hash, prev_hash, effective_date
+			) VALUES (
+				$1, $2, $3, $4, $5,
+				nextval('${t("entry")}_sequence_number_seq'), $6, $7, NOW()
+			)`,
+			[transferId, accountId, entryType, amount, currency, hash, prevHash],
 		);
 		return { balanceBefore: null, balanceAfter: null, lockVersion: null };
 	}
 
 	// --- USER ACCOUNT PATH ---
-	const accountId = params.accountId;
-	if (!accountId) {
-		throw new Error("accountId is required for non-hot-account entries");
-	}
 
-	// Step 1: Lock the immutable account_balance parent row (serialization point)
-	// Skipped when the caller already locked via resolveAccountForUpdate()
-	// Skipped in optimistic mode — conflict detected via UNIQUE(account_id, version) constraint
+	// Step 1: Lock the account row (serialization point)
 	const isOptimistic = params.lockMode === "optimistic";
 	if (!params.skipLock && !isOptimistic) {
-		await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [accountId]);
+		await tx.raw(`SELECT id FROM ${t("account")} WHERE id = $1 FOR UPDATE`, [accountId]);
 	}
 
-	// Step 2: Read latest version from account_balance_version.
-	// Skipped when existingBalance is provided (caller already fetched via resolveAccountForUpdate).
-	const current = params.existingBalance ?? (await readLatestVersion(tx, t, accountId));
+	// Step 2: Read current balance from account
+	const current = params.existingBalance ?? (await readAccountBalance(tx, t, accountId));
 
 	// Step 3: Compute derived fields
 	const balanceBefore = Number(current.balance);
@@ -166,7 +162,6 @@ export async function insertEntryAndUpdateBalance(
 		entryType === "DEBIT" ? Number(current.debit_balance) + amount : Number(current.debit_balance);
 
 	// Compute balance checksum for tamper detection
-	const hmacSecret = params.tx.options?.hmacSecret ?? null;
 	const checksum = computeBalanceChecksum(
 		{
 			balance: balanceAfter,
@@ -179,114 +174,78 @@ export async function insertEntryAndUpdateBalance(
 		hmacSecret,
 	);
 
-	// Step 4: CTE — INSERT entry_record + account_balance_version in one round-trip
-	// The UNIQUE(account_id, version) constraint on account_balance_version acts as
+	// Get previous hash for this account's chain
+	const prevRows = await tx.raw<{ hash: string }>(
+		`SELECT hash FROM ${t("entry")} WHERE account_id = $1 ORDER BY sequence_number DESC LIMIT 1`,
+		[accountId],
+	);
+	const prevHash = prevRows[0]?.hash ?? null;
+
+	// Compute entry hash
+	const entryData = {
+		transferId,
+		accountId,
+		entryType,
+		amount,
+		currency,
+		balanceBefore,
+		balanceAfter,
+		version: newVersion,
+	};
+	const hash = computeHash(prevHash, entryData, hmacSecret);
+
+	// Step 4: CTE — INSERT entry + UPDATE account in one round-trip
+	// The UNIQUE(account_id, account_version) constraint on entry acts as
 	// optimistic lock: if a concurrent transaction inserted this version, this fails.
-	const changeType = entryType === "CREDIT" ? "credit" : "debit";
 	const hasFx = params.originalAmount != null;
 
-	const entryCols = hasFx
-		? "transaction_id, account_id, entry_type, amount, currency, is_hot_account, balance_before, balance_after, account_lock_version, original_amount, original_currency, exchange_rate"
-		: "transaction_id, account_id, entry_type, amount, currency, is_hot_account, balance_before, balance_after, account_lock_version";
+	const sqlParams: unknown[] = [];
+	let pIdx = 0;
+	const p = (val: unknown): string => {
+		sqlParams.push(val);
+		return `$${++pIdx}`;
+	};
 
-	const entryPlaceholders = hasFx
-		? "$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12"
-		: "$1, $2, $3, $4, $5, $6, $7, $8, $9";
-
-	const entryParams: unknown[] = hasFx
-		? [
-				transactionId,
-				accountId,
-				entryType,
-				amount,
-				currency,
-				false,
-				balanceBefore,
-				balanceAfter,
-				newVersion,
-				params.originalAmount,
-				params.originalCurrency,
-				params.exchangeRate,
-			]
-		: [
-				transactionId,
-				accountId,
-				entryType,
-				amount,
-				currency,
-				false,
-				balanceBefore,
-				balanceAfter,
-				newVersion,
-			];
-
-	// Version params start after entry params
-	const vBase = entryParams.length;
-	const versionParams = [
-		accountId,
-		newVersion,
-		balanceAfter,
-		newCreditBalance,
-		newDebitBalance,
-		Number(current.pending_debit),
-		Number(current.pending_credit),
-		current.status,
-		checksum,
-		current.freeze_reason,
-		current.frozen_at,
-		current.frozen_by,
-		current.closed_at,
-		current.closed_by,
-		current.closure_reason,
-		changeType,
-		transactionId,
+	const entryCols = [
+		"transfer_id", "account_id", "entry_type", "amount", "currency",
+		"balance_before", "balance_after", "account_version",
+		"sequence_number", "hash", "prev_hash",
+	];
+	const entryVals = [
+		p(transferId), p(accountId), p(entryType), p(amount), p(currency),
+		p(balanceBefore), p(balanceAfter), p(newVersion),
+		`nextval('${t("entry")}_sequence_number_seq')`, p(hash), p(prevHash),
 	];
 
-	const vPlaceholders = versionParams.map((_, i) => `$${vBase + i + 1}`).join(", ");
+	if (hasFx) {
+		entryCols.push("original_amount", "original_currency", "exchange_rate");
+		entryVals.push(p(params.originalAmount), p(params.originalCurrency), p(params.exchangeRate));
+	}
+
+	// Account UPDATE params
+	const pBalAfter = p(balanceAfter);
+	const pCreditBal = p(newCreditBalance);
+	const pDebitBal = p(newDebitBalance);
+	const pNewVer = p(newVersion);
+	const pChecksum = p(checksum);
+	const pAccId = p(accountId);
+	const pCurVer = p(Number(current.version));
 
 	await tx.raw(
 		`WITH new_entry AS (
-       INSERT INTO ${t("entry_record")} (${entryCols})
-       VALUES (${entryPlaceholders})
+       INSERT INTO ${t("entry")} (${entryCols.join(", ")})
+       VALUES (${entryVals.join(", ")})
        RETURNING id
      )
-     INSERT INTO ${t("account_balance_version")} (
-       account_id, version, balance, credit_balance, debit_balance,
-       pending_debit, pending_credit, status, checksum,
-       freeze_reason, frozen_at, frozen_by,
-       closed_at, closed_by, closure_reason,
-       change_type, caused_by_transaction_id
-     ) VALUES (${vPlaceholders})`,
-		[...entryParams, ...versionParams],
+     UPDATE ${t("account")} SET
+       balance = ${pBalAfter},
+       credit_balance = ${pCreditBal},
+       debit_balance = ${pDebitBal},
+       version = ${pNewVer},
+       checksum = ${pChecksum}
+     WHERE id = ${pAccId} AND version = ${pCurVer}`,
+		sqlParams,
 	);
-
-	// Update denormalized balance cache on account_balance (same transaction).
-	// Eliminates the LATERAL JOIN for balance reads when enabled.
-	if (params.updateDenormalizedCache) {
-		await tx.raw(
-			`UPDATE ${t("account_balance")} SET
-			   cached_balance = $1,
-			   cached_credit_balance = $2,
-			   cached_debit_balance = $3,
-			   cached_pending_debit = $4,
-			   cached_pending_credit = $5,
-			   cached_version = $6,
-			   cached_status = $7,
-			   cached_checksum = $8
-			 WHERE id = $9`,
-			[
-				balanceAfter,
-				newCreditBalance,
-				newDebitBalance,
-				Number(current.pending_debit),
-				Number(current.pending_credit),
-				newVersion,
-				current.status,
-				checksum,
-				accountId,
-			],
-		);
-	}
 
 	return { balanceBefore, balanceAfter, lockVersion: newVersion };
 }

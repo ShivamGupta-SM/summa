@@ -543,7 +543,7 @@ async function linkIdentityToAccount(
 
 	// Update account's metadata to include identity_id
 	const updated = await ctx.adapter.rawMutate(
-		`UPDATE ${t("account_balance")}
+		`UPDATE ${t("account")}
 		 SET metadata = jsonb_set(COALESCE(metadata, '{}'), '{identity_id}', to_jsonb($1::text)),
 		     updated_at = ${ctx.dialect.now()}
 		 WHERE id = $2 AND ledger_id = $3`,

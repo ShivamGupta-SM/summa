@@ -40,7 +40,7 @@ A production Summa deployment with all scalability features enabled:
 │          │               │ projections)
 └──────────┘               └──────────┘
   partitioned                read models
-  ledger_event               (CQRS)
+  entry table                (CQRS)
 ```
 
 ## Estimated Throughput
@@ -49,11 +49,11 @@ A production Summa deployment with all scalability features enabled:
 |---------------|:---:|-------|
 | Single instance, default config | 1,000–5,000 | Limited by per-txn round-trips and single DB |
 | + Connection pooling | 3,000–8,000 | Better connection reuse |
-| + Denormalized balance + lock retry | 5,000–15,000 | Fewer queries per txn, fail-fast lock contention |
+| + Mutable balance + lock retry | 5,000–15,000 | O(1) balance reads, fail-fast lock contention |
 | + Mega CTE (combined writes) | 8,000–20,000 | All writes in a single SQL round-trip |
 | + Read replicas | 15,000–30,000 | Offloads read queries |
 | + Redis secondary storage | 20,000–40,000 | Distributed rate limiting, multi-instance |
-| + Hot accounts + version retention | 30,000–60,000 | Reduces contention + keeps tables bounded |
+| + Hot accounts | 30,000–60,000 | Reduces system account contention |
 | + Transaction batching (batch engine) | 60,000–120,000+ | Amortizes overhead across N transactions |
 | + Event store partitioning | — | Keeps query performance constant as data grows |
 | + Redis Streams + CQRS projections | — | Decouples reads from writes, enables dedicated read replicas |
@@ -200,9 +200,9 @@ See [Configuration — secondaryStorage](/docs/configuration#secondarystorage) f
 
 ### Hot Accounts
 
-High-throughput accounts (e.g., a platform fee account receiving thousands of credits per second) create row-level contention — every transaction locks the same `account_balance` row with `SELECT ... FOR UPDATE`.
+High-throughput accounts (e.g., a platform fee account receiving thousands of credits per second) create row-level contention — every transaction locks the same `account` row with `SELECT ... FOR UPDATE`.
 
-The `hotAccounts()` plugin solves this by **deferring balance updates** into a `hot_account_entry` table, then flushing them in batches:
+The `hotAccounts()` plugin solves this by **deferring system account balance updates** — entries are recorded immediately but the account balance UPDATE is batched via a watermark-based flush:
 
 ```ts
 import { hotAccounts } from "@summa-ledger/summa/plugins";
@@ -210,46 +210,32 @@ import { hotAccounts } from "@summa-ledger/summa/plugins";
 plugins: [
   hotAccounts({
     batchSize: 1000,      // Entries per flush (default: 1000)
-    retentionHours: 24,   // Keep processed entries for 24h (default)
   }),
 ]
 ```
 
 **How it works:**
-1. During a transaction, system account entries are written to `hot_account_entry` instead of updating `system_account.balance` synchronously
-2. A background worker flushes batched entries every few seconds, updating the system account balance in bulk
+1. During a transaction, system account entries are written to the `entry` table without updating the account's balance synchronously
+2. A background worker aggregates pending entries (tracked via a watermark) and updates the system account balance in bulk
 3. User account entries still go through the synchronous lock-and-update path (correctness guarantee)
 
 <Callout type="warn" title="System accounts only">
-  Hot account batching currently applies to **system accounts only** (e.g., `@World`, `@Fees`, `@Revenue`). User accounts always use synchronous balance updates with row locking. This is the correct design for most deployments — system accounts see N× the traffic of any single user account since they're the counterparty to every transaction.
+  Hot account batching applies to **system accounts only** (accounts with `is_system = true`, e.g., `@World`, `@Fees`, `@Revenue`). User accounts always use synchronous balance updates with row locking. This is the correct design for most deployments — system accounts see N× the traffic of any single user account since they're the counterparty to every transaction.
 
   If a single user account genuinely receives 1000+ TPS (extremely rare), consider application-level sharding — split the logical account across multiple Summa accounts and aggregate at the application layer.
 </Callout>
 
-### Denormalized Balance Cache
+### Mutable Balance with Checksum
 
-Summa stores the current balance directly on the `account_balance` row via cached columns (enabled by default). This eliminates the `LATERAL JOIN` on `account_balance_version` that becomes a bottleneck at millions of version rows. To disable it (e.g., for debugging):
-
-```ts
-const summa = createSumma({
-  database: adapter,
-  advanced: {
-    useDenormalizedBalance: false,  // default: true
-  },
-});
-```
+Summa stores the current balance directly on the `account` row, updated in-place. There is no separate version table — balance history is reconstructable from entries.
 
 **How it works:**
-1. Every transaction still inserts a new `account_balance_version` row (audit trail is preserved)
-2. At the end of each transaction, the `account_balance` row is updated with cached balance, version, status, and checksum columns
-3. All reads (`getAccount`, `listAccounts`, `getBalance`) read directly from the cached columns — no `LATERAL JOIN`
-4. The `FOR UPDATE` lock and balance read happen in a single query instead of two
+1. Every transaction INSERTs entries to the `entry` table (immutable audit trail)
+2. The `account` row is UPDATEd with the new balance, version, and HMAC checksum
+3. All reads (`getAccount`, `listAccounts`, `getBalance`) read directly from the `account` row — O(1)
+4. Optimistic locking via `UPDATE ... SET version = version + 1 WHERE id = $1 AND version = $expected`
 
-**Impact:** Balance reads become O(1) on the already-locked row instead of a secondary index scan. At 100M+ versions, this can reduce read latency by 10-50x.
-
-<Callout type="info" title="Schema migration required">
-  Enabling `useDenormalizedBalance` requires running `summa migrate push` to add the `cached_*` columns to the `account_balance` table. Existing data will have default values until the next transaction touches each account.
-</Callout>
+**Tamper detection:** The `checksum` column = HMAC-SHA256 of (balance + credit_balance + debit_balance + pending_debit + pending_credit + version). Any direct SQL modification of balance fields is immediately detected on read.
 
 ### Lock Retry with Backoff
 
@@ -267,7 +253,7 @@ advanced: {
 **Lock modes:**
 - `"wait"` (default) — `FOR UPDATE` with `lock_timeout`. Blocks until the lock is available or times out.
 - `"nowait"` — `FOR UPDATE NOWAIT`. Fails immediately if the row is locked, triggering a retry with backoff.
-- `"optimistic"` — Skips `FOR UPDATE` entirely. Reads the current balance version without locking, then relies on the `UNIQUE(account_id, version)` constraint on `account_balance_version` to detect conflicts. On conflict (PG error `23505`), retries with jitter up to `optimisticRetryCount` times.
+- `"optimistic"` — Skips `FOR UPDATE` entirely. Reads the current balance without locking, then relies on the `version` column on `account` and `UNIQUE(account_id, account_version)` constraint on `entry` to detect conflicts. On conflict (PG error `23505`), retries with jitter up to `optimisticRetryCount` times.
 
 With `lockMode: "nowait"` and `lockRetryCount: 3`, contested accounts fail fast and retry with jitter instead of blocking in a lock queue. This significantly improves throughput on hot user accounts.
 
@@ -283,9 +269,9 @@ advanced: {
 ```
 
 **How it works:**
-1. Read the current balance version **without** `SELECT ... FOR UPDATE`
-2. Compute the new balance, insert `entry_record` + `account_balance_version` with `version = current + 1`
-3. If another transaction already inserted that version, the `UNIQUE(account_id, version)` constraint raises a `23505` error
+1. Read the current account balance **without** `SELECT ... FOR UPDATE`
+2. Compute the new balance, INSERT `entry` with `account_version = current + 1`, UPDATE `account` with `version = current + 1`
+3. If another transaction already used that version, the `UNIQUE(account_id, account_version)` constraint on `entry` raises a `23505` error
 4. Retry with jitter (10-50ms) up to `optimisticRetryCount` times
 
 **When to use:**
@@ -320,34 +306,6 @@ const page2 = await summa.accounts.list({
 
 **Backward compatible:** Existing `page`/`perPage` parameters still work. When `cursor` is provided, Summa uses keyset pagination automatically. Cursor-based pagination is available on `accounts.list()`, `transactions.listAccountTransactions()`, and `holds.listAll()`.
 
-### Version Retention
-
-The `account_balance_version` table grows linearly with transaction volume — at 100M transactions/year, it can reach 200M+ rows. The `versionRetention()` plugin bounds this table by archiving and pruning old versions:
-
-```ts
-import { versionRetention } from "@summa-ledger/summa/plugins";
-
-plugins: [
-  versionRetention({
-    retainVersions: 100,   // Keep last 100 versions per account (default)
-    retainDays: 90,        // Keep versions newer than 90 days (default)
-    archiveTable: true,    // Move old versions to archive table (default)
-    batchSize: 500,        // Accounts per worker run (default)
-    interval: "1h",        // Run every hour (default)
-  }),
-]
-```
-
-**How it works:**
-1. A background worker identifies accounts with more versions than `retainVersions`
-2. For each account, versions older than `retainDays` AND beyond the latest `retainVersions` are eligible for pruning
-3. If `archiveTable: true`, eligible rows are copied to `account_balance_version_archive` before deletion
-4. The archive table has the same schema plus an `archived_at` timestamp
-
-**Impact:** At 100M txns/year with retain=100, the version table stays at ~10M rows instead of 200M+. Index maintenance and VACUUM costs are dramatically reduced.
-
-See [Version Retention Plugin](/docs/plugins/version-retention) for full configuration.
-
 ### Table Partitioning
 
 For very large deployments, PostgreSQL range partitioning on time-series tables dramatically improves query performance and maintenance:
@@ -359,9 +317,8 @@ import { generatePartitionDDL, partitionMaintenance } from "@summa-ledger/summa/
 const ddl = generatePartitionDDL({
   schema: "summa",
   tables: {
-    entry_record: { type: "range", column: "created_at", interval: "monthly" },
-    transaction_record: { type: "range", column: "created_at", interval: "monthly" },
-    ledger_event: { type: "range", column: "created_at", interval: "monthly" },
+    entry: { type: "range", column: "created_at", interval: "monthly" },
+    transfer: { type: "range", column: "created_at", interval: "monthly" },
   },
 });
 // Returns SQL statements to run in a maintenance window
@@ -370,9 +327,8 @@ const ddl = generatePartitionDDL({
 plugins: [
   partitionMaintenance({
     tables: {
-      entry_record: { interval: "monthly" },
-      transaction_record: { interval: "monthly" },
-      ledger_event: { interval: "monthly" },
+      entry: { interval: "monthly" },
+      transfer: { interval: "monthly" },
     },
     createAhead: 3,            // Create partitions 3 months ahead
     retainPartitions: 24,      // Detach partitions older than 24 months
@@ -392,7 +348,7 @@ plugins: [
 | `archiveSchema` | `string` | — | Move detached partitions to this schema (created automatically) instead of leaving as standalone tables |
 | `workerInterval` | `string` | `"1d"` | How often the maintenance worker runs |
 
-**Hash chain safety:** When `requireSealedBlocks` is enabled (default), the maintenance worker calls `canSafelyDetachPartition()` before detaching `ledger_event`, `entry_record`, or `account_balance_version` partitions. If any events in the partition's date range aren't covered by a sealed block checkpoint, detachment is blocked and a warning is logged. Run `createBlockCheckpoint()` first.
+**Hash chain safety:** When `requireSealedBlocks` is enabled (default), the maintenance worker calls `canSafelyDetachPartition()` before detaching `entry` partitions. If any entries in the partition's date range aren't covered by a sealed block checkpoint, detachment is blocked and a warning is logged. Run `createBlockCheckpoint()` first.
 
 ```ts
 import { canSafelyDetachPartition } from "@summa-ledger/summa/db";
@@ -437,7 +393,7 @@ const summa = createSumma({
 2. When the buffer reaches `maxBatchSize` or `flushIntervalMs` elapses, the batch is flushed
 3. All accounts in the batch are locked in sorted order (prevents deadlocks)
 4. All balances, checksums, and HMAC hashes are computed in-memory
-5. All writes (transaction_record, entry_record, account_balance_version, ledger_event, outbox, velocity log) are inserted via multi-row `UNNEST` — one query per table, not one per transaction
+5. All writes (transfer, entry, account updates, outbox) are inserted via multi-row `UNNEST` — one query per table, not one per transaction
 6. Each transaction in the batch has its own `resolve`/`reject` — validation failures reject individual transactions without failing the batch
 
 **Impact:** At batch size 200 with 20 DB connections, each batch completes in ~10-20ms. That's 200 transactions per 15ms = **10,000-13,000 TPS per connection**, or **60,000-120,000+ TPS** with a 20-connection pool.
@@ -452,16 +408,14 @@ const summa = createSumma({
 
 ### Mega CTE (Automatic)
 
-Even without batching enabled, Summa automatically combines all per-transaction writes into a single PostgreSQL CTE (Common Table Expression). Instead of 6-7 sequential INSERT statements, every `creditAccount()` / `debitAccount()` executes a single SQL statement that inserts into all tables at once:
+Even without batching enabled, Summa automatically combines all per-transaction writes into a single PostgreSQL CTE (Common Table Expression). Instead of multiple sequential statements, every `creditAccount()` / `debitAccount()` executes a single SQL statement that writes to all tables at once:
 
 ```sql
-WITH new_txn AS (INSERT INTO transaction_record ...),
-     new_status AS (INSERT INTO transaction_status ...),
-     new_entry AS (INSERT INTO entry_record ...),
-     new_version AS (INSERT INTO account_balance_version ...),
-     new_event AS (INSERT INTO ledger_event ...),
+WITH new_transfer AS (INSERT INTO transfer ...),
+     new_entry AS (INSERT INTO entry ...),
+     update_account AS (UPDATE account SET balance = ..., version = version + 1 ...),
      new_outbox AS (INSERT INTO outbox ...)
-SELECT id, created_at FROM new_txn;
+SELECT id, created_at FROM new_transfer;
 ```
 
 This optimization is always active and requires no configuration. It reduces per-transaction round-trips from ~10 to ~3, roughly tripling throughput compared to the sequential approach.
@@ -571,7 +525,7 @@ The features above (Tier 1) get you to ~40K-60K TPS. Tier 2 removes secondary bo
 
 ### Event Store Partitioning
 
-As `ledger_event` grows past 100M rows, sequential scans and index maintenance slow down. PostgreSQL range partitioning splits the table by `created_at` into monthly (or weekly) partitions — queries automatically prune irrelevant partitions.
+As the `entry` table grows past 100M rows, sequential scans and index maintenance slow down. PostgreSQL range partitioning splits the table by `created_at` into monthly (or weekly) partitions — queries automatically prune irrelevant partitions.
 
 ```ts
 import { createSumma } from "@summa-ledger/summa";
@@ -594,7 +548,7 @@ Generate the initial migration SQL (does NOT auto-execute):
 
 ```bash
 npx summa partition generate --interval monthly
-# Writes: migrations/partition_ledger_event_<timestamp>.sql
+# Writes: migrations/partition_entry_<timestamp>.sql
 ```
 
 Check partition status:

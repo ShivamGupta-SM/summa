@@ -1,11 +1,11 @@
 // =============================================================================
 // HASH CHAIN -- Cryptographic tamper detection
 // =============================================================================
-// Each event's hash = SHA-256(prevHash + eventData).
-// Provides per-aggregate tamper detection + block-based chain checkpoints.
+// Each entry's hash = SHA-256(prevHash + entryData).
+// Provides per-account tamper detection + block-based chain checkpoints.
 //
-// Design: Azure SQL Ledger pattern -- blocks of events chained via prevBlockHash.
-// O(new events) per checkpoint, not O(all aggregates). Scales forever.
+// Design: Azure SQL Ledger pattern -- blocks of entries chained via prevBlockHash.
+// O(new entries) per checkpoint, not O(all accounts). Scales forever.
 
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import type { SummaContext } from "@summa-ledger/core";
@@ -28,107 +28,124 @@ function safeEqual(a: string, b: string): boolean {
 // CHAIN VERIFICATION
 // =============================================================================
 
-/**
- * Verify the hash chain for a specific aggregate.
- * Processes in batches of 500 to avoid loading all events into memory.
- * Carries prevHash across batches for chain continuity.
- */
 const VERIFY_BATCH_SIZE = 500;
 
+/**
+ * Verify the hash chain for a specific account.
+ * Processes in batches of 500 to avoid loading all entries into memory.
+ */
 export async function verifyHashChain(
 	ctx: SummaContext,
-	aggregateType: string,
-	aggregateId: string,
-	ledgerId: string,
+	_aggregateType: string,
+	accountId: string,
+	_ledgerId: string,
 ): Promise<{ valid: boolean; brokenAtVersion?: number; eventCount: number }> {
-	return verifyHashChainFrom(ctx, aggregateType, aggregateId, ledgerId, -1, null);
+	return verifyHashChainFrom(ctx, _aggregateType, accountId, _ledgerId, -1, null);
 }
 
 /**
- * Verify the hash chain for a specific aggregate starting from a given version.
+ * Verify the hash chain for a specific account starting from a given sequence.
  * Used internally by verifyHashChain (full scan) and by hash-snapshot (partial scan).
- *
- * @param fromVersion - Start scanning from events with aggregate_version > fromVersion
- * @param initialPrevHash - The expected prev_hash at fromVersion (null for chain start)
  */
 export async function verifyHashChainFrom(
 	ctx: SummaContext,
-	aggregateType: string,
-	aggregateId: string,
-	ledgerId: string,
-	fromVersion: number,
+	_aggregateType: string,
+	accountId: string,
+	_ledgerId: string,
+	fromSequence: number,
 	initialPrevHash: string | null,
 ): Promise<{ valid: boolean; brokenAtVersion?: number; eventCount: number }> {
 	const t = createTableResolver(ctx.options.schema);
 	let computedPrevHash: string | null = initialPrevHash;
 	let totalCount = 0;
-	let lastVersion = fromVersion;
+	let lastSeq = fromSequence;
 
 	while (true) {
 		const batch = await ctx.adapter.raw<{
-			aggregate_version: number;
+			sequence_number: number;
 			hash: string;
 			prev_hash: string | null;
-			event_data: Record<string, unknown>;
+			transfer_id: string;
+			account_id: string;
+			entry_type: string;
+			amount: number;
+			currency: string;
+			balance_before: number | null;
+			balance_after: number | null;
+			account_version: number | null;
 		}>(
-			`SELECT aggregate_version, hash, prev_hash, event_data
-       FROM ${t("ledger_event")}
-       WHERE ledger_id = $1
-         AND aggregate_type = $2
-         AND aggregate_id = $3
-         AND aggregate_version > $4
-       ORDER BY aggregate_version ASC
-       LIMIT $5`,
-			[ledgerId, aggregateType, aggregateId, lastVersion, VERIFY_BATCH_SIZE],
+			`SELECT sequence_number, hash, prev_hash, transfer_id, account_id,
+              entry_type, amount, currency, balance_before, balance_after, account_version
+       FROM ${t("entry")}
+       WHERE account_id = $1
+         AND sequence_number > $2
+       ORDER BY sequence_number ASC
+       LIMIT $3`,
+			[accountId, lastSeq, VERIFY_BATCH_SIZE],
 		);
 
 		if (batch.length === 0) break;
 
-		for (const event of batch) {
-			if (!safeEqual(event.prev_hash ?? "", computedPrevHash ?? "")) {
+		for (const entry of batch) {
+			if (!safeEqual(entry.prev_hash ?? "", computedPrevHash ?? "")) {
 				ctx.logger.error("Hash chain linkage broken -- prevHash mismatch", {
-					aggregateType,
-					aggregateId,
-					version: event.aggregate_version,
+					accountId,
+					sequenceNumber: entry.sequence_number,
 					expectedPrevHash: computedPrevHash ?? "null",
-					storedPrevHash: event.prev_hash ?? "null",
+					storedPrevHash: entry.prev_hash ?? "null",
 				});
 				return {
 					valid: false,
-					brokenAtVersion: Number(event.aggregate_version),
+					brokenAtVersion: Number(entry.sequence_number),
 					eventCount: totalCount,
 				};
 			}
 
-			const eventData = (
-				typeof event.event_data === "string" ? JSON.parse(event.event_data) : event.event_data
-			) as Record<string, unknown>;
+			// Reconstruct entry data for hash computation
+			const entryData: Record<string, unknown> = entry.balance_before != null
+				? {
+						transferId: entry.transfer_id,
+						accountId: entry.account_id,
+						entryType: entry.entry_type,
+						amount: Number(entry.amount),
+						currency: entry.currency,
+						balanceBefore: Number(entry.balance_before),
+						balanceAfter: Number(entry.balance_after),
+						version: Number(entry.account_version),
+					}
+				: {
+						transferId: entry.transfer_id,
+						accountId: entry.account_id,
+						entryType: entry.entry_type,
+						amount: Number(entry.amount),
+						currency: entry.currency,
+						isHot: true,
+					};
 
 			const expectedHash = computeHash(
 				computedPrevHash,
-				eventData,
+				entryData,
 				ctx.options.advanced.hmacSecret,
 			);
-			if (!safeEqual(expectedHash, event.hash)) {
+			if (!safeEqual(expectedHash, entry.hash)) {
 				ctx.logger.error("Hash chain broken -- hash mismatch", {
-					aggregateType,
-					aggregateId,
-					version: event.aggregate_version,
+					accountId,
+					sequenceNumber: entry.sequence_number,
 					expected: expectedHash,
-					actual: event.hash,
+					actual: entry.hash,
 				});
 				return {
 					valid: false,
-					brokenAtVersion: Number(event.aggregate_version),
+					brokenAtVersion: Number(entry.sequence_number),
 					eventCount: totalCount,
 				};
 			}
 
-			computedPrevHash = event.hash;
+			computedPrevHash = entry.hash;
 			totalCount++;
 		}
 
-		lastVersion = Number(batch[batch.length - 1]?.aggregate_version);
+		lastSeq = Number(batch[batch.length - 1]?.sequence_number);
 		if (batch.length < VERIFY_BATCH_SIZE) break;
 	}
 
@@ -138,19 +155,11 @@ export async function verifyHashChainFrom(
 // =============================================================================
 // CHECKPOINT-AWARE CHAIN VERIFICATION
 // =============================================================================
-// O(events since last block) instead of O(all events).
-// Finds the latest block checkpoint, gets the last event hash covered,
-// then verifies only events AFTER the checkpoint.
 
-/**
- * Verify hash chain starting from the last verified block checkpoint.
- * Skips events already covered by sealed block checkpoints.
- * Falls back to full scan when no checkpoint exists.
- */
 export async function verifyHashChainFromCheckpoint(
 	ctx: SummaContext,
-	aggregateType: string,
-	aggregateId: string,
+	_aggregateType: string,
+	accountId: string,
 	ledgerId: string,
 ): Promise<{
 	valid: boolean;
@@ -162,9 +171,9 @@ export async function verifyHashChainFromCheckpoint(
 
 	// Find latest block checkpoint for this ledger
 	const checkpointRows = await ctx.adapter.raw<{
-		to_event_sequence: number;
+		to_entry_sequence: number;
 	}>(
-		`SELECT to_event_sequence
+		`SELECT to_entry_sequence
 		 FROM ${t("block_checkpoint")}
 		 WHERE ledger_id = $1
 		 ORDER BY block_sequence DESC
@@ -177,24 +186,22 @@ export async function verifyHashChainFromCheckpoint(
 	let computedPrevHash: string | null = null;
 
 	if (checkpoint) {
-		const toSeq = Number(checkpoint.to_event_sequence);
+		const toSeq = Number(checkpoint.to_entry_sequence);
 
-		// Count events for this aggregate that are covered by the checkpoint
-		// and get the last hash in the covered range
 		const coveredRows = await ctx.adapter.raw<{
 			cnt: number;
 			last_hash: string | null;
 		}>(
 			`SELECT
 				COUNT(*)::int AS cnt,
-				(SELECT hash FROM ${t("ledger_event")}
-				 WHERE ledger_id = $1 AND aggregate_type = $2 AND aggregate_id = $3
-				   AND sequence_number <= $4
-				 ORDER BY aggregate_version DESC LIMIT 1) AS last_hash
-			 FROM ${t("ledger_event")}
-			 WHERE ledger_id = $1 AND aggregate_type = $2 AND aggregate_id = $3
-			   AND sequence_number <= $4`,
-			[ledgerId, aggregateType, aggregateId, toSeq],
+				(SELECT hash FROM ${t("entry")}
+				 WHERE account_id = $1
+				   AND sequence_number <= $2
+				 ORDER BY sequence_number DESC LIMIT 1) AS last_hash
+			 FROM ${t("entry")}
+			 WHERE account_id = $1
+			   AND sequence_number <= $2`,
+			[accountId, toSeq],
 		);
 
 		if (coveredRows[0] && coveredRows[0].cnt > 0) {
@@ -203,102 +210,104 @@ export async function verifyHashChainFromCheckpoint(
 		}
 	}
 
-	// Verify remaining events after checkpoint
+	// Verify remaining entries after checkpoint
 	let totalCount = skippedViaCheckpoint;
-	let lastVersion = -1;
+	let lastSeq = -1;
 
-	// If we have a checkpoint, only query events with sequence > checkpoint
 	const seqFilter = checkpoint
-		? ` AND sequence_number > ${Number(checkpoint.to_event_sequence)}`
+		? ` AND sequence_number > ${Number(checkpoint.to_entry_sequence)}`
 		: "";
 
 	while (true) {
 		const batch = await ctx.adapter.raw<{
-			aggregate_version: number;
+			sequence_number: number;
 			hash: string;
 			prev_hash: string | null;
-			event_data: Record<string, unknown>;
-			sequence_number: number;
+			transfer_id: string;
+			account_id: string;
+			entry_type: string;
+			amount: number;
+			currency: string;
+			balance_before: number | null;
+			balance_after: number | null;
+			account_version: number | null;
 		}>(
-			`SELECT aggregate_version, hash, prev_hash, event_data, sequence_number
-			 FROM ${t("ledger_event")}
-			 WHERE ledger_id = $1
-			   AND aggregate_type = $2
-			   AND aggregate_id = $3
-			   AND aggregate_version > $4
+			`SELECT sequence_number, hash, prev_hash, transfer_id, account_id,
+              entry_type, amount, currency, balance_before, balance_after, account_version
+			 FROM ${t("entry")}
+			 WHERE account_id = $1
+			   AND sequence_number > $2
 			   ${seqFilter}
-			 ORDER BY aggregate_version ASC
-			 LIMIT $5`,
-			[ledgerId, aggregateType, aggregateId, lastVersion, VERIFY_BATCH_SIZE],
+			 ORDER BY sequence_number ASC
+			 LIMIT $3`,
+			[accountId, lastSeq, VERIFY_BATCH_SIZE],
 		);
 
 		if (batch.length === 0) break;
 
-		for (const event of batch) {
-			if (!safeEqual(event.prev_hash ?? "", computedPrevHash ?? "")) {
-				ctx.logger.error("Hash chain linkage broken -- prevHash mismatch (checkpoint-aware)", {
-					aggregateType,
-					aggregateId,
-					version: event.aggregate_version,
-					expectedPrevHash: computedPrevHash ?? "null",
-					storedPrevHash: event.prev_hash ?? "null",
-				});
+		for (const entry of batch) {
+			if (!safeEqual(entry.prev_hash ?? "", computedPrevHash ?? "")) {
 				return {
 					valid: false,
-					brokenAtVersion: Number(event.aggregate_version),
+					brokenAtVersion: Number(entry.sequence_number),
 					eventCount: totalCount,
 					skippedViaCheckpoint,
 				};
 			}
 
-			const eventData = (
-				typeof event.event_data === "string" ? JSON.parse(event.event_data) : event.event_data
-			) as Record<string, unknown>;
+			const entryData: Record<string, unknown> = entry.balance_before != null
+				? {
+						transferId: entry.transfer_id,
+						accountId: entry.account_id,
+						entryType: entry.entry_type,
+						amount: Number(entry.amount),
+						currency: entry.currency,
+						balanceBefore: Number(entry.balance_before),
+						balanceAfter: Number(entry.balance_after),
+						version: Number(entry.account_version),
+					}
+				: {
+						transferId: entry.transfer_id,
+						accountId: entry.account_id,
+						entryType: entry.entry_type,
+						amount: Number(entry.amount),
+						currency: entry.currency,
+						isHot: true,
+					};
 
 			const expectedHash = computeHash(
 				computedPrevHash,
-				eventData,
+				entryData,
 				ctx.options.advanced.hmacSecret,
 			);
 
-			if (!safeEqual(expectedHash, event.hash)) {
-				ctx.logger.error("Hash chain broken -- hash mismatch (checkpoint-aware)", {
-					aggregateType,
-					aggregateId,
-					version: event.aggregate_version,
-					expected: expectedHash,
-					actual: event.hash,
-				});
+			if (!safeEqual(expectedHash, entry.hash)) {
 				return {
 					valid: false,
-					brokenAtVersion: Number(event.aggregate_version),
+					brokenAtVersion: Number(entry.sequence_number),
 					eventCount: totalCount,
 					skippedViaCheckpoint,
 				};
 			}
 
-			computedPrevHash = event.hash;
+			computedPrevHash = entry.hash;
 			totalCount++;
 		}
 
-		lastVersion = Number(batch[batch.length - 1]?.aggregate_version);
+		lastSeq = Number(batch[batch.length - 1]?.sequence_number);
 		if (batch.length < VERIFY_BATCH_SIZE) break;
 	}
 
 	return { valid: true, eventCount: totalCount, skippedViaCheckpoint };
 }
 
-/**
- * Get the highest event sequence number covered by sealed block checkpoints.
- * Returns 0 if no checkpoints exist.
- */
 export async function getLatestSealedSequence(
 	ctx: SummaContext,
 	ledgerId: string,
 ): Promise<number> {
 	const t = createTableResolver(ctx.options.schema);
 	const rows = await ctx.adapter.raw<{ max_seq: number }>(
-		`SELECT COALESCE(MAX(to_event_sequence), 0)::bigint AS max_seq
+		`SELECT COALESCE(MAX(to_entry_sequence), 0)::bigint AS max_seq
 		 FROM ${t("block_checkpoint")} WHERE ledger_id = $1`,
 		[ledgerId],
 	);
@@ -308,19 +317,13 @@ export async function getLatestSealedSequence(
 // =============================================================================
 // BLOCK-BASED CHAIN (Azure SQL Ledger pattern)
 // =============================================================================
-// Each block = batch of events since last checkpoint.
-// blockHash = SHA256(prevBlockHash + eventsHash)
-// eventsHash = SHA256(sorted event hashes in this block)
-//
-// O(new events) per checkpoint -- constant time regardless of total aggregates.
 
-/**
- * Create a block checkpoint covering all new events since the last block.
- * Builds a Merkle tree from event hashes for O(log n) proofs.
- * Returns null if no new events exist.
- */
 const BLOCK_HASH_BATCH_SIZE = 1000;
 
+/**
+ * Create a block checkpoint covering all new entries since the last block.
+ * Builds a Merkle tree from entry hashes for O(log n) proofs.
+ */
 export async function createBlockCheckpoint(
 	ctx: SummaContext,
 	ledgerId: string,
@@ -328,20 +331,19 @@ export async function createBlockCheckpoint(
 	blockHash: string;
 	merkleRoot: string;
 	eventCount: number;
-	toEventSequence: number;
+	toEntrySequence: number;
 } | null> {
 	const t = createTableResolver(ctx.options.schema);
 	return await ctx.adapter.transaction(async (tx) => {
 		await tx.raw("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ", []);
 
-		// Get previous block for this ledger
 		const prevBlocks = await tx.raw<{
 			id: string;
 			block_sequence: number;
-			to_event_sequence: number;
+			to_entry_sequence: number;
 			block_hash: string;
 		}>(
-			`SELECT id, block_sequence, to_event_sequence, block_hash
+			`SELECT id, block_sequence, to_entry_sequence, block_hash
        FROM ${t("block_checkpoint")}
        WHERE ledger_id = $1
        ORDER BY block_sequence DESC
@@ -350,9 +352,9 @@ export async function createBlockCheckpoint(
 		);
 
 		const prev = prevBlocks[0] ?? null;
-		const prevMaxSeq = prev ? Number(prev.to_event_sequence) : 0;
+		const prevMaxSeq = prev ? Number(prev.to_entry_sequence) : 0;
 
-		// Check if any new events exist for this ledger
+		// Check if any new entries exist
 		const countRows = await tx.raw<{
 			cnt: number;
 			min_seq: number | null;
@@ -361,14 +363,14 @@ export async function createBlockCheckpoint(
 			`SELECT COUNT(*)::int as cnt,
               MIN(sequence_number)::bigint as min_seq,
               MAX(sequence_number)::bigint as max_seq
-       FROM ${t("ledger_event")}
-       WHERE ledger_id = $1 AND sequence_number > $2`,
-			[ledgerId, prevMaxSeq],
+       FROM ${t("entry")}
+       WHERE sequence_number > $1`,
+			[prevMaxSeq],
 		);
 
 		const countRow = countRows[0];
 		if (!countRow || countRow.cnt === 0) {
-			ctx.logger.debug("No new events since last block checkpoint");
+			ctx.logger.debug("No new entries since last block checkpoint");
 			return null;
 		}
 
@@ -376,50 +378,45 @@ export async function createBlockCheckpoint(
 		const fromSeq = Number(countRow.min_seq);
 		const toSeq = Number(countRow.max_seq);
 
-		// Collect all event hashes + IDs for Merkle tree construction
-		const allEventHashes: string[] = [];
-		const allEventIds: string[] = [];
-		const eventsHasher = createHash("sha256");
+		// Collect all entry hashes for Merkle tree
+		const allEntryHashes: string[] = [];
+		const allEntryIds: string[] = [];
+		const entriesHasher = createHash("sha256");
 		let lastSeq = prevMaxSeq;
 
 		while (true) {
 			const batch = await tx.raw<{ sequence_number: number; hash: string; id: string }>(
 				`SELECT sequence_number, hash, id
-         FROM ${t("ledger_event")}
-         WHERE ledger_id = $1 AND sequence_number > $2
+         FROM ${t("entry")}
+         WHERE sequence_number > $1
          ORDER BY sequence_number ASC
-         LIMIT $3`,
-				[ledgerId, lastSeq, BLOCK_HASH_BATCH_SIZE],
+         LIMIT $2`,
+				[lastSeq, BLOCK_HASH_BATCH_SIZE],
 			);
 
 			if (batch.length === 0) break;
 
 			for (const row of batch) {
-				eventsHasher.update(row.hash);
-				allEventHashes.push(row.hash);
-				allEventIds.push(row.id);
+				entriesHasher.update(row.hash);
+				allEntryHashes.push(row.hash);
+				allEntryIds.push(row.id);
 			}
 
 			lastSeq = Number(batch[batch.length - 1]?.sequence_number);
 			if (batch.length < BLOCK_HASH_BATCH_SIZE) break;
 		}
 
-		// Linear events_hash — used in blockHash computation
-		const eventsHash = eventsHasher.digest("hex");
+		const entriesHash = entriesHasher.digest("hex");
+		const tree = buildMerkleTree(allEntryHashes);
 
-		// Build Merkle tree
-		const tree = buildMerkleTree(allEventHashes);
-
-		// blockHash = SHA256(prevBlockHash + eventsHash)
 		const prevBlockHash = prev?.block_hash ?? "";
 		const blockHash = createHash("sha256")
-			.update(prevBlockHash + eventsHash)
+			.update(prevBlockHash + entriesHash)
 			.digest("hex");
 
-		// Insert block checkpoint with merkle_root and tree_depth
 		const blockId = randomUUID();
 		await tx.raw(
-			`INSERT INTO ${t("block_checkpoint")} (id, ledger_id, from_event_sequence, to_event_sequence, event_count, events_hash, block_hash, merkle_root, tree_depth, prev_block_id, prev_block_hash)
+			`INSERT INTO ${t("block_checkpoint")} (id, ledger_id, from_entry_sequence, to_entry_sequence, event_count, events_hash, block_hash, merkle_root, tree_depth, prev_block_id, prev_block_hash)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
 			[
 				blockId,
@@ -427,7 +424,7 @@ export async function createBlockCheckpoint(
 				fromSeq,
 				toSeq,
 				eventCount,
-				eventsHash,
+				entriesHash,
 				blockHash,
 				tree.root,
 				tree.depth,
@@ -436,12 +433,11 @@ export async function createBlockCheckpoint(
 			],
 		);
 
-		// Store Merkle tree nodes — batch INSERT for efficiency
+		// Store Merkle tree nodes
 		for (let level = 0; level < tree.levels.length; level++) {
 			const nodes = tree.levels[level];
 			if (!nodes || nodes.length === 0) continue;
 
-			// Build batch INSERT values
 			const placeholders: string[] = [];
 			const values: unknown[] = [];
 			let paramIdx = 1;
@@ -450,19 +446,18 @@ export async function createBlockCheckpoint(
 				const node = nodes[pos];
 				if (!node) continue;
 				const nodeId = randomUUID();
-				// event_id only for leaf nodes (level 0)
-				const eventId = level === 0 && pos < allEventIds.length ? allEventIds[pos] : null;
+				const entryId = level === 0 && pos < allEntryIds.length ? allEntryIds[pos] : null;
 
 				placeholders.push(
 					`($${paramIdx}, $${paramIdx + 1}, $${paramIdx + 2}, $${paramIdx + 3}, $${paramIdx + 4}, $${paramIdx + 5})`,
 				);
-				values.push(nodeId, blockId, level, pos, node.hash, eventId);
+				values.push(nodeId, blockId, level, pos, node.hash, entryId);
 				paramIdx += 6;
 			}
 
 			if (placeholders.length > 0) {
 				await tx.raw(
-					`INSERT INTO ${t("merkle_node")} (id, block_id, level, position, hash, event_id)
+					`INSERT INTO ${t("merkle_node")} (id, block_id, level, position, hash, entry_id)
            VALUES ${placeholders.join(", ")}`,
 					values,
 				);
@@ -478,15 +473,14 @@ export async function createBlockCheckpoint(
 			toSeq,
 		});
 
-		return { blockHash, merkleRoot: tree.root, eventCount, toEventSequence: toSeq };
+		return { blockHash, merkleRoot: tree.root, eventCount, toEntrySequence: toSeq };
 	});
 }
 
-/**
- * Verify all block checkpoints created since a given date.
- * Called by daily reconciliation to automatically detect block-level tampering.
- * Processes blocks sequentially (chain verification requires ordering).
- */
+// =============================================================================
+// BLOCK VERIFICATION
+// =============================================================================
+
 export async function verifyRecentBlocks(
 	ctx: SummaContext,
 	ledgerId: string,
@@ -498,7 +492,7 @@ export async function verifyRecentBlocks(
 	failures: Array<{ blockId: string; blockSequence: number; reason: string }>;
 }> {
 	const t = createTableResolver(ctx.options.schema);
-	const since = sinceDate ?? new Date(Date.now() - 48 * 60 * 60 * 1000); // default: last 48h
+	const since = sinceDate ?? new Date(Date.now() - 48 * 60 * 60 * 1000);
 	const sinceISO = since.toISOString();
 
 	const blocks = await ctx.adapter.raw<{
@@ -536,33 +530,16 @@ export async function verifyRecentBlocks(
 				blockSequence: Number(block.block_sequence),
 				reason: reasons.join("; "),
 			});
-			ctx.logger.error("Block checkpoint verification FAILED", {
-				blockId: block.id,
-				blockSequence: block.block_sequence,
-				storedHash: result.storedHash,
-				computedHash: result.computedHash,
-				chainValid: result.chainValid,
-			});
 		}
 	}
 
-	return {
-		blocksVerified: blocks.length,
-		blocksValid,
-		blocksFailed,
-		failures,
-	};
+	return { blocksVerified: blocks.length, blocksValid, blocksFailed, failures };
 }
 
-/**
- * Verify a block checkpoint by recomputing from event store data.
- * Uses streaming SHA-256 in batches to avoid loading all hashes.
- * Checks both the events hash and the chain linkage to the previous block.
- */
 export async function verifyBlockCheckpoint(
 	ctx: SummaContext,
 	checkpointId: string,
-	ledgerId: string,
+	_ledgerId: string,
 ): Promise<{
 	valid: boolean;
 	storedHash: string;
@@ -572,13 +549,13 @@ export async function verifyBlockCheckpoint(
 	const t = createTableResolver(ctx.options.schema);
 	const blockRows = await ctx.adapter.raw<{
 		id: string;
-		from_event_sequence: number;
-		to_event_sequence: number;
+		from_entry_sequence: number;
+		to_entry_sequence: number;
 		block_hash: string;
 		prev_block_id: string | null;
 		prev_block_hash: string | null;
 	}>(
-		`SELECT id, from_event_sequence, to_event_sequence, block_hash, prev_block_id, prev_block_hash
+		`SELECT id, from_entry_sequence, to_entry_sequence, block_hash, prev_block_id, prev_block_hash
      FROM ${t("block_checkpoint")}
      WHERE id = $1
      LIMIT 1`,
@@ -590,9 +567,8 @@ export async function verifyBlockCheckpoint(
 		throw new Error(`Block checkpoint ${checkpointId} not found`);
 	}
 
-	// Recompute eventsHash from actual event data in streaming batches
-	const eventsHasher = createHash("sha256");
-	let lastSeq = Number(block.from_event_sequence) - 1;
+	const entriesHasher = createHash("sha256");
+	let lastSeq = Number(block.from_entry_sequence) - 1;
 
 	while (true) {
 		const batch = await ctx.adapter.raw<{
@@ -600,28 +576,26 @@ export async function verifyBlockCheckpoint(
 			hash: string;
 		}>(
 			`SELECT sequence_number, hash
-       FROM ${t("ledger_event")}
-       WHERE ledger_id = $1
-         AND sequence_number > $2
-         AND sequence_number <= $3
+       FROM ${t("entry")}
+       WHERE sequence_number > $1
+         AND sequence_number <= $2
        ORDER BY sequence_number ASC
-       LIMIT $4`,
-			[ledgerId, lastSeq, Number(block.to_event_sequence), BLOCK_HASH_BATCH_SIZE],
+       LIMIT $3`,
+			[lastSeq, Number(block.to_entry_sequence), BLOCK_HASH_BATCH_SIZE],
 		);
 
 		if (batch.length === 0) break;
 
 		for (const row of batch) {
-			eventsHasher.update(row.hash);
+			entriesHasher.update(row.hash);
 		}
 
 		lastSeq = Number(batch[batch.length - 1]?.sequence_number);
 		if (batch.length < BLOCK_HASH_BATCH_SIZE) break;
 	}
 
-	const computedEventsHash = eventsHasher.digest("hex");
+	const computedEntriesHash = entriesHasher.digest("hex");
 
-	// Verify chain linkage: check prevBlockHash matches actual previous block
 	let chainValid = true;
 	if (block.prev_block_id) {
 		const prevBlockRows = await ctx.adapter.raw<{
@@ -642,10 +616,9 @@ export async function verifyBlockCheckpoint(
 		chainValid = block.prev_block_hash === null;
 	}
 
-	// Recompute blockHash
 	const prevBlockHash = block.prev_block_hash ?? "";
 	const computedBlockHash = createHash("sha256")
-		.update(prevBlockHash + computedEventsHash)
+		.update(prevBlockHash + computedEntriesHash)
 		.digest("hex");
 
 	return {
@@ -660,10 +633,6 @@ export async function verifyBlockCheckpoint(
 // EXTERNAL ANCHOR VERIFICATION
 // =============================================================================
 
-/**
- * Verify a block checkpoint against an externally stored hash.
- * Compares against both blockHash and merkleRoot — valid if either matches.
- */
 export async function verifyExternalAnchor(
 	ctx: SummaContext,
 	blockSequence: number,
@@ -695,48 +664,41 @@ export async function verifyExternalAnchor(
 }
 
 // =============================================================================
-// MERKLE PROOF — O(log n) proof for a single event
+// MERKLE PROOF — O(log n) proof for a single entry
 // =============================================================================
 
-/**
- * Generate a Merkle proof for a specific event by its ID.
- * Finds the block containing the event, loads the leaf hashes, and builds
- * the proof from the leaf's position to the root.
- */
 export async function generateEventProof(
 	ctx: SummaContext,
-	eventId: string,
-	ledgerId: string,
+	entryId: string,
+	_ledgerId: string,
 ): Promise<MerkleProof & { blockId: string; blockSequence: number }> {
 	const t = createTableResolver(ctx.options.schema);
 
-	// Find which block contains this event via the merkle_node leaf
 	const leafRows = await ctx.adapter.raw<{
 		block_id: string;
 		position: number;
 	}>(
 		`SELECT block_id, position
      FROM ${t("merkle_node")}
-     WHERE event_id = $1 AND level = 0
+     WHERE entry_id = $1 AND level = 0
      LIMIT 1`,
-		[eventId],
+		[entryId],
 	);
 
 	const leaf = leafRows[0];
 	if (!leaf) {
 		throw new Error(
-			`Event ${eventId} not found in any Merkle tree. Has a block checkpoint been created since this event?`,
+			`Entry ${entryId} not found in any Merkle tree. Has a block checkpoint been created since this entry?`,
 		);
 	}
 
-	// Get block info
 	const blockRows = await ctx.adapter.raw<{
 		block_sequence: number;
-		from_event_sequence: number;
-		to_event_sequence: number;
+		from_entry_sequence: number;
+		to_entry_sequence: number;
 		merkle_root: string;
 	}>(
-		`SELECT block_sequence, from_event_sequence, to_event_sequence, merkle_root
+		`SELECT block_sequence, from_entry_sequence, to_entry_sequence, merkle_root
      FROM ${t("block_checkpoint")}
      WHERE id = $1`,
 		[leaf.block_id],
@@ -747,20 +709,18 @@ export async function generateEventProof(
 		throw new Error(`Block ${leaf.block_id} not found`);
 	}
 
-	// Load all event hashes in this block (ordered by sequence)
 	const allLeafHashes: string[] = [];
-	let lastSeq = Number(block.from_event_sequence) - 1;
+	let lastSeq = Number(block.from_entry_sequence) - 1;
 
 	while (true) {
 		const batch = await ctx.adapter.raw<{ sequence_number: number; hash: string }>(
 			`SELECT sequence_number, hash
-       FROM ${t("ledger_event")}
-       WHERE ledger_id = $1
-         AND sequence_number > $2
-         AND sequence_number <= $3
+       FROM ${t("entry")}
+       WHERE sequence_number > $1
+         AND sequence_number <= $2
        ORDER BY sequence_number ASC
-       LIMIT $4`,
-			[ledgerId, lastSeq, Number(block.to_event_sequence), BLOCK_HASH_BATCH_SIZE],
+       LIMIT $3`,
+			[lastSeq, Number(block.to_entry_sequence), BLOCK_HASH_BATCH_SIZE],
 		);
 
 		if (batch.length === 0) break;
@@ -773,7 +733,6 @@ export async function generateEventProof(
 		if (batch.length < BLOCK_HASH_BATCH_SIZE) break;
 	}
 
-	// Generate proof using the leaf's position in the block
 	const proof = generateMerkleProof(allLeafHashes, leaf.position);
 
 	return {
@@ -783,19 +742,13 @@ export async function generateEventProof(
 	};
 }
 
-/**
- * Verify a Merkle proof for an event.
- * Optionally cross-checks against the stored merkle_root in block_checkpoint.
- */
 export async function verifyEventProof(
 	ctx: SummaContext,
 	proof: MerkleProof,
 	blockId?: string,
 ): Promise<{ valid: boolean; rootMatch: boolean }> {
-	// First: verify the proof cryptographically
 	const proofValid = verifyMerkleProof(proof);
 
-	// If blockId provided, cross-check with stored merkle_root
 	let rootMatch = true;
 	if (blockId) {
 		const t = createTableResolver(ctx.options.schema);

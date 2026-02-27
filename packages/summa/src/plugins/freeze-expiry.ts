@@ -1,9 +1,9 @@
 // =============================================================================
-// FREEZE EXPIRY PLUGIN — Auto-unfreeze accounts after TTL (APPEND-ONLY)
+// FREEZE EXPIRY PLUGIN — Auto-unfreeze accounts after TTL
 // =============================================================================
 // Periodically checks for accounts with a frozen_until timestamp in the past
-// and automatically unfreezes them by inserting a new account_balance_version
-// row with active status.
+// and automatically unfreezes them by updating the account row directly
+// and logging the status transition to entity_status_log.
 
 import { computeBalanceChecksum, type SummaPlugin } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
@@ -26,8 +26,8 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 		id: "freeze-expiry",
 
 		schema: {
-			// Extend the version table (not the immutable parent) with frozen_until
-			accountBalanceVersion: {
+			// Extend the account table with frozen_until
+			account: {
 				extend: true,
 				columns: {
 					frozen_until: { type: "timestamp" },
@@ -42,9 +42,9 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 				handler: async (ctx) => {
 					const t = createTableResolver(ctx.options.schema);
 
-					// Find frozen accounts with expired frozen_until using LATERAL JOIN
+					// Find frozen accounts whose freeze period has expired
 					const candidates = await ctx.adapter.raw<{
-						account_id: string;
+						id: string;
 						holder_id: string;
 						version: number;
 						balance: number;
@@ -53,17 +53,12 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 						pending_debit: number;
 						pending_credit: number;
 					}>(
-						`SELECT a.id AS account_id, a.holder_id, v.version, v.balance,
-                    v.credit_balance, v.debit_balance, v.pending_debit, v.pending_credit
-             FROM ${t("account_balance")} a
-             JOIN LATERAL (
-               SELECT * FROM ${t("account_balance_version")}
-               WHERE account_id = a.id
-               ORDER BY version DESC LIMIT 1
-             ) v ON true
-             WHERE v.status = 'frozen'
-               AND v.frozen_until IS NOT NULL
-               AND v.frozen_until <= NOW()
+						`SELECT id, holder_id, version, balance, credit_balance,
+                    debit_balance, pending_debit, pending_credit
+             FROM ${t("account")}
+             WHERE status = 'frozen'
+               AND frozen_until IS NOT NULL
+               AND frozen_until <= NOW()
              LIMIT 100`,
 						[],
 					);
@@ -74,13 +69,9 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 					for (const c of candidates) {
 						try {
 							await ctx.adapter.transaction(async (tx) => {
-								// Lock the immutable parent
-								await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 FOR UPDATE`, [
-									c.account_id,
-								]);
-
-								// Re-read latest version inside lock
-								const vRows = await tx.raw<{
+								// Lock the account row
+								const lockedRows = await tx.raw<{
+									id: string;
 									version: number;
 									balance: number;
 									credit_balance: number;
@@ -90,47 +81,50 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 									status: string;
 									frozen_until: string | null;
 								}>(
-									`SELECT version, balance, credit_balance, debit_balance,
+									`SELECT id, version, balance, credit_balance, debit_balance,
                             pending_debit, pending_credit, status, frozen_until
-                     FROM ${t("account_balance_version")}
-                     WHERE account_id = $1 ORDER BY version DESC LIMIT 1`,
-									[c.account_id],
+                     FROM ${t("account")}
+                     WHERE id = $1 FOR UPDATE`,
+									[c.id],
 								);
-								const v = vRows[0];
-								if (!v || v.status !== "frozen" || !v.frozen_until) return;
-								if (new Date(v.frozen_until) > new Date()) return;
+								const row = lockedRows[0];
+								if (!row || row.status !== "frozen" || !row.frozen_until) return;
+								if (new Date(row.frozen_until) > new Date()) return;
 
-								// INSERT new version with active status (APPEND-ONLY)
-								const newVersion = Number(v.version) + 1;
+								// Compute new version and checksum
+								const newVersion = Number(row.version) + 1;
 								const checksum = computeBalanceChecksum(
 									{
-										balance: Number(v.balance),
-										creditBalance: Number(v.credit_balance),
-										debitBalance: Number(v.debit_balance),
-										pendingDebit: Number(v.pending_debit),
-										pendingCredit: Number(v.pending_credit),
+										balance: Number(row.balance),
+										creditBalance: Number(row.credit_balance),
+										debitBalance: Number(row.debit_balance),
+										pendingDebit: Number(row.pending_debit),
+										pendingCredit: Number(row.pending_credit),
 										lockVersion: newVersion,
 									},
 									ctx.options.advanced.hmacSecret,
 								);
 
+								// UPDATE account: set active, clear freeze fields
 								await tx.raw(
-									`INSERT INTO ${t("account_balance_version")} (
-                     account_id, version, balance, credit_balance, debit_balance,
-                     pending_credit, pending_debit, status, checksum,
-                     change_type
-                   ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+									`UPDATE ${t("account")} SET
+                     status = $1, version = $2, checksum = $3,
+                     freeze_reason = NULL, frozen_at = NULL, frozen_by = NULL, frozen_until = NULL
+                   WHERE id = $4 AND version = $5`,
+									["active", newVersion, checksum, row.id, Number(row.version)],
+								);
+
+								// Log status transition to entity_status_log
+								await tx.raw(
+									`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason, metadata)
+                   VALUES ($1, $2, $3, $4, $5, $6)`,
 									[
-										c.account_id,
-										newVersion,
-										Number(v.balance),
-										Number(v.credit_balance),
-										Number(v.debit_balance),
-										Number(v.pending_credit),
-										Number(v.pending_debit),
+										"account",
+										row.id,
 										"active",
-										checksum,
-										"auto_unfreeze",
+										"frozen",
+										"Freeze period expired",
+										JSON.stringify({ autoUnfreeze: true }),
 									],
 								);
 
@@ -141,7 +135,7 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 									[
 										"ledger-account-auto-unfrozen",
 										JSON.stringify({
-											accountId: c.account_id,
+											accountId: row.id,
 											holderId: c.holder_id,
 											reason: "Freeze period expired",
 										}),
@@ -152,7 +146,7 @@ export function freezeExpiry(options?: FreezeExpiryOptions): SummaPlugin {
 							});
 						} catch (err) {
 							ctx.logger.error("Failed to auto-unfreeze account", {
-								accountId: c.account_id,
+								accountId: c.id,
 								error: err instanceof Error ? err.message : String(err),
 							});
 						}

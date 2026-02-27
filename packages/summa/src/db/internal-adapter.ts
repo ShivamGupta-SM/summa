@@ -7,17 +7,12 @@
 import type { SecondaryStorage, SummaAdapter, SummaLogger, SummaPlugin } from "@summa-ledger/core";
 import { SummaError } from "@summa-ledger/core";
 
-// Tables that MUST NOT be updated or deleted — financial data integrity.
-// Any attempt to call update() or delete() on these models throws immediately.
+// Tables that MUST NOT be updated or deleted via the ORM adapter.
+// Financial data integrity: mutations go through raw SQL with explicit controls.
+// Note: `account` and `transfer` have mutable columns (balance, status) but those
+// are updated via raw SQL in entry-balance.ts / hold-manager.ts, not via ORM update().
 const IMMUTABLE_MODELS: ReadonlySet<string> = new Set([
-	"account_balance",
-	"account_balance_version",
-	"system_account",
-	"system_account_version",
-	"transaction_record",
-	"transaction_status",
-	"entry_record",
-	"ledger_event",
+	"entry",
 	"block_checkpoint",
 	"merkle_node",
 	"entity_status_log",

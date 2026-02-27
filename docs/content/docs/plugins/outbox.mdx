@@ -199,14 +199,6 @@ console.log(stats.failed);     // Events that exhausted all retries
 | `webhook-delivery-processor` | `5s` | `webhooks` set | Delivers pending webhook payloads (up to `webhookConcurrency` in parallel) |
 | `webhook-delivery-cleanup` | `1d` | `webhooks` set | Purges old delivery logs |
 
-### Processed Event Cleanup
-
-The `outbox-cleanup` worker also handles cleanup of the `processed_event` deduplication table. When the outbox processes events, it records their IDs in `processed_event` to prevent duplicate delivery. These dedup records are automatically cleaned up alongside processed outbox entries, using the same `retentionHours` setting.
-
-<Callout type="info">
-  Previously, `processed_event` cleanup was handled by a separate maintenance plugin. It is now part of the outbox plugin since the outbox owns the event processing pipeline that populates this table.
-</Callout>
-
 ## Type Inference
 
 ```ts

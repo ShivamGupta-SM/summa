@@ -379,11 +379,11 @@ export async function processAccruals(
 		try {
 			// Resolve account UUIDs to holder_ids for journalEntry
 			const sourceRows = await ctx.adapter.raw<{ holder_id: string }>(
-				`SELECT holder_id FROM ${t("account_balance")} WHERE id = $1`,
+				`SELECT holder_id FROM ${t("account")} WHERE id = $1`,
 				[posting.source_account_id],
 			);
 			const targetRows = await ctx.adapter.raw<{ holder_id: string }>(
-				`SELECT holder_id FROM ${t("account_balance")} WHERE id = $1`,
+				`SELECT holder_id FROM ${t("account")} WHERE id = $1`,
 				[posting.target_account_id],
 			);
 			const sourceHolderId = sourceRows[0]?.holder_id;
@@ -483,12 +483,12 @@ export function accrualAccounting(options?: AccrualAccountingOptions): SummaPlug
 					source_account_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
 					target_account_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
 					total_amount: { type: "bigint", notNull: true },
 					recognized_amount: { type: "bigint", default: "0" },

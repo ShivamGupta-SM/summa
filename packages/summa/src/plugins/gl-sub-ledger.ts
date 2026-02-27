@@ -74,7 +74,7 @@ export async function getGlSummary(ctx: SummaContext, glAccountId: string): Prom
        COALESCE(SUM(ab.credit_balance), 0) as total_credit,
        COALESCE(SUM(ab.debit_balance), 0) as total_debit,
        COUNT(*)::int as count
-     FROM ${t("account_balance")} ab
+     FROM ${t("account")} ab
      JOIN ${t("gl_sub_ledger_mapping")} m ON m.sub_ledger_account_id = ab.id
      WHERE ab.ledger_id = $1 AND m.gl_account_id = $2`,
 		[ledgerId, glAccountId],
@@ -113,8 +113,8 @@ export async function reconcile(
        gl.balance as gl_balance,
        COALESCE(SUM(sub.balance), 0) as sub_sum
      FROM ${t("gl_sub_ledger_mapping")} m
-     JOIN ${t("account_balance")} gl ON gl.id = m.gl_account_id
-     JOIN ${t("account_balance")} sub ON sub.id = m.sub_ledger_account_id
+     JOIN ${t("account")} gl ON gl.id = m.gl_account_id
+     JOIN ${t("account")} sub ON sub.id = m.sub_ledger_account_id
      ${filter}
      GROUP BY m.gl_account_id, gl.balance`,
 		params,
@@ -144,12 +144,12 @@ export function glSubLedger(options?: GlSubLedgerOptions): SummaPlugin {
 					gl_account_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
 					sub_ledger_account_id: {
 						type: "uuid",
 						notNull: true,
-						references: { table: "account_balance", column: "id" },
+						references: { table: "account", column: "id" },
 					},
 					created_at: { type: "timestamp", default: "NOW()" },
 				},

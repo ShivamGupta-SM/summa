@@ -6,7 +6,7 @@ icon: Scale
 
 ## Overview
 
-The reconciliation plugin compares account balances against the sum of their entry records to detect mismatches caused by bugs, race conditions, or data corruption. It performs a comprehensive **5-step verification**.
+The reconciliation plugin compares account balances against the sum of their entries to detect mismatches caused by bugs, race conditions, or data corruption. It performs a comprehensive **5-step verification**.
 
 ## Setup
 
@@ -59,7 +59,7 @@ By default, Step 1 (per-account balance verification) runs incrementally — it 
 
 **How it works:**
 1. The watermark tracks `lastEntryCreatedAt` — the timestamp of the last processed entry
-2. On each run, `SELECT DISTINCT account_id FROM entry_record WHERE created_at > $watermark` finds only active accounts
+2. On each run, `SELECT DISTINCT account_id FROM entry WHERE created_at > $watermark` finds only active accounts
 3. Only those accounts are verified, dramatically reducing scan time
 4. Every `fullScanEveryNRuns` runs (default: 7), a full scan is triggered as a safety net
 5. The `incremental_run_count` is tracked on the watermark and resets after each full scan

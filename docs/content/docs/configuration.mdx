@@ -85,12 +85,12 @@ functionalCurrency: "USD"  // All reports consolidate to USD
 PostgreSQL schema namespace for all Summa tables. Defaults to `"summa"`, which keeps all ledger tables isolated from your application's `public` schema.
 
 ```ts
-schema: "summa"   // Default — tables in "summa"."account_balance", etc.
-schema: "ledger"  // Custom — tables in "ledger"."account_balance", etc.
+schema: "summa"   // Default — tables in "summa"."account", etc.
+schema: "ledger"  // Custom — tables in "ledger"."account", etc.
 schema: "public"  // All tables in the public schema (not recommended)
 ```
 
-All table references are automatically qualified at runtime (e.g., `"summa"."account_balance"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
+All table references are automatically qualified at runtime (e.g., `"summa"."account"`). The CLI `migrate push` command creates the schema with `CREATE SCHEMA IF NOT EXISTS` before applying migrations.
 
 <Callout type="info" title="Schema naming">
   The schema name must contain only alphanumeric characters and underscores, and must start with a letter or underscore. Examples: `"summa"`, `"ledger"`, `"fin_data"`.
@@ -178,7 +178,6 @@ import {
   snapshots,
   statements,
   velocityLimits,
-  versionRetention,
 } from "@summa-ledger/summa/plugins";
 
 plugins: [
@@ -202,7 +201,7 @@ plugins: [
   approvalWorkflow({ rules: [] }),
   batchImport(),
   accrualAccounting(),
-  versionRetention({ retainVersions: 100, retainDays: 90 }),
+  // versionRetention — removed in v2 (balances are mutable on account row)
 ]
 ```
 
@@ -239,11 +238,8 @@ Every table that Summa writes to has a clear cleanup owner:
 | `hold` (expired) | **Core worker** (`core:hold-expiry`) | Core sets `hold_expires_at`, core expires them |
 | `idempotency_key` | **Core worker** (`core:idempotency-cleanup`) | Core writes idempotency keys on every operation |
 | `worker_lease` | **Core worker** (`core:lease-cleanup`) | Core manages distributed worker leases |
-| `outbox_event` | [**Outbox plugin**](/docs/plugins/outbox) (`outbox-cleanup`) | Outbox owns the event delivery pipeline |
-| `processed_event` | [**Outbox plugin**](/docs/plugins/outbox) (`outbox-cleanup`) | Dedup table populated by outbox processing |
-| `rate_limit_log` | [**Data retention plugin**](/docs/plugins/data-retention) | Always cleaned (default: 30d) |
+| `outbox` | [**Outbox plugin**](/docs/plugins/outbox) (`outbox-cleanup`) | Outbox owns the event delivery pipeline |
 | `audit_log` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `auditLogs` |
-| `hot_account_entry` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `hotAccountEntries` |
 | `fx_rate_quote` | [**Data retention plugin**](/docs/plugins/data-retention) | Optional — configure `fxQuotes` |
 
 The principle: **if core writes to a table, core cleans it up**. Plugin-owned tables are cleaned by their respective plugins.
@@ -262,8 +258,7 @@ advanced: {
   lockTimeoutMs: 3000,             // Advisory lock acquisition timeout
   maxTransactionAmount: 1_000_000_000_00,  // $10M max per transaction
   hmacSecret: process.env.SUMMA_HMAC_SECRET,  // HMAC secret for tamper-proof hashes
-  verifyHashOnRead: true,          // Verify integrity on every read
-  useDenormalizedBalance: true,    // O(1) balance reads (requires migrate push)
+  verifyEntryHashOnRead: true,     // Verify entry hash integrity on every read
   lockRetryCount: 3,               // Retry on lock contention
   lockRetryBaseDelayMs: 50,        // Exponential backoff base delay
   lockRetryMaxDelayMs: 500,        // Max backoff delay
@@ -282,23 +277,16 @@ advanced: {
 | `transactionTimeoutMs` | `number` | `5000` | Maximum time for a database transaction |
 | `lockTimeoutMs` | `number` | `3000` | Maximum time to acquire an advisory lock |
 | `maxTransactionAmount` | `number` | `100000000000` | Maximum allowed amount per transaction (smallest unit) |
-| `enableEventSourcing` | `boolean` | `true` | Controls event sourcing. Only disable for development/testing (see note below) |
-| `enableHashChain` | `boolean` | `true` | Controls hash chain integrity. Only disable for development/testing (see note below) |
 | `hmacSecret` | `string \| null` | `null` | HMAC secret for tamper-proof hash chains and balance checksums |
-| `verifyHashOnRead` | `boolean` | `true` | Verify hash chain integrity on every read operation |
-| `useDenormalizedBalance` | `boolean` | `true` | Store cached balance on `account_balance` for O(1) reads. See [Scaling — Denormalized Balance](/docs/scaling#denormalized-balance-cache) |
+| `verifyEntryHashOnRead` | `boolean` | `true` | Verify entry hash chain integrity on every read operation |
 | `lockRetryCount` | `number` | `0` | Number of retry attempts on lock timeout or serialization failure |
 | `lockRetryBaseDelayMs` | `number` | `50` | Base delay in ms between lock retries (exponential backoff with jitter) |
 | `lockRetryMaxDelayMs` | `number` | `500` | Maximum delay in ms between lock retries |
-| `lockMode` | `"wait" \| "nowait" \| "optimistic"` | `"wait"` | Lock acquisition mode. `"nowait"` fails immediately if locked. `"optimistic"` skips `FOR UPDATE` entirely — relies on `UNIQUE(account_id, version)` constraint for conflict detection |
+| `lockMode` | `"wait" \| "nowait" \| "optimistic"` | `"wait"` | Lock acquisition mode. `"nowait"` fails immediately if locked. `"optimistic"` skips `FOR UPDATE` entirely — relies on `UNIQUE(account_id, account_version)` constraint on `entry` for conflict detection |
 | `optimisticRetryCount` | `number` | `3` | Retry attempts on optimistic lock version conflicts (only used when `lockMode: "optimistic"`) |
 | `enableBatching` | `boolean` | `false` | Enable transaction batching for extreme throughput. See [Scaling — Transaction Batching](/docs/scaling#transaction-batching-batch-engine) |
 | `batchMaxSize` | `number` | `200` | Maximum transactions per batch (only when `enableBatching: true`) |
 | `batchFlushIntervalMs` | `number` | `5` | Maximum ms before an incomplete batch is flushed |
-
-<Callout type="warn" title="enableEventSourcing and enableHashChain">
-  These flags are enabled by default and control whether event sourcing and hash chain logic runs. Setting them to `false` **will** skip event/hash logic — only do this for development or testing. **Never disable in production** as it removes your immutability and tamper-detection guarantees.
-</Callout>
 
 <Callout type="warn" title="Configure hmacSecret in production">
   Without `hmacSecret`, hash chains use plain SHA-256 — an attacker with database access could recompute valid hashes. Set `advanced.hmacSecret` to a strong random string for tamper-proof integrity. Summa logs a warning at startup if this is not configured.

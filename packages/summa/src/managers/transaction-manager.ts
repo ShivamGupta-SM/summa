@@ -1,13 +1,15 @@
 // =============================================================================
-// TRANSACTION MANAGER -- Double-entry transaction operations (APPEND-ONLY)
+// TRANSACTION MANAGER -- Double-entry transaction operations
 // =============================================================================
 // Every transaction creates balanced debit + credit entry records.
-// System accounts use hot account pattern for high-volume batching.
+// System accounts use hot account pattern (entry INSERT without balance update).
 //
-// After the immutability refactor:
-// - transaction_record is IMMUTABLE (no status, posted_at, committed_amount, refunded_amount)
-// - transaction_status is APPEND-ONLY (each status transition = new row)
-// - account_balance is IMMUTABLE, state in account_balance_version (append-only)
+// v2 changes:
+// - transaction_record → transfer (status is a column, no separate table)
+// - account has mutable balance (no LATERAL JOIN, no account_balance_version)
+// - entries ARE events (no separate ledger_event)
+// - unified account model (no system_account_id FKs)
+// - velocity tracking via entry table (no account_transaction_log)
 
 import { randomUUID } from "node:crypto";
 import type {
@@ -17,13 +19,7 @@ import type {
 	TransactionStatus,
 	TransactionType,
 } from "@summa-ledger/core";
-import {
-	computeBalanceChecksum,
-	decodeCursor,
-	encodeCursor,
-	SummaError,
-	TRANSACTION_EVENTS,
-} from "@summa-ledger/core";
+import { decodeCursor, encodeCursor, SummaError } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import {
 	runAfterOperationHooks,
@@ -38,17 +34,33 @@ import { insertEntryAndUpdateBalance } from "./entry-balance.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "./idempotency.js";
 import { getLedgerId } from "./ledger-helpers.js";
 import { enforceLimitsWithAccountId } from "./limit-manager.js";
-import { executeMegaCTE, updateDenormalizedCache } from "./mega-cte.js";
+import { executeMegaCTE } from "./mega-cte.js";
 import { creditMultiDestinations } from "./multi-dest-credit.js";
-import type { RawAccountRow, RawTransactionRow } from "./raw-types.js";
-import { rawToTransactionResponse, txnWithStatusSql } from "./sql-helpers.js";
+import type { RawAccountRow, RawTransferRow } from "./raw-types.js";
+import { rawToTransactionResponse, transferSelectSql } from "./sql-helpers.js";
 import {
 	assertAccountActive,
 	batchTransactionSideEffects,
-	insertHotAccountEntry,
 	resolveSystemAccountInTx,
 	validateAmount,
 } from "./transaction-helpers.js";
+
+// =============================================================================
+// PREV HASH LOOKUP
+// =============================================================================
+
+/** Look up the latest entry hash for an account's chain. */
+async function getPrevHash(
+	tx: { raw: <T>(sql: string, params: unknown[]) => Promise<T[]> },
+	t: (name: string) => string,
+	accountId: string,
+): Promise<string | null> {
+	const rows = await tx.raw<{ hash: string }>(
+		`SELECT hash FROM ${t("entry")} WHERE account_id = $1 ORDER BY sequence_number DESC LIMIT 1`,
+		[accountId],
+	);
+	return rows[0]?.hash ?? null;
+}
 
 // =============================================================================
 // CREDIT ACCOUNT
@@ -65,7 +77,6 @@ export async function creditAccount(
 		metadata?: Record<string, unknown>;
 		sourceSystemAccount?: string;
 		idempotencyKey?: string;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
@@ -82,7 +93,7 @@ export async function creditAccount(
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
 	const ledgerId = getLedgerId(ctx);
 
-	// --- Batching fast path: delegate to batch engine if enabled ---
+	// --- Batching fast path ---
 	const batchEngine = (ctx as SummaContext & { batchEngine?: TransactionBatchEngine }).batchEngine;
 	if (ctx.options.advanced.enableBatching && batchEngine) {
 		return batchEngine.submit({
@@ -103,7 +114,9 @@ export async function creditAccount(
 	await runBeforeTransactionHooks(ctx, hookParams);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
-		// Idempotency check INSIDE transaction for atomicity
+		const t = createTableResolver(ctx.options.schema);
+
+		// Idempotency check
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
@@ -113,18 +126,17 @@ export async function creditAccount(
 			return idem.cachedResult as LedgerTransaction;
 		}
 
-		// Get destination account (FOR UPDATE to prevent stale reads)
+		// Get destination account (FOR UPDATE)
 		const destAccount = await resolveAccountForUpdate(
 			tx,
 			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			ctx.options.advanced.useDenormalizedBalance,
 		);
 		assertAccountActive(destAccount);
 
-		// Limit enforcement inside tx
+		// Limit enforcement
 		await enforceLimitsWithAccountId(tx, {
 			accountId: destAccount.id,
 			holderId,
@@ -133,7 +145,7 @@ export async function creditAccount(
 			category,
 		});
 
-		// Get source system account (cached — no DB hit after first call)
+		// Resolve source system account
 		const sourceSystemId = await resolveSystemAccountInTx(
 			tx,
 			sourceSystemAccount,
@@ -144,7 +156,7 @@ export async function creditAccount(
 		const correlationId = randomUUID();
 		const acctCurrency = destAccount.currency;
 
-		// Pre-compute balance update in-memory
+		// Pre-compute balance
 		const balanceBefore = Number(destAccount.balance);
 		const balanceAfter = balanceBefore + amount;
 		const newVersion = Number(destAccount.version) + 1;
@@ -152,15 +164,13 @@ export async function creditAccount(
 		const newDebitBalance = Number(destAccount.debit_balance);
 		const fullMetadata = { ...metadata, category };
 
-		const eventData = {
-			reference,
-			amount,
-			source: sourceSystemAccount,
-			destination: holderId,
-			category,
-		};
+		// Look up prev hashes for both chains
+		const [userPrevHash, systemPrevHash] = await Promise.all([
+			getPrevHash(tx, t, destAccount.id),
+			getPrevHash(tx, t, sourceSystemId),
+		]);
 
-		// Execute ALL writes in a single mega CTE (1 DB round-trip)
+		// Execute ALL writes in a single mega CTE
 		const megaResult = await executeMegaCTE({
 			tx,
 			schema: ctx.options.schema,
@@ -177,8 +187,6 @@ export async function creditAccount(
 
 			sourceAccountId: null,
 			destinationAccountId: destAccount.id,
-			sourceSystemAccountId: sourceSystemId,
-			destinationSystemAccountId: null,
 
 			userAccountId: destAccount.id,
 			userEntryType: "CREDIT",
@@ -189,19 +197,12 @@ export async function creditAccount(
 			newDebitBalance,
 			pendingDebit: Number(destAccount.pending_debit),
 			pendingCredit: Number(destAccount.pending_credit),
-			accountStatus: destAccount.status,
-			freezeReason: destAccount.freeze_reason ?? null,
-			frozenAt: destAccount.frozen_at ?? null,
-			frozenBy: destAccount.frozen_by ?? null,
-			closedAt: destAccount.closed_at ?? null,
-			closedBy: destAccount.closed_by ?? null,
-			closureReason: destAccount.closure_reason ?? null,
 
 			systemAccountId: sourceSystemId,
 			systemEntryType: "DEBIT",
 
-			enableEventSourcing: ctx.options.advanced.enableEventSourcing !== false,
-			eventData,
+			userPrevHash,
+			systemPrevHash,
 
 			outboxTopic: "ledger-account-credited",
 			outboxPayload: {
@@ -209,75 +210,43 @@ export async function creditAccount(
 				holderId,
 				holderType: destAccount.holder_type,
 				amount,
-				transactionId: "", // filled by CTE via new_txn.id
+				transactionId: "",
 				reference,
 				category,
 			},
 
-			velocityAccountId: destAccount.id,
-			velocityTxnType: "credit",
-
 			idempotencyKey: params.idempotencyKey,
-			idempotencyResultData: undefined, // set below after building response
+			idempotencyResultData: undefined,
 			idempotencyTTLSeconds: Math.ceil((ctx.options.advanced.idempotencyTTL ?? 86_400_000) / 1000),
 
 			effectiveDate: params.effectiveDate ?? null,
 		});
 
-		// Update denormalized cache (separate query — trigger blocks CTE-based updates)
-		if (ctx.options.advanced.useDenormalizedBalance) {
-			const hmacSecret = ctx.options.advanced.hmacSecret;
-			const checksum = computeBalanceChecksum(
-				{
-					balance: balanceAfter,
-					creditBalance: newCreditBalance,
-					debitBalance: newDebitBalance,
-					pendingDebit: Number(destAccount.pending_debit),
-					pendingCredit: Number(destAccount.pending_credit),
-					lockVersion: newVersion,
-				},
-				hmacSecret,
-			);
-			await updateDenormalizedCache(tx, ctx.options.schema, destAccount.id, {
-				balance: balanceAfter,
-				creditBalance: newCreditBalance,
-				debitBalance: newDebitBalance,
-				pendingDebit: Number(destAccount.pending_debit),
-				pendingCredit: Number(destAccount.pending_credit),
-				version: newVersion,
-				status: destAccount.status,
-				checksum,
-			});
-		}
-
-		// Build response from in-memory values (no extra DB read needed)
+		// Build response from in-memory values
 		const response: LedgerTransaction = rawToTransactionResponse(
 			{
-				id: megaResult.transactionId,
+				id: megaResult.transferId,
+				ledger_id: ledgerId,
+				type: "credit",
+				status: "posted",
 				reference,
 				amount,
 				currency: acctCurrency,
 				description,
 				source_account_id: null,
 				destination_account_id: destAccount.id,
-				source_system_account_id: sourceSystemId,
-				destination_system_account_id: null,
 				correlation_id: correlationId,
-				is_reversal: false,
+				metadata: fullMetadata,
 				is_hold: false,
-				parent_id: null,
-				meta_data: fullMetadata,
-				created_at: megaResult.createdAt,
-				status: "posted",
-				posted_at: megaResult.createdAt,
-				committed_amount: null,
-				refunded_amount: 0,
 				hold_expires_at: null,
-				processing_at: null,
-				type: "credit",
-				ledger_id: ledgerId,
+				parent_id: null,
+				is_reversal: false,
+				committed_amount: null,
+				refunded_amount: null,
 				effective_date: megaResult.effectiveDate,
-			} as RawTransactionRow,
+				posted_at: megaResult.createdAt,
+				created_at: megaResult.createdAt,
+			} as RawTransferRow,
 			"credit",
 			acctCurrency,
 		);
@@ -308,19 +277,7 @@ export async function debitAccount(
 		metadata?: Record<string, unknown>;
 		destinationSystemAccount?: string;
 		idempotencyKey?: string;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
-		/**
-		 * TigerBeetle-inspired balancing debit. When true, the transfer amount is
-		 * automatically capped to the available balance instead of failing with
-		 * INSUFFICIENT_BALANCE. The `amount` field becomes an upper limit.
-		 *
-		 * Use cases: sweep all available funds, close account with final payout,
-		 * distribute remaining balance.
-		 *
-		 * The actual debited amount is returned in the response's `amount` field.
-		 * If available balance is 0, the transaction still succeeds with amount 0.
-		 */
 		balancing?: boolean;
 		/** @internal Skip balance & overdraft checks (used by forceDebit). */
 		_skipBalanceCheck?: boolean;
@@ -339,8 +296,7 @@ export async function debitAccount(
 	validateAmount(amount, ctx.options.advanced.maxTransactionAmount);
 	const ledgerId = getLedgerId(ctx);
 
-	// --- Batching fast path: delegate to batch engine if enabled ---
-	// forceDebit (_skipBalanceCheck) bypasses batching — privileged ops go through direct path
+	// --- Batching fast path ---
 	const batchEngine = (ctx as SummaContext & { batchEngine?: TransactionBatchEngine }).batchEngine;
 	if (ctx.options.advanced.enableBatching && batchEngine && !params._skipBalanceCheck) {
 		return batchEngine.submit({
@@ -361,6 +317,8 @@ export async function debitAccount(
 	await runBeforeTransactionHooks(ctx, hookParams);
 
 	const result = await withTransactionTimeout(ctx, async (tx) => {
+		const t = createTableResolver(ctx.options.schema);
+
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference,
@@ -370,18 +328,17 @@ export async function debitAccount(
 			return idem.cachedResult as LedgerTransaction;
 		}
 
-		// Get source account (FOR UPDATE to prevent stale balance reads)
+		// Get source account (FOR UPDATE)
 		const sourceAccount = await resolveAccountForUpdate(
 			tx,
 			ledgerId,
 			holderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			ctx.options.advanced.useDenormalizedBalance,
 		);
 		assertAccountActive(sourceAccount);
 
-		// Limit enforcement inside tx
+		// Limit enforcement
 		await enforceLimitsWithAccountId(tx, {
 			accountId: sourceAccount.id,
 			holderId,
@@ -390,14 +347,14 @@ export async function debitAccount(
 			category,
 		});
 
-		// Balancing debit (TigerBeetle-inspired): cap amount to available balance
+		// Balancing debit: cap amount to available balance
 		const availableBalance = Number(sourceAccount.balance) - Number(sourceAccount.pending_debit);
 		let actualAmount = amount;
 		if (params.balancing) {
 			actualAmount = Math.min(amount, Math.max(0, availableBalance));
 		}
 
-		// Check sufficient balance (skipped for forceDebit — chargebacks, network adjustments)
+		// Check sufficient balance (skipped for forceDebit)
 		if (!params._skipBalanceCheck && !params.balancing) {
 			checkSufficientBalance({
 				available: availableBalance,
@@ -407,7 +364,7 @@ export async function debitAccount(
 			});
 		}
 
-		// Get destination system account (cached — no DB hit after first call)
+		// Resolve destination system account
 		const destSystemId = await resolveSystemAccountInTx(
 			tx,
 			destinationSystemAccount,
@@ -418,7 +375,7 @@ export async function debitAccount(
 		const correlationId = randomUUID();
 		const acctCurrency = sourceAccount.currency;
 
-		// Pre-compute balance update in-memory
+		// Pre-compute balance
 		const balanceBefore = Number(sourceAccount.balance);
 		const balanceAfter = balanceBefore - actualAmount;
 		const newVersion = Number(sourceAccount.version) + 1;
@@ -428,15 +385,13 @@ export async function debitAccount(
 			? { ...metadata, category, balancing: true, requestedAmount: amount }
 			: { ...metadata, category };
 
-		const eventData = {
-			reference,
-			amount: actualAmount,
-			source: holderId,
-			destination: destinationSystemAccount,
-			category,
-		};
+		// Look up prev hashes for both chains
+		const [userPrevHash, systemPrevHash] = await Promise.all([
+			getPrevHash(tx, t, sourceAccount.id),
+			getPrevHash(tx, t, destSystemId),
+		]);
 
-		// Execute ALL writes in a single mega CTE (1 DB round-trip)
+		// Execute ALL writes in a single mega CTE
 		const megaResult = await executeMegaCTE({
 			tx,
 			schema: ctx.options.schema,
@@ -453,8 +408,6 @@ export async function debitAccount(
 
 			sourceAccountId: sourceAccount.id,
 			destinationAccountId: null,
-			sourceSystemAccountId: null,
-			destinationSystemAccountId: destSystemId,
 
 			userAccountId: sourceAccount.id,
 			userEntryType: "DEBIT",
@@ -465,19 +418,12 @@ export async function debitAccount(
 			newDebitBalance,
 			pendingDebit: Number(sourceAccount.pending_debit),
 			pendingCredit: Number(sourceAccount.pending_credit),
-			accountStatus: sourceAccount.status,
-			freezeReason: sourceAccount.freeze_reason ?? null,
-			frozenAt: sourceAccount.frozen_at ?? null,
-			frozenBy: sourceAccount.frozen_by ?? null,
-			closedAt: sourceAccount.closed_at ?? null,
-			closedBy: sourceAccount.closed_by ?? null,
-			closureReason: sourceAccount.closure_reason ?? null,
 
 			systemAccountId: destSystemId,
 			systemEntryType: "CREDIT",
 
-			enableEventSourcing: ctx.options.advanced.enableEventSourcing !== false,
-			eventData,
+			userPrevHash,
+			systemPrevHash,
 
 			outboxTopic: "ledger-account-debited",
 			outboxPayload: {
@@ -485,75 +431,43 @@ export async function debitAccount(
 				holderId,
 				holderType: sourceAccount.holder_type,
 				amount: actualAmount,
-				transactionId: "", // filled by CTE via new_txn.id
+				transactionId: "",
 				reference,
 				category,
 			},
 
-			velocityAccountId: sourceAccount.id,
-			velocityTxnType: "debit",
-
 			idempotencyKey: params.idempotencyKey,
-			idempotencyResultData: undefined, // set below after building response
+			idempotencyResultData: undefined,
 			idempotencyTTLSeconds: Math.ceil((ctx.options.advanced.idempotencyTTL ?? 86_400_000) / 1000),
 
 			effectiveDate: params.effectiveDate ?? null,
 		});
 
-		// Update denormalized cache (separate query — trigger blocks CTE-based updates)
-		if (ctx.options.advanced.useDenormalizedBalance) {
-			const hmacSecret = ctx.options.advanced.hmacSecret;
-			const checksum = computeBalanceChecksum(
-				{
-					balance: balanceAfter,
-					creditBalance: newCreditBalance,
-					debitBalance: newDebitBalance,
-					pendingDebit: Number(sourceAccount.pending_debit),
-					pendingCredit: Number(sourceAccount.pending_credit),
-					lockVersion: newVersion,
-				},
-				hmacSecret,
-			);
-			await updateDenormalizedCache(tx, ctx.options.schema, sourceAccount.id, {
-				balance: balanceAfter,
-				creditBalance: newCreditBalance,
-				debitBalance: newDebitBalance,
-				pendingDebit: Number(sourceAccount.pending_debit),
-				pendingCredit: Number(sourceAccount.pending_credit),
-				version: newVersion,
-				status: sourceAccount.status,
-				checksum,
-			});
-		}
-
-		// Build response from in-memory values (no extra DB read needed)
+		// Build response
 		const response: LedgerTransaction = rawToTransactionResponse(
 			{
-				id: megaResult.transactionId,
+				id: megaResult.transferId,
+				ledger_id: ledgerId,
+				type: "debit",
+				status: "posted",
 				reference,
 				amount: actualAmount,
 				currency: acctCurrency,
 				description,
 				source_account_id: sourceAccount.id,
 				destination_account_id: null,
-				source_system_account_id: null,
-				destination_system_account_id: destSystemId,
 				correlation_id: correlationId,
-				is_reversal: false,
+				metadata: fullMetadata,
 				is_hold: false,
-				parent_id: null,
-				meta_data: fullMetadata,
-				created_at: megaResult.createdAt,
-				status: "posted",
-				posted_at: megaResult.createdAt,
-				committed_amount: null,
-				refunded_amount: 0,
 				hold_expires_at: null,
-				processing_at: null,
-				type: "debit",
-				ledger_id: ledgerId,
+				parent_id: null,
+				is_reversal: false,
+				committed_amount: null,
+				refunded_amount: null,
 				effective_date: megaResult.effectiveDate,
-			} as RawTransactionRow,
+				posted_at: megaResult.createdAt,
+				created_at: megaResult.createdAt,
+			} as RawTransferRow,
 			"debit",
 			acctCurrency,
 		);
@@ -572,8 +486,6 @@ export async function debitAccount(
 // =============================================================================
 // FORCE DEBIT — Privileged debit that bypasses balance & overdraft checks
 // =============================================================================
-// Use for chargebacks, network-initiated adjustments, regulatory debits, and
-// other cases where the debit MUST succeed regardless of account balance.
 
 export async function forceDebit(
 	ctx: SummaContext,
@@ -601,8 +513,6 @@ export async function forceDebit(
 // =============================================================================
 // FORCE TRANSFER — Privileged transfer that bypasses balance & overdraft checks
 // =============================================================================
-// Use for clawbacks, regulatory seizures, or inter-account forced moves where
-// the transfer MUST succeed regardless of source account balance.
 
 export async function forceTransfer(
 	ctx: SummaContext,
@@ -643,20 +553,8 @@ export async function transfer(
 		category?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
-		/** Exchange rate for cross-currency transfers (rate * 1_000_000 for 6 decimal precision). Required when source and destination currencies differ. */
 		exchangeRate?: number;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
-		/**
-		 * TigerBeetle-inspired balancing transfer. When true, the transfer amount is
-		 * automatically capped to the source account's available balance instead of
-		 * failing with INSUFFICIENT_BALANCE. The `amount` field becomes an upper limit.
-		 *
-		 * Use cases: sweep all funds to another account, settlement of remaining balance.
-		 *
-		 * The actual transferred amount is returned in the response's `amount` field.
-		 * If available balance is 0, the transaction still succeeds with amount 0.
-		 */
 		balancing?: boolean;
 		/** @internal Skip balance & overdraft checks (used by forceTransfer). */
 		_skipBalanceCheck?: boolean;
@@ -702,11 +600,10 @@ export async function transfer(
 			return idem.cachedResult as LedgerTransaction;
 		}
 
-		// Look up both accounts without lock first, then lock in sorted ID order
-		// to prevent deadlocks when concurrent transfers go A->B and B->A.
+		// Look up both accounts, then lock in sorted ID order to prevent deadlocks
 		const lookupRows = await tx.raw<Pick<RawAccountRow, "id" | "holder_id">>(
-			`SELECT id, holder_id FROM ${t("account_balance")}
-       WHERE holder_id IN ($1, $2) AND ledger_id = $3`,
+			`SELECT id, holder_id FROM ${t("account")}
+       WHERE holder_id IN ($1, $2) AND ledger_id = $3 AND is_system = false`,
 			[sourceHolderId, destinationHolderId, ledgerId],
 		);
 
@@ -716,9 +613,7 @@ export async function transfer(
 		if (!srcPreview) throw SummaError.notFound("Source account not found");
 		if (!destPreview) throw SummaError.notFound("Destination account not found");
 
-		// Lock both in deterministic ID order to prevent deadlocks.
-		// Lock immutable parents, then read latest version via LATERAL JOIN.
-		// In optimistic mode: skip locks, read without FOR UPDATE — rely on version constraint.
+		// Lock both in deterministic ID order
 		const [firstId, secondId] = [srcPreview.id, destPreview.id].sort();
 		const isOptimistic = ctx.options.advanced.lockMode === "optimistic";
 		const lockSuffix = isOptimistic
@@ -727,26 +622,14 @@ export async function transfer(
 				? "FOR UPDATE NOWAIT"
 				: "FOR UPDATE";
 
-		// Lock both (skipped in optimistic mode)
 		if (!isOptimistic) {
-			await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [firstId]);
-			await tx.raw(`SELECT id FROM ${t("account_balance")} WHERE id = $1 ${lockSuffix}`, [
-				secondId,
-			]);
+			await tx.raw(`SELECT id FROM ${t("account")} WHERE id = $1 ${lockSuffix}`, [firstId]);
+			await tx.raw(`SELECT id FROM ${t("account")} WHERE id = $1 ${lockSuffix}`, [secondId]);
 		}
 
-		// Read combined rows (static + latest version)
+		// Read full account rows (balance is directly on account in v2)
 		const allRows = await tx.raw<RawAccountRow>(
-			`SELECT a.*, v.version, v.balance, v.credit_balance, v.debit_balance,
-              v.pending_credit, v.pending_debit, v.status, v.checksum,
-              v.freeze_reason, v.frozen_at, v.frozen_by,
-              v.closed_at, v.closed_by, v.closure_reason
-       FROM ${t("account_balance")} a
-       JOIN LATERAL (
-         SELECT * FROM ${t("account_balance_version")}
-         WHERE account_id = a.id ORDER BY version DESC LIMIT 1
-       ) v ON true
-       WHERE a.id IN ($1, $2)`,
+			`SELECT * FROM ${t("account")} WHERE id IN ($1, $2)`,
 			[firstId, secondId],
 		);
 
@@ -758,10 +641,8 @@ export async function transfer(
 		assertAccountActive(source, "Source");
 		assertAccountActive(dest, "Destination");
 
-		// Check sufficient balance first (cheap) before limit queries (expensive)
+		// Check sufficient balance
 		const availableBalance = Number(source.balance) - Number(source.pending_debit);
-
-		// Balancing transfer (TigerBeetle-inspired): cap amount to available balance
 		let actualAmount = amount;
 		if (params.balancing) {
 			actualAmount = Math.min(amount, Math.max(0, availableBalance));
@@ -776,7 +657,7 @@ export async function transfer(
 			});
 		}
 
-		// Enforce velocity limits inside tx
+		// Enforce velocity limits
 		await enforceLimitsWithAccountId(tx, {
 			accountId: source.id,
 			holderId: sourceHolderId,
@@ -802,7 +683,7 @@ export async function transfer(
 			}
 		}
 
-		// Validate exchange rate bounds (rate is scaled by 1_000_000 for 6 decimal precision)
+		// Validate exchange rate bounds
 		if (resolvedExchangeRate != null) {
 			if (
 				!Number.isInteger(resolvedExchangeRate) ||
@@ -815,7 +696,7 @@ export async function transfer(
 			}
 		}
 
-		// For cross-currency: credit amount in destination currency.
+		// For cross-currency: credit amount in destination currency
 		const fxRate = resolvedExchangeRate ?? 1_000_000;
 		const creditAmount = isCrossCurrency
 			? Math.round(actualAmount * (fxRate / 1_000_000))
@@ -829,40 +710,6 @@ export async function transfer(
 
 		const correlationId = randomUUID();
 
-		// Create transaction record (IMMUTABLE — no status)
-		const txnMeta = isCrossCurrency
-			? { ...metadata, category, exchangeRate: resolvedExchangeRate, crossCurrency: true }
-			: params.balancing
-				? { ...metadata, category, balancing: true, requestedAmount: amount }
-				: { ...metadata, category };
-		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, meta_data, ledger_id, effective_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11::timestamptz, NOW()))
-       RETURNING *`,
-			[
-				"transfer",
-				reference,
-				actualAmount,
-				srcCurrency,
-				description,
-				source.id,
-				dest.id,
-				correlationId,
-				JSON.stringify(txnMeta),
-				ledgerId,
-				params.effectiveDate ?? null,
-			],
-		);
-		const txnRecord = txnRecordRows[0];
-		if (!txnRecord) throw SummaError.internal("Failed to insert transfer transaction");
-
-		// INSERT initial status (posted immediately, APPEND-ONLY)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[txnRecord.id, "posted"],
-		);
-
 		// FX params for cross-currency transfers
 		const fxParams = isCrossCurrency
 			? {
@@ -872,40 +719,60 @@ export async function transfer(
 				}
 			: {};
 
+		// Create transfer record
+		const txnMeta = isCrossCurrency
+			? { ...metadata, category, exchangeRate: resolvedExchangeRate, crossCurrency: true }
+			: params.balancing
+				? { ...metadata, category, balancing: true, requestedAmount: amount }
+				: { ...metadata, category };
+		const txnRecordRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, source_account_id, destination_account_id, correlation_id, metadata, posted_at, effective_date)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, $9, $10, NOW(), COALESCE($11::timestamptz, NOW()))
+       RETURNING *`,
+			[
+				ledgerId,
+				"transfer",
+				reference,
+				actualAmount,
+				srcCurrency,
+				description,
+				source.id,
+				dest.id,
+				correlationId,
+				JSON.stringify(txnMeta),
+				params.effectiveDate ?? null,
+			],
+		);
+		const txnRecord = txnRecordRows[0];
+		if (!txnRecord) throw SummaError.internal("Failed to insert transfer");
+
 		// Entry + balance updates for both accounts (skipLock: both already locked above)
-		const dnFlag = ctx.options.advanced.useDenormalizedBalance;
 		await Promise.all([
 			insertEntryAndUpdateBalance({
 				tx,
-				transactionId: txnRecord.id,
+				transferId: txnRecord.id,
 				accountId: source.id,
 				entryType: "DEBIT",
-				amount,
+				amount: actualAmount,
 				currency: srcCurrency,
 				isHotAccount: false,
 				skipLock: true,
-				updateDenormalizedCache: dnFlag,
 				...fxParams,
 			}),
 			insertEntryAndUpdateBalance({
 				tx,
-				transactionId: txnRecord.id,
+				transferId: txnRecord.id,
 				accountId: dest.id,
 				entryType: "CREDIT",
 				amount: creditAmount,
 				currency: destCurrency,
 				isHotAccount: false,
 				skipLock: true,
-				updateDenormalizedCache: dnFlag,
 				...fxParams,
 			}),
 		]);
 
-		const response = rawToTransactionResponse(
-			{ ...txnRecord, status: "posted", posted_at: new Date() },
-			"transfer",
-			srcCurrency,
-		);
+		const response = rawToTransactionResponse(txnRecord, "transfer", srcCurrency);
 		await batchTransactionSideEffects({
 			tx,
 			ctx,
@@ -914,13 +781,6 @@ export async function transfer(
 			reference,
 			category,
 			ledgerId,
-			eventData: {
-				reference,
-				amount,
-				source: sourceHolderId,
-				destination: destinationHolderId,
-				category,
-			},
 			outboxEvents: [
 				{
 					topic: "ledger-account-debited",
@@ -928,7 +788,7 @@ export async function transfer(
 						accountId: source.id,
 						holderId: sourceHolderId,
 						holderType: source.holder_type,
-						amount,
+						amount: actualAmount,
 						transactionId: txnRecord.id,
 						reference,
 						category,
@@ -941,17 +801,13 @@ export async function transfer(
 						accountId: dest.id,
 						holderId: destinationHolderId,
 						holderType: dest.holder_type,
-						amount,
+						amount: creditAmount,
 						transactionId: txnRecord.id,
 						reference,
 						category,
 						type: "transfer",
 					},
 				},
-			],
-			logEntries: [
-				{ accountId: source.id, txnType: "debit", amount },
-				{ accountId: dest.id, txnType: "credit", amount },
 			],
 			idempotencyKey: params.idempotencyKey,
 			responseForIdempotency: response,
@@ -983,7 +839,6 @@ export async function multiTransfer(
 		category?: string;
 		metadata?: Record<string, unknown>;
 		idempotencyKey?: string;
-		/** Effective date for backdated transactions. Defaults to NOW(). */
 		effectiveDate?: Date | string;
 	},
 ): Promise<LedgerTransaction> {
@@ -1033,7 +888,6 @@ export async function multiTransfer(
 			sourceHolderId,
 			ctx.options.schema,
 			ctx.options.advanced.lockMode,
-			ctx.options.advanced.useDenormalizedBalance,
 		);
 		assertAccountActive(source);
 
@@ -1058,12 +912,13 @@ export async function multiTransfer(
 		const acctCurrency = source.currency;
 		const correlationId = randomUUID();
 
-		// Create transaction record (IMMUTABLE — no status)
-		const txnRecordRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, correlation_id, meta_data, ledger_id, effective_date)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10::timestamptz, NOW()))
+		// Create transfer record
+		const txnRecordRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, source_account_id, correlation_id, metadata, posted_at, effective_date)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, $9, NOW(), COALESCE($10::timestamptz, NOW()))
        RETURNING *`,
 			[
+				ledgerId,
 				"transfer",
 				reference,
 				amount,
@@ -1072,42 +927,33 @@ export async function multiTransfer(
 				source.id,
 				correlationId,
 				JSON.stringify({ ...metadata, category, destinations }),
-				ledgerId,
 				params.effectiveDate ?? null,
 			],
 		);
 		const txnRecord = txnRecordRows[0];
-		if (!txnRecord) throw SummaError.internal("Failed to insert multi-transfer transaction");
+		if (!txnRecord) throw SummaError.internal("Failed to insert multi-transfer");
 
-		// INSERT initial status (posted immediately, APPEND-ONLY)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[txnRecord.id, "posted"],
-		);
-
-		// DEBIT entry record for source (skipLock: already locked above)
+		// DEBIT entry for source (skipLock: already locked above)
 		await insertEntryAndUpdateBalance({
 			tx,
-			transactionId: txnRecord.id,
+			transferId: txnRecord.id,
 			accountId: source.id,
 			entryType: "DEBIT",
 			amount,
 			currency: acctCurrency,
 			isHotAccount: false,
 			skipLock: true,
-			updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
 		});
 
 		// Credit all destinations
 		const destResults = await creditMultiDestinations(tx, ctx, {
-			transactionId: txnRecord.id,
+			transferId: txnRecord.id,
 			currency: acctCurrency,
 			totalAmount: amount,
 			destinations,
 		});
 
-		// Build dynamic outbox + log entries from destination results
+		// Build outbox events
 		const outboxEvents: Array<{ topic: string; payload: Record<string, unknown> }> = [
 			{
 				topic: "ledger-account-debited",
@@ -1122,9 +968,6 @@ export async function multiTransfer(
 					type: "multi-transfer",
 				},
 			},
-		];
-		const logEntries: Array<{ accountId: string; txnType: "credit" | "debit"; amount: number }> = [
-			{ accountId: source.id, txnType: "debit", amount },
 		];
 
 		for (const dest of destResults) {
@@ -1142,16 +985,9 @@ export async function multiTransfer(
 					},
 				});
 			}
-			if (dest.accountId) {
-				logEntries.push({ accountId: dest.accountId, txnType: "credit", amount: dest.amount });
-			}
 		}
 
-		const response = rawToTransactionResponse(
-			{ ...txnRecord, status: "posted", posted_at: new Date() },
-			"transfer",
-			acctCurrency,
-		);
+		const response = rawToTransactionResponse(txnRecord, "transfer", acctCurrency);
 		await batchTransactionSideEffects({
 			tx,
 			ctx,
@@ -1160,15 +996,7 @@ export async function multiTransfer(
 			reference,
 			category,
 			ledgerId,
-			eventData: {
-				reference,
-				amount,
-				source: sourceHolderId,
-				destinations: destinations.map((d) => d.holderId ?? d.systemAccount),
-				category,
-			},
 			outboxEvents,
-			logEntries,
 			idempotencyKey: params.idempotencyKey,
 			responseForIdempotency: response,
 		});
@@ -1194,17 +1022,15 @@ export async function getTransaction(
 ): Promise<LedgerTransaction> {
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
-	const rows = await ctx.readAdapter.raw<RawTransactionRow>(
-		`${txnWithStatusSql(t)} WHERE tr.id = $1 AND tr.ledger_id = $2 LIMIT 1`,
+	const rows = await ctx.readAdapter.raw<RawTransferRow>(
+		`${transferSelectSql(t)} WHERE id = $1 AND ledger_id = $2 LIMIT 1`,
 		[transactionId, ledgerId],
 	);
 
 	const txn = rows[0];
 	if (!txn) throw SummaError.notFound("Transaction not found");
 
-	const type = inferTransactionType(txn);
-
-	return rawToTransactionResponse(txn, type, txn.currency);
+	return rawToTransactionResponse(txn, inferTransactionType(txn), txn.currency);
 }
 
 export async function listAccountTransactions(
@@ -1221,9 +1047,7 @@ export async function listAccountTransactions(
 		dateTo?: string;
 		amountMin?: number;
 		amountMax?: number;
-		/** Opaque cursor for keyset pagination (faster than page/perPage at depth). */
 		cursor?: string;
-		/** Items per page when using cursor pagination. Default: 20, max: 100. */
 		limit?: number;
 	},
 ): Promise<{
@@ -1263,31 +1087,29 @@ export async function listAccountTransactions(
 	const ledgerId = getLedgerId(ctx);
 	const t = createTableResolver(ctx.options.schema);
 
-	// First find the account (read-only — use replica)
+	// Find the account
 	const accountRows = await ctx.readAdapter.raw<{ id: string }>(
-		`SELECT id FROM ${t("account_balance")} WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
+		`SELECT id FROM ${t("account")} WHERE holder_id = $1 AND ledger_id = $2 AND is_system = false LIMIT 1`,
 		[params.holderId, ledgerId],
 	);
 
 	if (!accountRows[0]) throw SummaError.notFound("Account not found");
 	const accountId = accountRows[0].id;
 
-	// Build common filter SQL fragments
-	// NOTE: Filters on status use ts.status (from LATERAL JOIN), filters on other fields use tr.*
+	// Build filter SQL — status is a direct column on transfer now (no LATERAL JOIN)
 	const filterParts: string[] = [];
 	const filterParams: unknown[] = [];
 	let pIdx = 1;
 
-	// We'll use $1 as accountId in all branches
 	filterParams.push(accountId);
 	pIdx++;
 
 	if (params.status) {
-		filterParts.push(`AND ts.status = $${pIdx++}`);
+		filterParts.push(`AND tr.status = $${pIdx++}`);
 		filterParams.push(params.status);
 	}
 	if (params.category) {
-		filterParts.push(`AND tr.meta_data->>'category' = $${pIdx++}`);
+		filterParts.push(`AND tr.metadata->>'category' = $${pIdx++}`);
 		filterParams.push(params.category);
 	}
 	if (params.dateFrom) {
@@ -1310,66 +1132,45 @@ export async function listAccountTransactions(
 	const commonFilters = filterParts.join(" ");
 	const orderCol = params.sortBy === "amount" ? "amount DESC" : "created_at DESC";
 
-	// Helper: wrap a base query with LATERAL JOIN to transaction_status
-	const withStatus = (baseWhere: string) =>
-		`SELECT tr.*, ts.status, ts.committed_amount, ts.refunded_amount, ts.posted_at
-     FROM ${t("transaction_record")} tr
-     JOIN LATERAL (
-       SELECT status, committed_amount, refunded_amount, posted_at
-       FROM ${t("transaction_status")} WHERE transaction_id = tr.id
-       ORDER BY created_at DESC LIMIT 1
-     ) ts ON true
-     WHERE ${baseWhere} ${commonFilters}`;
+	// Build query — no more LATERAL JOIN for status (it's on the transfer row)
+	const baseSelect = `SELECT tr.* FROM ${t("transfer")} tr`;
 
-	// Build UNION ALL query based on type filter
 	let unionQuery: string;
 	if (params.type === "credit") {
 		unionQuery = `
-      ${withStatus(`tr.destination_account_id = $1 AND (tr.source_account_id IS NULL OR tr.source_account_id != $1)`)}
+      ${baseSelect} WHERE tr.destination_account_id = $1 AND (tr.source_account_id IS NULL OR tr.source_account_id != $1) ${commonFilters}
       UNION ALL
-      SELECT tr2.*, ts2.status, ts2.committed_amount, ts2.refunded_amount, ts2.posted_at
-      FROM ${t("transaction_record")} tr2
-      JOIN ${t("entry_record")} er ON er.transaction_id = tr2.id
-      JOIN LATERAL (
-        SELECT status, committed_amount, refunded_amount, posted_at
-        FROM ${t("transaction_status")} WHERE transaction_id = tr2.id
-        ORDER BY created_at DESC LIMIT 1
-      ) ts2 ON true
+      ${baseSelect}
+      JOIN ${t("entry")} er ON er.transfer_id = tr.id
       WHERE er.account_id = $1
         AND er.entry_type = 'CREDIT'
-        AND tr2.source_account_id IS NOT NULL
-        AND tr2.destination_account_id IS NULL
-        AND tr2.source_account_id != $1
-        ${commonFilters.replace(/ts\./g, "ts2.").replace(/tr\./g, "tr2.")}
+        AND tr.source_account_id IS NOT NULL
+        AND tr.destination_account_id IS NULL
+        AND tr.source_account_id != $1
+        ${commonFilters}
     `;
 	} else if (params.type === "debit") {
-		unionQuery = withStatus(`tr.source_account_id = $1`);
+		unionQuery = `${baseSelect} WHERE tr.source_account_id = $1 ${commonFilters}`;
 	} else if (params.type === "transfer") {
 		unionQuery = `
-      ${withStatus(`tr.source_account_id = $1 AND tr.destination_account_id IS NOT NULL`)}
+      ${baseSelect} WHERE tr.source_account_id = $1 AND tr.destination_account_id IS NOT NULL ${commonFilters}
       UNION ALL
-      ${withStatus(`tr.destination_account_id = $1 AND tr.source_account_id IS NOT NULL AND tr.source_account_id != $1`)}
+      ${baseSelect} WHERE tr.destination_account_id = $1 AND tr.source_account_id IS NOT NULL AND tr.source_account_id != $1 ${commonFilters}
     `;
 	} else {
 		unionQuery = `
-      ${withStatus(`tr.source_account_id = $1`)}
+      ${baseSelect} WHERE tr.source_account_id = $1 ${commonFilters}
       UNION ALL
-      ${withStatus(`tr.destination_account_id = $1 AND (tr.source_account_id IS NULL OR tr.source_account_id != $1)`)}
+      ${baseSelect} WHERE tr.destination_account_id = $1 AND (tr.source_account_id IS NULL OR tr.source_account_id != $1) ${commonFilters}
       UNION ALL
-      SELECT tr2.*, ts2.status, ts2.committed_amount, ts2.refunded_amount, ts2.posted_at
-      FROM ${t("transaction_record")} tr2
-      JOIN ${t("entry_record")} er ON er.transaction_id = tr2.id
-      JOIN LATERAL (
-        SELECT status, committed_amount, refunded_amount, posted_at
-        FROM ${t("transaction_status")} WHERE transaction_id = tr2.id
-        ORDER BY created_at DESC LIMIT 1
-      ) ts2 ON true
+      ${baseSelect}
+      JOIN ${t("entry")} er ON er.transfer_id = tr.id
       WHERE er.account_id = $1
         AND er.entry_type = 'CREDIT'
-        AND tr2.source_account_id IS NOT NULL
-        AND tr2.destination_account_id IS NULL
-        AND tr2.source_account_id != $1
-        ${commonFilters.replace(/ts\./g, "ts2.").replace(/tr\./g, "tr2.")}
+        AND tr.source_account_id IS NOT NULL
+        AND tr.destination_account_id IS NULL
+        AND tr.source_account_id != $1
+        ${commonFilters}
     `;
 	}
 
@@ -1383,13 +1184,12 @@ export async function listAccountTransactions(
 	}
 
 	if (useCursor && cursorData) {
-		// Keyset: filter in the outer wrapper (created_at DESC, id DESC)
 		const cursorFilter = `WHERE (combined.created_at, combined.id) < ($${pIdx}::timestamptz, $${pIdx + 1})`;
 		filterParams.push(cursorData.ca, cursorData.id);
 		pIdx += 2;
 		filterParams.push(perPage + 1);
 
-		const rows = await ctx.readAdapter.raw<RawTransactionRow>(
+		const rows = await ctx.readAdapter.raw<RawTransferRow>(
 			`SELECT * FROM (
            ${unionQuery}
          ) combined
@@ -1400,10 +1200,9 @@ export async function listAccountTransactions(
 		);
 
 		const hasMore = rows.length > perPage;
-		const data = (hasMore ? rows.slice(0, perPage) : rows).map((txn) => {
-			const type = inferTransactionType(txn);
-			return rawToTransactionResponse(txn, type, txn.currency);
-		});
+		const data = (hasMore ? rows.slice(0, perPage) : rows).map((txn) =>
+			rawToTransactionResponse(txn, inferTransactionType(txn), txn.currency),
+		);
 		const lastRow = hasMore ? rows[perPage - 1] : undefined;
 		const nextCursor = lastRow ? encodeCursor(lastRow.created_at, lastRow.id) : undefined;
 
@@ -1417,7 +1216,7 @@ export async function listAccountTransactions(
 	filterParams.push(perPage + 1);
 	filterParams.push(offset);
 
-	const rows = await ctx.readAdapter.raw<RawTransactionRow & { total_count: number }>(
+	const rows = await ctx.readAdapter.raw<RawTransferRow & { total_count: number }>(
 		`SELECT *, COUNT(*) OVER()::int AS total_count FROM (
        ${unionQuery}
      ) combined
@@ -1429,10 +1228,9 @@ export async function listAccountTransactions(
 
 	const total = rows.length > 0 ? Number(rows[0]?.total_count) : 0;
 	const hasMore = rows.length > perPage;
-	const data = (hasMore ? rows.slice(0, perPage) : rows).map((txn) => {
-		const type = inferTransactionType(txn);
-		return rawToTransactionResponse(txn, type, txn.currency);
-	});
+	const data = (hasMore ? rows.slice(0, perPage) : rows).map((txn) =>
+		rawToTransactionResponse(txn, inferTransactionType(txn), txn.currency),
+	);
 	const lastRow = hasMore ? rows[perPage - 1] : undefined;
 	const nextCursor = lastRow ? encodeCursor(lastRow.created_at, lastRow.id) : undefined;
 
@@ -1458,9 +1256,9 @@ export async function refundTransaction(
 	const result = await withTransactionTimeout(ctx, async (tx) => {
 		const t = createTableResolver(ctx.options.schema);
 
-		// Lock original transaction row + read latest status
-		const originalRows = await tx.raw<RawTransactionRow>(
-			`${txnWithStatusSql(t)} WHERE tr.id = $1 FOR UPDATE OF tr`,
+		// Lock original transfer + read status (status is directly on transfer row)
+		const originalRows = await tx.raw<RawTransferRow>(
+			`SELECT * FROM ${t("transfer")} WHERE id = $1 FOR UPDATE`,
 			[transactionId],
 		);
 
@@ -1486,7 +1284,7 @@ export async function refundTransaction(
 			? `refund_${original.reference}_p${alreadyRefunded + actualRefundAmount}`
 			: `refund_${original.reference}`;
 
-		// Idempotency check INSIDE transaction
+		// Idempotency check
 		const idem = await checkIdempotencyKeyInTx(tx, {
 			idempotencyKey: params.idempotencyKey,
 			reference: refundReference,
@@ -1498,21 +1296,28 @@ export async function refundTransaction(
 
 		const correlationId = randomUUID();
 
-		// Update refunded_amount on original via new transaction_status row (APPEND-ONLY)
+		// Update refunded_amount on original transfer (mutable status in v2)
 		const newRefundedAmount = alreadyRefunded + actualRefundAmount;
 		const newStatus = newRefundedAmount >= originalAmount ? "reversed" : "posted";
 		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, refunded_amount, reason)
-       VALUES ($1, $2, $3, $4)`,
-			[transactionId, newStatus, newRefundedAmount, `Refund: ${reason}`],
+			`UPDATE ${t("transfer")} SET status = $1, refunded_amount = $2 WHERE id = $3`,
+			[newStatus, newRefundedAmount, transactionId],
 		);
 
-		// Create reversal transaction record (IMMUTABLE — no status)
-		const reversalRows = await tx.raw<RawTransactionRow>(
-			`INSERT INTO ${t("transaction_record")} (type, reference, amount, currency, description, source_account_id, destination_account_id, source_system_account_id, destination_system_account_id, parent_id, is_reversal, correlation_id, meta_data, ledger_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		// Log status transition
+		await tx.raw(
+			`INSERT INTO ${t("entity_status_log")} (entity_type, entity_id, status, previous_status, reason)
+       VALUES ('transfer', $1, $2, 'posted', $3)`,
+			[transactionId, newStatus, `Refund: ${reason}`],
+		);
+
+		// Create reversal transfer record
+		const reversalRows = await tx.raw<RawTransferRow>(
+			`INSERT INTO ${t("transfer")} (ledger_id, type, status, reference, amount, currency, description, source_account_id, destination_account_id, parent_id, is_reversal, correlation_id, metadata, posted_at)
+       VALUES ($1, $2, 'posted', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW())
        RETURNING *`,
 			[
+				ledgerId,
 				"correction",
 				refundReference,
 				actualRefundAmount,
@@ -1520,97 +1325,42 @@ export async function refundTransaction(
 				`Refund: ${reason}`,
 				original.destination_account_id,
 				original.source_account_id,
-				original.destination_system_account_id,
-				original.source_system_account_id,
 				original.id,
 				true,
 				correlationId,
 				JSON.stringify({ reason, originalTransactionId: transactionId }),
-				ledgerId,
 			],
 		);
 		const reversal = reversalRows[0];
 		if (!reversal) throw SummaError.internal("Failed to insert refund reversal");
 
-		// INSERT initial status for reversal (posted immediately)
-		await tx.raw(
-			`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-       VALUES ($1, $2, NOW())`,
-			[reversal.id, "posted"],
-		);
-
-		// Reverse entries for user accounts (application-level balance update)
+		// Reverse entries for user accounts
 		if (original.destination_account_id) {
 			await insertEntryAndUpdateBalance({
 				tx,
-				transactionId: reversal.id,
+				transferId: reversal.id,
 				accountId: original.destination_account_id,
 				entryType: "DEBIT",
 				amount: actualRefundAmount,
 				currency: original.currency,
 				isHotAccount: false,
-				updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
 			});
 		}
 
 		if (original.source_account_id) {
 			await insertEntryAndUpdateBalance({
 				tx,
-				transactionId: reversal.id,
+				transferId: reversal.id,
 				accountId: original.source_account_id,
 				entryType: "CREDIT",
 				amount: actualRefundAmount,
 				currency: original.currency,
 				isHotAccount: false,
-				updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
 			});
 		}
 
-		// Reverse system account entries via hot account pattern
-		if (original.source_system_account_id) {
-			await Promise.all([
-				insertHotAccountEntry(tx, ctx.options.schema, {
-					systemAccountId: original.source_system_account_id,
-					amount: actualRefundAmount,
-					entryType: "CREDIT",
-					transactionId: reversal.id,
-				}),
-				insertEntryAndUpdateBalance({
-					tx,
-					transactionId: reversal.id,
-					systemAccountId: original.source_system_account_id,
-					entryType: "CREDIT",
-					amount: actualRefundAmount,
-					currency: original.currency,
-					isHotAccount: true,
-				}),
-			]);
-		}
-
-		if (original.destination_system_account_id) {
-			await Promise.all([
-				insertHotAccountEntry(tx, ctx.options.schema, {
-					systemAccountId: original.destination_system_account_id,
-					amount: actualRefundAmount,
-					entryType: "DEBIT",
-					transactionId: reversal.id,
-				}),
-				insertEntryAndUpdateBalance({
-					tx,
-					transactionId: reversal.id,
-					systemAccountId: original.destination_system_account_id,
-					entryType: "DEBIT",
-					amount: actualRefundAmount,
-					currency: original.currency,
-					isHotAccount: true,
-				}),
-			]);
-		}
-
-		// Batch side effects: event store + outbox + velocity logs + idempotency
+		// Build outbox events
 		const outboxEvents: Array<{ topic: string; payload: Record<string, unknown> }> = [];
-		const logEntries: Array<{ accountId: string; txnType: "credit" | "debit"; amount: number }> =
-			[];
 
 		if (original.destination_account_id) {
 			outboxEvents.push({
@@ -1623,11 +1373,6 @@ export async function refundTransaction(
 					category: "refund",
 					type: "refund",
 				},
-			});
-			logEntries.push({
-				accountId: original.destination_account_id,
-				txnType: "debit",
-				amount: actualRefundAmount,
 			});
 		}
 		if (original.source_account_id) {
@@ -1642,18 +1387,9 @@ export async function refundTransaction(
 					type: "refund",
 				},
 			});
-			logEntries.push({
-				accountId: original.source_account_id,
-				txnType: "credit",
-				amount: actualRefundAmount,
-			});
 		}
 
-		const response = rawToTransactionResponse(
-			{ ...reversal, status: "posted", posted_at: new Date() },
-			"correction",
-			original.currency,
-		);
+		const response = rawToTransactionResponse(reversal, "correction", original.currency);
 		await batchTransactionSideEffects({
 			tx,
 			ctx,
@@ -1662,17 +1398,7 @@ export async function refundTransaction(
 			reference: reversal.reference,
 			category: "refund",
 			ledgerId,
-			eventType: TRANSACTION_EVENTS.REVERSED,
-			eventAggregateId: original.id,
-			eventData: {
-				reversalId: reversal.id,
-				reason,
-				amount: actualRefundAmount,
-				refundedSoFar: newRefundedAmount,
-				fullyRefunded: newStatus === "reversed",
-			},
 			outboxEvents,
-			logEntries,
 			idempotencyKey: params.idempotencyKey,
 			responseForIdempotency: response,
 		});
@@ -1691,7 +1417,6 @@ export async function refundTransaction(
 // HELPERS
 // =============================================================================
 
-/** Read the transaction type from the stored `type` column. */
-function inferTransactionType(txn: RawTransactionRow): TransactionType {
+function inferTransactionType(txn: RawTransferRow): TransactionType {
 	return (txn.type ?? "credit") as TransactionType;
 }

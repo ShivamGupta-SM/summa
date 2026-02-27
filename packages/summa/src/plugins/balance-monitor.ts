@@ -197,7 +197,7 @@ export async function createMonitor(
 
 	// Resolve account ID from holder ID
 	const accounts = await ctx.adapter.raw<{ id: string }>(
-		`SELECT id FROM ${t("account_balance")} WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
+		`SELECT id FROM ${t("account")} WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
 		[params.holderId, ledgerId],
 	);
 	const account = accounts[0];
@@ -353,7 +353,7 @@ async function evaluateMonitorsForAccount(
 	// Get account
 	const accounts = await ctx.adapter.raw<{ id: string } & RawBalanceRow>(
 		`SELECT id, balance, credit_balance, debit_balance, pending_credit, pending_debit
-		 FROM ${t("account_balance")}
+		 FROM ${t("account")}
 		 WHERE holder_id = $1 AND ledger_id = $2 LIMIT 1`,
 		[holderId, ledgerId],
 	);

@@ -1,16 +1,22 @@
 // =============================================================================
-// BATCH ENGINE PLUGIN — TigerBeetle-inspired Transaction Batching
+// BATCH ENGINE PLUGIN — TigerBeetle-inspired Transaction Batching (v2)
 // =============================================================================
 // Instead of 1 DB transaction per API request, buffers N requests and processes
 // them in a single DB transaction using multi-row UNNEST INSERTs.
 //
 // This amortizes lock acquisition, round-trip latency, and commit overhead
 // across N transactions, enabling 10,000-20,000+ TPS while keeping ALL
-// security guarantees (HMAC hash chains, Merkle trees, balance checksums,
-// immutable tables) fully intact.
+// security guarantees (HMAC hash chains, balance checksums, immutable entries)
+// fully intact.
 //
 // Each buffered transaction gets its own resolve/reject Promise, so callers
 // see the same API surface as non-batched mode.
+//
+// v2 schema changes:
+// - transfer (replaces transaction_record + transaction_status)
+// - entry (replaces entry_record, hot_account_entry, ledger_event, account_transaction_log)
+// - account UPDATE (replaces account_balance_version INSERT + denormalized cache UPDATE)
+// - Removed: hot_account_entry, ledger_event, account_transaction_log, account_balance_version
 
 import { randomUUID } from "node:crypto";
 import type { LedgerTransaction, SummaContext, SummaPlugin } from "@summa-ledger/core";
@@ -21,7 +27,7 @@ import { resolveAccountForUpdate } from "../managers/account-manager.js";
 import { checkSufficientBalance } from "../managers/balance-check.js";
 import { checkIdempotencyKeyInTx, isValidCachedResult } from "../managers/idempotency.js";
 import { enforceLimitsWithAccountId } from "../managers/limit-manager.js";
-import type { RawAccountRow, RawTransactionRow } from "../managers/raw-types.js";
+import type { RawAccountRow, RawTransferRow } from "../managers/raw-types.js";
 import { rawToTransactionResponse } from "../managers/sql-helpers.js";
 import {
 	assertAccountActive,
@@ -71,7 +77,7 @@ interface ResolvedBatchItem {
 	item: BatchableTransaction;
 	account: RawAccountRow;
 	systemAccountId: string;
-	transactionId: string;
+	transferId: string;
 	correlationId: string;
 	balanceBefore: number;
 	balanceAfter: number;
@@ -79,8 +85,6 @@ interface ResolvedBatchItem {
 	newCreditBalance: number;
 	newDebitBalance: number;
 	checksum: string;
-	eventHash: string | null;
-	eventId: string;
 }
 
 // =============================================================================
@@ -164,7 +168,14 @@ export class TransactionBatchEngine {
 	}
 
 	// ===========================================================================
-	// BATCH PROCESSING
+	// BATCH PROCESSING — v2 schema (5 writes instead of ~10)
+	//
+	// 1. transfer INSERT (replaces transaction_record + transaction_status)
+	// 2. entry INSERT — user account side (with hash chain fields)
+	// 3. entry INSERT — system account side (with hash chain fields)
+	// 4. account UPDATE — user accounts (balance + version + checksum)
+	// 5. outbox INSERT
+	// 6. (optional) idempotency_key INSERT
 	// ===========================================================================
 
 	private async processBatch(batch: BatchableTransaction[]): Promise<void> {
@@ -226,7 +237,6 @@ export class TransactionBatchEngine {
 						holderId,
 						schema,
 						ctx.options.advanced.lockMode,
-						ctx.options.advanced.useDenormalizedBalance,
 					);
 					accountMap.set(holderId, account);
 				} catch (err) {
@@ -333,19 +343,6 @@ export class TransactionBatchEngine {
 						hmacSecret,
 					);
 
-					// Pre-compute event hash
-					const eventData = {
-						reference: item.reference,
-						amount: item.amount,
-						source: item.type === "debit" ? item.holderId : item.systemAccount,
-						destination: item.type === "credit" ? item.holderId : item.systemAccount,
-						category: item.category,
-					};
-					const eventHash =
-						ctx.options.advanced.enableEventSourcing !== false
-							? computeHash(null, eventData, hmacSecret)
-							: null;
-
 					// Resolve system account
 					let sysAcctId = systemAccountMap.get(item.systemAccount);
 					if (!sysAcctId) {
@@ -354,15 +351,14 @@ export class TransactionBatchEngine {
 					}
 					const resolvedSystemAccountId: string = sysAcctId;
 
-					const transactionId = randomUUID();
+					const transferId = randomUUID();
 					const correlationId = randomUUID();
-					const eventId = randomUUID();
 
 					valid.push({
 						item,
 						account,
 						systemAccountId: resolvedSystemAccountId,
-						transactionId,
+						transferId,
 						correlationId,
 						balanceBefore,
 						balanceAfter,
@@ -370,8 +366,6 @@ export class TransactionBatchEngine {
 						newCreditBalance,
 						newDebitBalance,
 						checksum,
-						eventHash,
-						eventId,
 					});
 				} catch (err) {
 					item.reject(err instanceof Error ? err : new Error(String(err)));
@@ -380,9 +374,14 @@ export class TransactionBatchEngine {
 
 			if (valid.length === 0) return;
 
-			// 5. Multi-row INSERT all records using UNNEST arrays
+			// 5. Multi-row INSERT/UPDATE using UNNEST arrays
+			// v2 flow: ~5 writes instead of ~10
 
-			// --- transaction_record ---
+			const now = new Date();
+			const nowIso = now.toISOString();
+
+			// --- transfer INSERT (replaces transaction_record + transaction_status) ---
+			const txnIds: string[] = [];
 			const txnTypes: string[] = [];
 			const txnRefs: string[] = [];
 			const txnAmounts: number[] = [];
@@ -390,15 +389,14 @@ export class TransactionBatchEngine {
 			const txnDescriptions: string[] = [];
 			const txnSourceAccounts: (string | null)[] = [];
 			const txnDestAccounts: (string | null)[] = [];
-			const txnSourceSysAccounts: (string | null)[] = [];
-			const txnDestSysAccounts: (string | null)[] = [];
 			const txnCorrelationIds: string[] = [];
 			const txnMetadata: string[] = [];
 			const txnLedgerIds: string[] = [];
-			const txnIds: string[] = [];
+			const txnStatuses: string[] = [];
+			const txnPostedAts: string[] = [];
 
 			for (const v of valid) {
-				txnIds.push(v.transactionId);
+				txnIds.push(v.transferId);
 				txnTypes.push(v.item.type);
 				txnRefs.push(v.item.reference);
 				txnAmounts.push(v.item.amount);
@@ -406,24 +404,23 @@ export class TransactionBatchEngine {
 				txnDescriptions.push(v.item.description);
 				txnSourceAccounts.push(v.item.type === "debit" ? v.account.id : null);
 				txnDestAccounts.push(v.item.type === "credit" ? v.account.id : null);
-				txnSourceSysAccounts.push(v.item.type === "credit" ? v.systemAccountId : null);
-				txnDestSysAccounts.push(v.item.type === "debit" ? v.systemAccountId : null);
 				txnCorrelationIds.push(v.correlationId);
 				txnMetadata.push(JSON.stringify({ ...v.item.metadata, category: v.item.category }));
 				txnLedgerIds.push(ledgerId);
+				txnStatuses.push("posted");
+				txnPostedAts.push(nowIso);
 			}
 
 			await tx.raw(
-				`INSERT INTO ${t("transaction_record")} (
+				`INSERT INTO ${t("transfer")} (
 					id, type, reference, amount, currency, description,
 					source_account_id, destination_account_id,
-					source_system_account_id, destination_system_account_id,
-					correlation_id, meta_data, ledger_id
+					correlation_id, metadata, ledger_id, status, posted_at
 				)
 				SELECT * FROM UNNEST(
 					$1::uuid[], $2::text[], $3::text[], $4::bigint[], $5::text[], $6::text[],
-					$7::uuid[], $8::uuid[], $9::uuid[], $10::uuid[],
-					$11::uuid[], $12::jsonb[], $13::text[]
+					$7::uuid[], $8::uuid[],
+					$9::uuid[], $10::jsonb[], $11::text[], $12::text[], $13::timestamptz[]
 				)`,
 				[
 					txnIds,
@@ -434,234 +431,240 @@ export class TransactionBatchEngine {
 					txnDescriptions,
 					txnSourceAccounts,
 					txnDestAccounts,
-					txnSourceSysAccounts,
-					txnDestSysAccounts,
 					txnCorrelationIds,
 					txnMetadata,
 					txnLedgerIds,
+					txnStatuses,
+					txnPostedAts,
 				],
 			);
 
-			// --- transaction_status ---
-			await tx.raw(
-				`INSERT INTO ${t("transaction_status")} (transaction_id, status, posted_at)
-				SELECT * FROM UNNEST($1::uuid[], $2::text[], $3::timestamptz[])`,
-				[txnIds, txnIds.map(() => "posted"), txnIds.map(() => new Date().toISOString())],
-			);
+			// --- entry INSERT (user account side — with hash chain fields) ---
+			// Fetch prev_hash per account for hash chain continuity
+			const uniqueAccountIds = [...new Set(valid.map((v) => v.account.id))];
+			const prevHashMap = new Map<string, string | null>();
 
-			// --- entry_record (user account side) ---
-			const entryAccountIds: string[] = [];
-			const entryTypes: string[] = [];
-			const entryAmounts: number[] = [];
-			const entryCurrencies: string[] = [];
-			const entryBBs: number[] = [];
-			const entryBAs: number[] = [];
-			const entryVersions: number[] = [];
-
-			for (const v of valid) {
-				entryAccountIds.push(v.account.id);
-				entryTypes.push(v.item.type === "credit" ? "CREDIT" : "DEBIT");
-				entryAmounts.push(v.item.amount);
-				entryCurrencies.push(v.account.currency);
-				entryBBs.push(v.balanceBefore);
-				entryBAs.push(v.balanceAfter);
-				entryVersions.push(v.newVersion);
-			}
-
-			await tx.raw(
-				`INSERT INTO ${t("entry_record")} (
-					transaction_id, account_id, entry_type, amount, currency,
-					is_hot_account, balance_before, balance_after, account_lock_version
-				)
-				SELECT * FROM UNNEST(
-					$1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::text[],
-					$6::boolean[], $7::bigint[], $8::bigint[], $9::int[]
-				)`,
-				[
-					txnIds,
-					entryAccountIds,
-					entryTypes,
-					entryAmounts,
-					entryCurrencies,
-					txnIds.map(() => false),
-					entryBBs,
-					entryBAs,
-					entryVersions,
-				],
-			);
-
-			// --- account_balance_version ---
-			const abvAccountIds: string[] = [];
-			const abvVersions: number[] = [];
-			const abvBalances: number[] = [];
-			const abvCreditBals: number[] = [];
-			const abvDebitBals: number[] = [];
-			const abvPendingDebits: number[] = [];
-			const abvPendingCredits: number[] = [];
-			const abvStatuses: string[] = [];
-			const abvChecksums: string[] = [];
-			const abvFreezeReasons: (string | null)[] = [];
-			const abvFrozenAts: (string | null)[] = [];
-			const abvFrozenBys: (string | null)[] = [];
-			const abvClosedAts: (string | null)[] = [];
-			const abvClosedBys: (string | null)[] = [];
-			const abvClosureReasons: (string | null)[] = [];
-			const abvChangeTypes: string[] = [];
-			const abvCausedByTxnIds: string[] = [];
-
-			for (const v of valid) {
-				abvAccountIds.push(v.account.id);
-				abvVersions.push(v.newVersion);
-				abvBalances.push(v.balanceAfter);
-				abvCreditBals.push(v.newCreditBalance);
-				abvDebitBals.push(v.newDebitBalance);
-				abvPendingDebits.push(Number(v.account.pending_debit));
-				abvPendingCredits.push(Number(v.account.pending_credit));
-				abvStatuses.push(v.account.status);
-				abvChecksums.push(v.checksum);
-				abvFreezeReasons.push(v.account.freeze_reason ?? null);
-				abvFrozenAts.push(v.account.frozen_at ? String(v.account.frozen_at) : null);
-				abvFrozenBys.push(v.account.frozen_by ?? null);
-				abvClosedAts.push(v.account.closed_at ? String(v.account.closed_at) : null);
-				abvClosedBys.push(v.account.closed_by ?? null);
-				abvClosureReasons.push(v.account.closure_reason ?? null);
-				abvChangeTypes.push(v.item.type === "credit" ? "credit" : "debit");
-				abvCausedByTxnIds.push(v.transactionId);
-			}
-
-			await tx.raw(
-				`INSERT INTO ${t("account_balance_version")} (
-					account_id, version, balance, credit_balance, debit_balance,
-					pending_debit, pending_credit, status, checksum,
-					freeze_reason, frozen_at, frozen_by,
-					closed_at, closed_by, closure_reason,
-					change_type, caused_by_transaction_id
-				)
-				SELECT * FROM UNNEST(
-					$1::uuid[], $2::int[], $3::bigint[], $4::bigint[], $5::bigint[],
-					$6::bigint[], $7::bigint[], $8::text[], $9::text[],
-					$10::text[], $11::timestamptz[], $12::text[],
-					$13::timestamptz[], $14::text[], $15::text[],
-					$16::text[], $17::uuid[]
-				)`,
-				[
-					abvAccountIds,
-					abvVersions,
-					abvBalances,
-					abvCreditBals,
-					abvDebitBals,
-					abvPendingDebits,
-					abvPendingCredits,
-					abvStatuses,
-					abvChecksums,
-					abvFreezeReasons,
-					abvFrozenAts,
-					abvFrozenBys,
-					abvClosedAts,
-					abvClosedBys,
-					abvClosureReasons,
-					abvChangeTypes,
-					abvCausedByTxnIds,
-				],
-			);
-
-			// --- entry_record (system/hot account side) ---
-			const hotSysAccounts: string[] = [];
-			const hotEntryTypes: string[] = [];
-			const hotAmounts: number[] = [];
-			const hotCurrencies: string[] = [];
-
-			for (const v of valid) {
-				hotSysAccounts.push(v.systemAccountId);
-				hotEntryTypes.push(v.item.type === "credit" ? "DEBIT" : "CREDIT");
-				hotAmounts.push(v.item.amount);
-				hotCurrencies.push(v.account.currency);
-			}
-
-			await tx.raw(
-				`INSERT INTO ${t("entry_record")} (
-					transaction_id, system_account_id, entry_type, amount, currency, is_hot_account
-				)
-				SELECT * FROM UNNEST(
-					$1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::text[], $6::boolean[]
-				)`,
-				[txnIds, hotSysAccounts, hotEntryTypes, hotAmounts, hotCurrencies, txnIds.map(() => true)],
-			);
-
-			// --- hot_account_entry ---
-			const hotAccIds: string[] = [];
-			const hotSignedAmounts: number[] = [];
-			const hotHotEntryTypes: string[] = [];
-
-			for (const v of valid) {
-				const sysEntryType = v.item.type === "credit" ? "DEBIT" : "CREDIT";
-				const signedAmount = sysEntryType === "DEBIT" ? -v.item.amount : v.item.amount;
-				hotAccIds.push(v.systemAccountId);
-				hotSignedAmounts.push(signedAmount);
-				hotHotEntryTypes.push(sysEntryType);
-			}
-
-			await tx.raw(
-				`INSERT INTO ${t("hot_account_entry")} (
-					account_id, amount, entry_type, transaction_id, status
-				)
-				SELECT * FROM UNNEST(
-					$1::uuid[], $2::bigint[], $3::text[], $4::uuid[], $5::text[]
-				)`,
-				[hotAccIds, hotSignedAmounts, hotHotEntryTypes, txnIds, txnIds.map(() => "pending")],
-			);
-
-			// --- ledger_event (if event sourcing enabled) ---
-			if (ctx.options.advanced.enableEventSourcing !== false) {
-				const evtIds: string[] = [];
-				const evtLedgerIds: string[] = [];
-				const evtAggIds: string[] = [];
-				const evtEventData: string[] = [];
-				const evtCorrelationIds: string[] = [];
-				const evtHashes: (string | null)[] = [];
-
-				for (const v of valid) {
-					evtIds.push(v.eventId);
-					evtLedgerIds.push(ledgerId);
-					evtAggIds.push(v.transactionId);
-					evtEventData.push(
-						JSON.stringify({
-							reference: v.item.reference,
-							amount: v.item.amount,
-							source: v.item.type === "debit" ? v.item.holderId : v.item.systemAccount,
-							destination: v.item.type === "credit" ? v.item.holderId : v.item.systemAccount,
-							category: v.item.category,
-						}),
-					);
-					evtCorrelationIds.push(v.correlationId);
-					evtHashes.push(v.eventHash);
-				}
-
-				await tx.raw(
-					`INSERT INTO ${t("ledger_event")} (
-						id, ledger_id, aggregate_type, aggregate_id, aggregate_version,
-						event_type, event_data, correlation_id, hash, prev_hash
-					)
-					SELECT * FROM UNNEST(
-						$1::uuid[], $2::text[], $3::text[], $4::uuid[], $5::int[],
-						$6::text[], $7::jsonb[], $8::uuid[], $9::text[], $10::text[]
-					)`,
-					[
-						evtIds,
-						evtLedgerIds,
-						evtIds.map(() => "transaction"),
-						evtAggIds,
-						evtIds.map(() => 1),
-						evtIds.map(() => "transaction:posted"),
-						evtEventData,
-						evtCorrelationIds,
-						evtHashes,
-						evtIds.map(() => null),
-					],
+			if (uniqueAccountIds.length > 0) {
+				const prevRows = await tx.raw<{ account_id: string; hash: string }>(
+					`SELECT DISTINCT ON (account_id) account_id, hash
+					 FROM ${t("entry")}
+					 WHERE account_id = ANY($1::uuid[])
+					 ORDER BY account_id, sequence_number DESC`,
+					[uniqueAccountIds],
 				);
+				for (const row of prevRows) {
+					prevHashMap.set(row.account_id, row.hash);
+				}
 			}
 
-			// --- outbox ---
+			// Also fetch prev_hash for system accounts
+			const uniqueSystemAccountIds = [...new Set(valid.map((v) => v.systemAccountId))];
+			if (uniqueSystemAccountIds.length > 0) {
+				const prevRows = await tx.raw<{ account_id: string; hash: string }>(
+					`SELECT DISTINCT ON (account_id) account_id, hash
+					 FROM ${t("entry")}
+					 WHERE account_id = ANY($1::uuid[])
+					 ORDER BY account_id, sequence_number DESC`,
+					[uniqueSystemAccountIds],
+				);
+				for (const row of prevRows) {
+					prevHashMap.set(row.account_id, row.hash);
+				}
+			}
+
+			// Track per-account chain state (hash evolves as we add entries within the batch)
+			const chainState = new Map<string, string | null>();
+
+			const userEntryTransferIds: string[] = [];
+			const userEntryAccountIds: string[] = [];
+			const userEntryTypes: string[] = [];
+			const userEntryAmounts: number[] = [];
+			const userEntryCurrencies: string[] = [];
+			const userEntryBBs: (number | null)[] = [];
+			const userEntryBAs: (number | null)[] = [];
+			const userEntryVersions: (number | null)[] = [];
+			const userEntryHashes: string[] = [];
+			const userEntryPrevHashes: (string | null)[] = [];
+
+			for (const v of valid) {
+				const accountId = v.account.id;
+				const prevHash = chainState.get(accountId) ?? prevHashMap.get(accountId) ?? null;
+
+				const entryData = {
+					transferId: v.transferId,
+					accountId,
+					entryType: v.item.type === "credit" ? "CREDIT" : "DEBIT",
+					amount: v.item.amount,
+					currency: v.account.currency,
+					balanceBefore: v.balanceBefore,
+					balanceAfter: v.balanceAfter,
+					version: v.newVersion,
+				};
+				const hash = computeHash(prevHash, entryData, hmacSecret);
+				chainState.set(accountId, hash);
+
+				userEntryTransferIds.push(v.transferId);
+				userEntryAccountIds.push(accountId);
+				userEntryTypes.push(v.item.type === "credit" ? "CREDIT" : "DEBIT");
+				userEntryAmounts.push(v.item.amount);
+				userEntryCurrencies.push(v.account.currency);
+				userEntryBBs.push(v.balanceBefore);
+				userEntryBAs.push(v.balanceAfter);
+				userEntryVersions.push(v.newVersion);
+				userEntryHashes.push(hash);
+				userEntryPrevHashes.push(prevHash);
+			}
+
+			await tx.raw(
+				`INSERT INTO ${t("entry")} (
+					transfer_id, account_id, entry_type, amount, currency,
+					balance_before, balance_after, account_version,
+					sequence_number, hash, prev_hash, effective_date
+				)
+				SELECT
+					t.transfer_id, t.account_id, t.entry_type, t.amount, t.currency,
+					t.balance_before, t.balance_after, t.account_version,
+					nextval('${t("entry")}_sequence_number_seq'), t.hash, t.prev_hash, NOW()
+				FROM UNNEST(
+					$1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::text[],
+					$6::bigint[], $7::bigint[], $8::int[],
+					$9::text[], $10::text[]
+				) AS t(transfer_id, account_id, entry_type, amount, currency,
+					balance_before, balance_after, account_version,
+					hash, prev_hash)`,
+				[
+					userEntryTransferIds,
+					userEntryAccountIds,
+					userEntryTypes,
+					userEntryAmounts,
+					userEntryCurrencies,
+					userEntryBBs,
+					userEntryBAs,
+					userEntryVersions,
+					userEntryHashes,
+					userEntryPrevHashes,
+				],
+			);
+
+			// --- entry INSERT (system/hot account side — with hash chain, no balance) ---
+			const sysEntryTransferIds: string[] = [];
+			const sysEntryAccountIds: string[] = [];
+			const sysEntryTypes: string[] = [];
+			const sysEntryAmounts: number[] = [];
+			const sysEntryCurrencies: string[] = [];
+			const sysEntryHashes: string[] = [];
+			const sysEntryPrevHashes: (string | null)[] = [];
+
+			for (const v of valid) {
+				const systemAccountId = v.systemAccountId;
+				const prevHash = chainState.get(systemAccountId) ?? prevHashMap.get(systemAccountId) ?? null;
+
+				const entryType = v.item.type === "credit" ? "DEBIT" : "CREDIT";
+				const entryData = {
+					transferId: v.transferId,
+					accountId: systemAccountId,
+					entryType,
+					amount: v.item.amount,
+					currency: v.account.currency,
+					isHot: true,
+				};
+				const hash = computeHash(prevHash, entryData, hmacSecret);
+				chainState.set(systemAccountId, hash);
+
+				sysEntryTransferIds.push(v.transferId);
+				sysEntryAccountIds.push(systemAccountId);
+				sysEntryTypes.push(entryType);
+				sysEntryAmounts.push(v.item.amount);
+				sysEntryCurrencies.push(v.account.currency);
+				sysEntryHashes.push(hash);
+				sysEntryPrevHashes.push(prevHash);
+			}
+
+			await tx.raw(
+				`INSERT INTO ${t("entry")} (
+					transfer_id, account_id, entry_type, amount, currency,
+					sequence_number, hash, prev_hash, effective_date
+				)
+				SELECT
+					t.transfer_id, t.account_id, t.entry_type, t.amount, t.currency,
+					nextval('${t("entry")}_sequence_number_seq'), t.hash, t.prev_hash, NOW()
+				FROM UNNEST(
+					$1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::text[],
+					$6::text[], $7::text[]
+				) AS t(transfer_id, account_id, entry_type, amount, currency,
+					hash, prev_hash)`,
+				[
+					sysEntryTransferIds,
+					sysEntryAccountIds,
+					sysEntryTypes,
+					sysEntryAmounts,
+					sysEntryCurrencies,
+					sysEntryHashes,
+					sysEntryPrevHashes,
+				],
+			);
+
+			// --- account UPDATE (direct balance mutation — replaces account_balance_version + cache) ---
+			// Collect the FINAL state per account (not per-transaction)
+			const accountUpdates = new Map<
+				string,
+				{
+					balance: number;
+					creditBalance: number;
+					debitBalance: number;
+					version: number;
+					checksum: string;
+				}
+			>();
+
+			for (const v of valid) {
+				// Always keep the last (highest version) state per account
+				const existing = accountUpdates.get(v.account.id);
+				if (!existing || v.newVersion > existing.version) {
+					accountUpdates.set(v.account.id, {
+						balance: v.balanceAfter,
+						creditBalance: v.newCreditBalance,
+						debitBalance: v.newDebitBalance,
+						version: v.newVersion,
+						checksum: v.checksum,
+					});
+				}
+			}
+
+			const updAccIds: string[] = [];
+			const updBals: number[] = [];
+			const updCBals: number[] = [];
+			const updDBals: number[] = [];
+			const updVers: number[] = [];
+			const updChks: string[] = [];
+
+			for (const [id, data] of accountUpdates) {
+				updAccIds.push(id);
+				updBals.push(data.balance);
+				updCBals.push(data.creditBalance);
+				updDBals.push(data.debitBalance);
+				updVers.push(data.version);
+				updChks.push(data.checksum);
+			}
+
+			await tx.raw(
+				`UPDATE ${t("account")} SET
+					balance = v.balance,
+					credit_balance = v.credit_balance,
+					debit_balance = v.debit_balance,
+					version = v.version,
+					checksum = v.checksum
+				FROM (
+					SELECT * FROM UNNEST(
+						$1::uuid[], $2::bigint[], $3::bigint[], $4::bigint[],
+						$5::int[], $6::text[]
+					) AS t(id, balance, credit_balance, debit_balance, version, checksum)
+				) AS v
+				WHERE ${t("account")}.id = v.id`,
+				[updAccIds, updBals, updCBals, updDBals, updVers, updChks],
+			);
+
+			// --- outbox INSERT ---
 			const outboxTopics: string[] = [];
 			const outboxPayloads: string[] = [];
 
@@ -675,7 +678,7 @@ export class TransactionBatchEngine {
 						holderId: v.item.holderId,
 						holderType: v.account.holder_type,
 						amount: v.item.amount,
-						transactionId: v.transactionId,
+						transferId: v.transferId,
 						reference: v.item.reference,
 						category: v.item.category,
 					}),
@@ -688,45 +691,20 @@ export class TransactionBatchEngine {
 				[outboxTopics, outboxPayloads],
 			);
 
-			// --- account_transaction_log (velocity) ---
-			const velAccIds: string[] = [];
-			const velTxnTypes: string[] = [];
-			const velAmounts: number[] = [];
-			const velCategories: string[] = [];
-			const velRefs: string[] = [];
-
-			for (const v of valid) {
-				velAccIds.push(v.account.id);
-				velTxnTypes.push(v.item.type);
-				velAmounts.push(v.item.amount);
-				velCategories.push(v.item.category);
-				velRefs.push(v.item.reference);
-			}
-
-			await tx.raw(
-				`INSERT INTO ${t("account_transaction_log")} (
-					account_id, ledger_txn_id, txn_type, amount, category, reference
-				)
-				SELECT * FROM UNNEST(
-					$1::uuid[], $2::uuid[], $3::text[], $4::bigint[], $5::text[], $6::text[]
-				)`,
-				[velAccIds, txnIds, velTxnTypes, velAmounts, velCategories, velRefs],
-			);
-
 			// --- idempotency keys (only for items that have them) ---
 			const idemItems = valid.filter((v) => v.item.idempotencyKey);
 			if (idemItems.length > 0) {
 				const idemLedgerIds: string[] = [];
 				const idemKeys: string[] = [];
 				const idemRefs: string[] = [];
-				const idemResults: string[] = [];
+				const idemResultData: string[] = [];
 				const ttl = Math.ceil((ctx.options.advanced.idempotencyTTL ?? 86_400_000) / 1000);
 
 				for (const v of idemItems) {
 					idemLedgerIds.push(ledgerId);
 					idemKeys.push(v.item.idempotencyKey!);
 					idemRefs.push(v.item.reference);
-					idemResults.push("null"); // Will be updated if needed
+					idemResultData.push("null"); // Will be updated if needed
 				}
 
 				await tx.raw(
@@ -738,100 +716,11 @@ export class TransactionBatchEngine {
 					SET result_data = EXCLUDED.result_data,
 						reference = EXCLUDED.reference,
 						expires_at = EXCLUDED.expires_at`,
-					[idemLedgerIds, idemKeys, idemRefs, idemResults],
-				);
-			}
-
-			// --- Batch UPDATE denormalized cache ---
-			if (ctx.options.advanced.useDenormalizedBalance) {
-				// Collect the FINAL state per account (not per-transaction)
-				const cacheUpdates = new Map<
-					string,
-					{
-						balance: number;
-						creditBalance: number;
-						debitBalance: number;
-						pendingDebit: number;
-						pendingCredit: number;
-						version: number;
-						status: string;
-						checksum: string;
-					}
-				>();
-
-				for (const v of valid) {
-					// Always keep the last (highest version) state per account
-					const existing = cacheUpdates.get(v.account.id);
-					if (!existing || v.newVersion > existing.version) {
-						cacheUpdates.set(v.account.id, {
-							balance: v.balanceAfter,
-							creditBalance: v.newCreditBalance,
-							debitBalance: v.newDebitBalance,
-							pendingDebit: Number(v.account.pending_debit),
-							pendingCredit: Number(v.account.pending_credit),
-							version: v.newVersion,
-							status: v.account.status,
-							checksum: v.checksum,
-						});
-					}
-				}
-
-				const cacheIds: string[] = [];
-				const cacheBals: number[] = [];
-				const cacheCBals: number[] = [];
-				const cacheDBals: number[] = [];
-				const cachePDs: number[] = [];
-				const cachePCs: number[] = [];
-				const cacheVers: number[] = [];
-				const cacheSts: string[] = [];
-				const cacheChks: string[] = [];
-
-				for (const [id, data] of cacheUpdates) {
-					cacheIds.push(id);
-					cacheBals.push(data.balance);
-					cacheCBals.push(data.creditBalance);
-					cacheDBals.push(data.debitBalance);
-					cachePDs.push(data.pendingDebit);
-					cachePCs.push(data.pendingCredit);
-					cacheVers.push(data.version);
-					cacheSts.push(data.status);
-					cacheChks.push(data.checksum);
-				}
-
-				await tx.raw(
-					`UPDATE ${t("account_balance")} SET
-						cached_balance = v.balance,
-						cached_credit_balance = v.credit_balance,
-						cached_debit_balance = v.debit_balance,
-						cached_pending_debit = v.pending_debit,
-						cached_pending_credit = v.pending_credit,
-						cached_version = v.version,
-						cached_status = v.status,
-						cached_checksum = v.checksum
-					FROM (
-						SELECT * FROM UNNEST(
-							$1::uuid[], $2::bigint[], $3::bigint[], $4::bigint[],
-							$5::bigint[], $6::bigint[], $7::int[], $8::text[], $9::text[]
-						) AS t(id, balance, credit_balance, debit_balance,
-							pending_debit, pending_credit, version, status, checksum)
-					) AS v
-					WHERE ${t("account_balance")}.id = v.id`,
-					[
-						cacheIds,
-						cacheBals,
-						cacheCBals,
-						cacheDBals,
-						cachePDs,
-						cachePCs,
-						cacheVers,
-						cacheSts,
-						cacheChks,
-					],
+					[idemLedgerIds, idemKeys, idemRefs, idemResultData],
 				);
 			}
 
 			// 6. Resolve all promises with response objects
-			const now = new Date();
 			for (const v of valid) {
 				const fullMetadata = {
 					...v.item.metadata,
@@ -840,20 +729,19 @@ export class TransactionBatchEngine {
 
 				const response: LedgerTransaction = rawToTransactionResponse(
 					{
-						id: v.transactionId,
+						id: v.transferId,
+						ledger_id: ledgerId,
 						reference: v.item.reference,
 						amount: v.item.amount,
 						currency: v.account.currency,
 						description: v.item.description,
 						source_account_id: v.item.type === "debit" ? v.account.id : null,
 						destination_account_id: v.item.type === "credit" ? v.account.id : null,
-						source_system_account_id: v.item.type === "credit" ? v.systemAccountId : null,
-						destination_system_account_id: v.item.type === "debit" ? v.systemAccountId : null,
 						correlation_id: v.correlationId,
 						is_reversal: false,
 						is_hold: false,
 						parent_id: null,
-						meta_data: fullMetadata,
+						metadata: fullMetadata,
 						created_at: now,
 						effective_date: now,
 						status: "posted",
@@ -861,10 +749,8 @@ export class TransactionBatchEngine {
 						committed_amount: null,
 						refunded_amount: 0,
 						hold_expires_at: null,
-						processing_at: null,
 						type: v.item.type,
-						ledger_id: ledgerId,
-					} as RawTransactionRow,
+					} as RawTransferRow,
 					v.item.type,
 					v.account.currency,
 				);

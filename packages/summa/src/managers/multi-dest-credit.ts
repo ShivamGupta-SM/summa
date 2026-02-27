@@ -2,6 +2,12 @@
 // MULTI-DESTINATION CREDIT HELPER
 // =============================================================================
 // Shared by hold-manager (commit) and transaction-manager (multiTransfer).
+//
+// v2 changes:
+// - account_balance → account (unified table)
+// - No more hot_account_entry table
+// - System account entries use insertEntryAndUpdateBalance with isHotAccount=true
+// - transactionId → transferId
 
 import type { HoldDestination, SummaContext, SummaTransactionAdapter } from "@summa-ledger/core";
 import { SummaError } from "@summa-ledger/core";
@@ -21,15 +27,13 @@ export interface CreditDestinationResult {
 /**
  * Distributes committed amount across multiple destinations.
  * Each destination gets its specified amount; last destination without an
- * explicit amount gets the remainder. Creates proper entry_record for each.
- *
- * Returns resolved destination info so callers can emit outbox events / log transactions.
+ * explicit amount gets the remainder.
  */
 export async function creditMultiDestinations(
 	tx: SummaTransactionAdapter,
 	ctx: SummaContext,
 	params: {
-		transactionId: string;
+		transferId: string;
 		currency: string;
 		totalAmount: number;
 		destinations: HoldDestination[];
@@ -37,7 +41,7 @@ export async function creditMultiDestinations(
 ): Promise<CreditDestinationResult[]> {
 	const t = createTableResolver(ctx.options.schema);
 	const ledgerId = getLedgerId(ctx);
-	const { transactionId, currency, totalAmount, destinations } = params;
+	const { transferId, currency, totalAmount, destinations } = params;
 
 	// Calculate amounts: explicit amounts first, then remainder
 	let explicitSum = 0;
@@ -66,7 +70,7 @@ export async function creditMultiDestinations(
 
 	const results: CreditDestinationResult[] = [];
 
-	// Batch-fetch all system accounts upfront to avoid N+1 queries in the loop
+	// Batch-fetch all system accounts upfront
 	const systemAccountNames = [
 		...new Set(destinations.map((d) => d.systemAccount).filter((name): name is string => !!name)),
 	];
@@ -80,9 +84,7 @@ export async function creditMultiDestinations(
 		systemAccountMap.set(name, sys);
 	}
 
-	// Collect entry records and hot account entries for batch insert
-	const entryInserts: Promise<unknown>[] = [];
-	const hotEntryInserts: Promise<unknown>[] = [];
+	const batchOps: Promise<unknown>[] = [];
 
 	for (let i = 0; i < destinations.length; i++) {
 		const dest = destinations[i]!;
@@ -90,23 +92,15 @@ export async function creditMultiDestinations(
 		if (destAmount <= 0) continue;
 
 		if (dest.systemAccount) {
-			// System account destination -- hot account pattern
+			// System account destination — hot path (entry only, no balance update)
 			const sys = systemAccountMap.get(dest.systemAccount);
 			if (!sys) throw SummaError.notFound(`System account ${dest.systemAccount} not found`);
 
-			hotEntryInserts.push(
-				tx.raw(
-					`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
-           VALUES ($1, $2, $3, $4, $5)`,
-					[sys.id, destAmount, "CREDIT", transactionId, "pending"],
-				),
-			);
-
-			entryInserts.push(
+			batchOps.push(
 				insertEntryAndUpdateBalance({
 					tx,
-					transactionId,
-					systemAccountId: sys.id,
+					transferId,
+					accountId: sys.id,
 					entryType: "CREDIT",
 					amount: destAmount,
 					currency,
@@ -120,10 +114,10 @@ export async function creditMultiDestinations(
 				amount: destAmount,
 			});
 		} else if (dest.holderId) {
-			// User account destination -- lock inside tx to prevent crediting frozen/closed accounts
+			// User account destination — lock and update balance
 			const destRows = await tx.raw<{ id: string; status: string }>(
-				`SELECT id, status FROM ${t("account_balance")}
-         WHERE ledger_id = $1 AND holder_id = $2
+				`SELECT id, status FROM ${t("account")}
+         WHERE ledger_id = $1 AND holder_id = $2 AND is_system = false
          LIMIT 1
          ${ctx.dialect.forUpdate()}`,
 				[ledgerId, dest.holderId],
@@ -135,16 +129,15 @@ export async function creditMultiDestinations(
 				throw SummaError.conflict(`Destination account ${dest.holderId} is ${destRow.status}`);
 			}
 
-			// Credit entry + balance update (sequential — SELECT+INSERT+UPDATE)
+			// Credit entry + balance update
 			await insertEntryAndUpdateBalance({
 				tx,
-				transactionId,
+				transferId,
 				accountId: destRow.id,
 				entryType: "CREDIT",
 				amount: destAmount,
 				currency,
 				isHotAccount: false,
-				updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
 			});
 
 			results.push({
@@ -155,8 +148,8 @@ export async function creditMultiDestinations(
 		}
 	}
 
-	// Batch insert all entry records
-	await Promise.all([...entryInserts, ...hotEntryInserts]);
+	// Execute batched system account operations
+	if (batchOps.length > 0) await Promise.all(batchOps);
 
 	return results;
 }

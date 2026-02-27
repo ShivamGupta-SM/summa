@@ -57,11 +57,9 @@ export interface ResolvedAdvancedOptions {
 	transactionTimeoutMs: number;
 	lockTimeoutMs: number;
 	maxTransactionAmount: number;
-	enableEventSourcing: boolean;
-	enableHashChain: boolean;
 	hmacSecret: string | null;
-	verifyHashOnRead: boolean;
-	useDenormalizedBalance: boolean;
+	/** Verify entry hash integrity on every read. Default: true */
+	verifyEntryHashOnRead: boolean;
 	lockRetryCount: number;
 	lockRetryBaseDelayMs: number;
 	lockRetryMaxDelayMs: number;

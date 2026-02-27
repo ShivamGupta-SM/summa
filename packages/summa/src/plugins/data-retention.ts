@@ -1,9 +1,9 @@
 // =============================================================================
 // DATA RETENTION PLUGIN -- Cleanup policy for plugin-owned tables
 // =============================================================================
-// Manages retention for velocity logs, audit logs, hot account entries,
-// and FX quotes. Core-owned tables (idempotency_key, processed_event,
-// worker_lease) are now cleaned by core workers and the outbox plugin.
+// Manages retention for velocity logs, audit logs, and FX quotes.
+// Core-owned tables (idempotency_key, processed_event, worker_lease)
+// are now cleaned by core workers and the outbox plugin.
 
 import type {
 	PluginApiRequest,
@@ -20,8 +20,6 @@ import { createTableResolver } from "@summa-ledger/core/db";
 export interface DataRetentionOptions {
 	/** Retention for audit logs. e.g. "365d", "7y". */
 	auditLogs?: string;
-	/** Retention for hot account entries. e.g. "24h" */
-	hotAccountEntries?: string;
 	/** Retention for velocity/rate-limit logs. Default: "30d" */
 	velocityLogs?: string;
 	/** Retention for FX quotes. e.g. "30d" */
@@ -94,15 +92,6 @@ export function dataRetention(options?: DataRetentionOptions): SummaPlugin {
 				column: "created_at",
 				retention: opts.auditLogs,
 				description: "Audit log entries",
-			});
-		}
-
-		if (opts.hotAccountEntries) {
-			policies.push({
-				table: "hot_account_entry",
-				column: "created_at",
-				retention: opts.hotAccountEntries,
-				description: "Hot account entries",
 			});
 		}
 

@@ -1,151 +1,38 @@
 ---
-title: Version Retention
-description: Archive and prune old account_balance_version rows to keep the table bounded for high-volume deployments.
+title: Version Retention (Removed)
+description: This plugin has been removed in v2. Balances are now mutable on the account row — no separate version table exists.
 icon: Clock
 ---
 
-## Overview
-
-As transaction volume grows, the `account_balance_version` table accumulates rows indefinitely — every credit, debit, transfer, hold commit, freeze, and unfreeze creates a new version row. At 100M transactions per year, this table can reach 200M+ rows, degrading index maintenance and query performance.
-
-The version retention plugin periodically archives old version rows and deletes them from the main table, keeping it bounded for fast reads and efficient maintenance.
-
-## Setup
-
-```ts
-import { createSumma } from "@summa-ledger/summa";
-import { versionRetention } from "@summa-ledger/summa/plugins";
-
-const summa = createSumma({
-  database: adapter,
-  currency: "USD",
-  plugins: [
-    versionRetention({
-      retainVersions: 100,   // Keep last 100 versions per account
-      retainDays: 90,        // Keep versions newer than 90 days
-      archiveTable: true,    // Copy old versions to archive before deleting
-      batchSize: 500,        // Process 500 accounts per run
-      interval: "1h",        // Run every hour
-    }),
-  ],
-});
-```
-
-## Configuration
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `retainVersions` | `number` | `100` | Keep the latest N versions per account |
-| `retainDays` | `number` | `90` | Keep versions newer than N days |
-| `archiveTable` | `boolean` | `true` | Move old versions to `account_balance_version_archive` before deleting |
-| `batchSize` | `number` | `500` | Number of accounts to process per worker run |
-| `interval` | `string` | `"1h"` | How often the retention worker runs |
-
-## How It Works
-
-The retention strategy uses **both** criteria — a version row is only pruned when it satisfies both conditions:
-
-1. **Beyond the retention count** — the version is older than the Nth-latest version for that account
-2. **Beyond the retention age** — the version's `created_at` is older than `retainDays`
-
-This ensures recent versions are never pruned, even if an account has more than `retainVersions` rows.
-
-### Worker Behavior
-
-1. The worker identifies accounts with more than `retainVersions` rows using a `GROUP BY` + `HAVING` query
-2. For each account (up to `batchSize` per run):
-   - Finds the version number at the `retainVersions` offset
-   - If `archiveTable: true`, copies eligible rows to the archive table with `ON CONFLICT DO NOTHING`
-   - Deletes eligible rows from the main table
-3. Uses a distributed lease to prevent duplicate runs in multi-instance deployments
-
-### Archive Table
-
-When `archiveTable: true` (default), the plugin registers an `account_balance_version_archive` table with the same schema as `account_balance_version` plus an `archived_at` timestamp. This table is automatically created by `summa migrate push`.
-
-The archive table preserves the full audit trail — you can query historical versions without impacting the performance of the main table.
-
-## Status Endpoint
-
-The plugin exposes a status endpoint for monitoring:
-
-```
-GET /version-retention/status
-```
-
-**Response:**
-
-```json
-{
-  "config": {
-    "retainVersions": 100,
-    "retainDays": 90,
-    "archiveTable": true,
-    "batchSize": 500,
-    "interval": "1h"
-  },
-  "versionTable": {
-    "totalRows": 1250000,
-    "totalAccounts": 15000,
-    "maxVersionsPerAccount": 342,
-    "avgVersionsPerAccount": 83
-  },
-  "archiveTable": {
-    "totalRows": 4500000
-  }
-}
-```
-
-## Recommended Configuration
-
-### Low-Volume (< 1M txns/month)
-
-```ts
-versionRetention({
-  retainVersions: 500,
-  retainDays: 365,
-  interval: "6h",
-})
-```
-
-### High-Volume (10M+ txns/month)
-
-```ts
-versionRetention({
-  retainVersions: 50,
-  retainDays: 30,
-  batchSize: 1000,
-  interval: "30m",
-})
-```
-
-<Callout type="info" title="Works with denormalized balance">
-  When `advanced.useDenormalizedBalance` is enabled, balance reads don't touch the version table at all — so aggressive retention is safe. The version table becomes purely an audit trail.
+<Callout type="error" title="Removed in v2">
+  The version retention plugin has been **removed** as part of the v2 schema redesign. If you are upgrading from v1, you can safely remove this plugin from your configuration.
 </Callout>
 
-## Combination with Table Partitioning
+## Why Was This Removed?
 
-For maximum performance, combine version retention with table partitioning on `account_balance_version`:
+In v1, every balance-mutating operation (credit, debit, transfer, hold commit, freeze, unfreeze) created a new row in the `account_balance_version` table. This append-only design required periodic pruning to keep the table bounded, which was the purpose of this plugin.
 
-```ts
-import { generatePartitionDDL, partitionMaintenance } from "@summa-ledger/summa/db";
-import { versionRetention } from "@summa-ledger/summa/plugins";
+In v2, the schema has been redesigned:
 
-// Partition the version table by month
-const ddl = generatePartitionDDL({
-  tables: {
-    account_balance_version: { type: "range", column: "created_at", interval: "monthly" },
-  },
-});
+- **`account_balance` and `account_balance_version` no longer exist.** There is now a single unified `account` table.
+- **Balances are mutable directly on the `account` row**, protected by a checksum for integrity.
+- **System accounts** (previously in a separate `system_account` table) are also stored in the unified `account` table with `is_system = true`.
+- **Audit history** is preserved through the `entry` table (which replaces `entry_record`, `ledger_event`, and `hot_account_entry`). Entries form a hash chain, providing a complete, tamper-evident record of all balance changes.
 
-plugins: [
-  versionRetention({ retainVersions: 100, retainDays: 90 }),
-  partitionMaintenance({
-    tables: { account_balance_version: { interval: "monthly" } },
-    createAhead: 3,
-    retainPartitions: 12,
-  }),
-]
-```
+Because there is no version table to accumulate unbounded rows, there is nothing to retain or prune.
 
-This ensures the version table is both bounded (retention) and efficiently organized (partitioning).
+## Migration from v1
+
+If you are upgrading from v1:
+
+1. Remove `versionRetention()` from your `plugins` array
+2. Remove any `advanced.useDenormalizedBalance` configuration (this option has been removed)
+3. Run `summa migrate push` to apply the v2 schema — the `account_balance_version` and `account_balance_version_archive` tables will not be created
+4. The `entry` table now serves as the authoritative audit trail for all balance changes
+
+## What Replaces It?
+
+- **Balance integrity** is enforced by a checksum on the `account` row rather than version history
+- **Audit trail** is provided by the `entry` table with hash chain verification
+- **Historical queries** (e.g., "what was the balance at time T?") can be answered by summing entries up to that timestamp via the statements plugin or direct queries against the `entry` table
+- For high-volume entry tables, use the [Event Store Partition](/docs/plugins/event-store-partition) plugin to keep the `entry` table efficiently partitioned

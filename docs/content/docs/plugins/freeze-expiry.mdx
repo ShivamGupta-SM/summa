@@ -48,21 +48,21 @@ await summa.accounts.freeze({
 
 2. **Background worker polls** — Every minute (configurable), the worker scans for frozen accounts with expired `frozen_until` timestamps.
 
-3. **Auto-unfreeze** — Expired accounts are unfrozen by inserting a new append-only version row with `status: "active"` and `change_type: "auto_unfreeze"`. A balance checksum is recomputed to maintain integrity.
+3. **Auto-unfreeze** — Expired accounts are unfrozen by updating the `account` row with `status: "active"` and recording `change_type: "auto_unfreeze"`. A balance checksum is recomputed to maintain integrity.
 
 4. **Outbox event** — An `ledger-account-auto-unfrozen` event is published to the outbox for downstream consumers.
 
 ## Schema Extension
 
-The plugin extends `account_balance_version` with:
+The plugin extends `account` with:
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `frozen_until` | `timestamp` | When the freeze should auto-expire. `NULL` = permanent freeze |
 
-## Append-Only Design
+## Update Design
 
-The plugin follows Summa's immutability architecture — it never UPDATEs existing rows. Instead, it INSERTs a new version row with the updated status. This preserves the full freeze/unfreeze history in the version table.
+The plugin updates the `account` row directly with the new status. Freeze and unfreeze history is preserved through the audit log and outbox events.
 
 ## Events
 

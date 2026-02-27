@@ -1,8 +1,6 @@
 // =============================================================================
 // SQL HELPERS — Shared SQL patterns for manager operations
 // =============================================================================
-// Extracted from hold-manager, correction-manager, transaction-manager, and
-// journal-manager to eliminate duplication.
 
 import type {
 	JournalEntryLeg,
@@ -15,34 +13,25 @@ import type {
 import { minorToDecimal, SummaError } from "@summa-ledger/core";
 import { createTableResolver } from "@summa-ledger/core/db";
 import { insertEntryAndUpdateBalance } from "./entry-balance.js";
-import { logTransactionInTx } from "./limit-manager.js";
-import type { LatestVersion, RawTransactionRow } from "./raw-types.js";
+import type { RawTransferRow } from "./raw-types.js";
 import { getSystemAccount } from "./system-accounts.js";
 
 // =============================================================================
-// TRANSACTION SQL
+// TRANSFER SQL
 // =============================================================================
 
-/** Build SQL to select transaction_record joined with latest transaction_status. */
-export function txnWithStatusSql(t: (name: string) => string): string {
-	return `SELECT tr.*, ts.status, ts.committed_amount, ts.refunded_amount, ts.posted_at
-FROM ${t("transaction_record")} tr
-JOIN LATERAL (
-  SELECT status, committed_amount, refunded_amount, posted_at
-  FROM ${t("transaction_status")}
-  WHERE transaction_id = tr.id
-  ORDER BY created_at DESC
-  LIMIT 1
-) ts ON true`;
+/** Build SQL to select from the `transfer` table. Status is a direct column now. */
+export function transferSelectSql(t: (name: string) => string): string {
+	return `SELECT * FROM ${t("transfer")}`;
 }
 
 // =============================================================================
 // RAW ROW → RESPONSE MAPPING
 // =============================================================================
 
-/** Convert a raw transaction row (with joined status) to the public LedgerTransaction shape. */
+/** Convert a raw transfer row to the public LedgerTransaction shape. */
 export function rawToTransactionResponse(
-	row: RawTransactionRow,
+	row: RawTransferRow,
 	type: TransactionType,
 	currency: string,
 ): LedgerTransaction {
@@ -57,11 +46,11 @@ export function rawToTransactionResponse(
 		description: row.description ?? "",
 		sourceAccountId: row.source_account_id,
 		destinationAccountId: row.destination_account_id,
-		correlationId: row.correlation_id,
+		correlationId: row.correlation_id ?? "",
 		isReversal: row.is_reversal,
 		parentId: row.parent_id,
 		metadata: (() => {
-			const raw = (row.meta_data ?? {}) as Record<string, unknown>;
+			const raw = (row.metadata ?? {}) as Record<string, unknown>;
 			const {
 				category: _c,
 				holderId: _h,
@@ -93,7 +82,6 @@ export function rawToTransactionResponse(
 interface ResolvedLeg {
 	leg: JournalEntryLeg;
 	accountId: string | null;
-	systemAccountId: string | null;
 	isSystemAccount: boolean;
 }
 
@@ -106,10 +94,10 @@ interface ResolvedLeg {
 export async function processJournalLegs(
 	tx: SummaTransactionAdapter,
 	ctx: SummaContext,
-	txnRecord: RawTransactionRow,
+	txnRecord: RawTransferRow,
 	legs: JournalEntryLeg[],
 	currency: string,
-	category: string,
+	_category: string,
 	ledgerId: string,
 ): Promise<void> {
 	const t = createTableResolver(ctx.options.schema);
@@ -131,9 +119,9 @@ export async function processJournalLegs(
 		if (leg.systemAccount) {
 			const sys = systemAccountMap.get(leg.systemAccount);
 			if (!sys) throw SummaError.notFound(`System account "${leg.systemAccount}" not found`);
-			resolved.push({ leg, accountId: null, systemAccountId: sys.id, isSystemAccount: true });
+			resolved.push({ leg, accountId: sys.id, isSystemAccount: true });
 		} else if (leg.holderId) {
-			resolved.push({ leg, accountId: null, systemAccountId: null, isSystemAccount: false });
+			resolved.push({ leg, accountId: null, isSystemAccount: false });
 		}
 	}
 
@@ -145,25 +133,17 @@ export async function processJournalLegs(
 
 	const holderToAccount = new Map<string, { id: string; status: string }>();
 	for (const holderId of holderIds) {
-		// Lock immutable parent, then read latest status from version
-		const parentRows = await tx.raw<{ id: string }>(
-			`SELECT id FROM ${t("account_balance")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1 ${ctx.dialect.forUpdate()}`,
+		// Lock account row and read status directly
+		const rows = await tx.raw<{ id: string; status: string }>(
+			`SELECT id, status FROM ${t("account")} WHERE ledger_id = $1 AND holder_id = $2 LIMIT 1 ${ctx.dialect.forUpdate()}`,
 			[ledgerId, holderId],
 		);
-		const parentRow = parentRows[0];
-		if (!parentRow) throw SummaError.notFound(`Account for holder "${holderId}" not found`);
-
-		const statusRows = await tx.raw<{ status: string }>(
-			`SELECT status FROM ${t("account_balance_version")}
-       WHERE account_id = $1 ORDER BY version DESC LIMIT 1`,
-			[parentRow.id],
-		);
-		const statusRow = statusRows[0];
-		if (!statusRow) throw SummaError.internal(`No version for account ${parentRow.id}`);
-		if (statusRow.status !== "active") {
-			throw SummaError.conflict(`Account for holder "${holderId}" is ${statusRow.status}`);
+		const row = rows[0];
+		if (!row) throw SummaError.notFound(`Account for holder "${holderId}" not found`);
+		if (row.status !== "active") {
+			throw SummaError.conflict(`Account for holder "${holderId}" is ${row.status}`);
 		}
-		holderToAccount.set(holderId, { id: parentRow.id, status: statusRow.status });
+		holderToAccount.set(holderId, row);
 	}
 
 	// Fill in resolved account IDs
@@ -175,70 +155,50 @@ export async function processJournalLegs(
 	}
 
 	// Process each leg
-	// User account entries are sequential (SELECT+INSERT+UPDATE per entry)
-	// Hot entries, outbox, and logs are batched
 	const batchOps: Promise<unknown>[] = [];
 
 	for (const r of resolved) {
 		const { leg } = r;
-
 		const entryType = leg.direction === "debit" ? ("DEBIT" as const) : ("CREDIT" as const);
 
-		if (r.isSystemAccount && r.systemAccountId) {
-			const hotAmount = entryType === "DEBIT" ? -leg.amount : leg.amount;
-			batchOps.push(
-				tx.raw(
-					`INSERT INTO ${t("hot_account_entry")} (account_id, amount, entry_type, transaction_id, status)
-           VALUES ($1, $2, $3, $4, $5)`,
-					[r.systemAccountId, hotAmount, entryType, txnRecord.id, "pending"],
-				),
-			);
-			batchOps.push(
-				insertEntryAndUpdateBalance({
+		if (r.accountId) {
+			if (r.isSystemAccount) {
+				// System account — hot path (skip balance update, batch later)
+				await insertEntryAndUpdateBalance({
 					tx,
-					transactionId: txnRecord.id,
-					systemAccountId: r.systemAccountId,
+					transferId: txnRecord.id,
+					accountId: r.accountId,
 					entryType,
 					amount: leg.amount,
 					currency,
 					isHotAccount: true,
-				}),
-			);
-		} else if (r.accountId) {
-			// User account — sequential entry + balance update
-			await insertEntryAndUpdateBalance({
-				tx,
-				transactionId: txnRecord.id,
-				accountId: r.accountId,
-				entryType,
-				amount: leg.amount,
-				currency,
-				isHotAccount: false,
-				updateDenormalizedCache: ctx.options.advanced.useDenormalizedBalance,
-			});
-
-			const topic = entryType === "DEBIT" ? "ledger-account-debited" : "ledger-account-credited";
-			batchOps.push(
-				logTransactionInTx(tx, {
+				});
+			} else {
+				// User account — full balance update
+				await insertEntryAndUpdateBalance({
+					tx,
+					transferId: txnRecord.id,
 					accountId: r.accountId,
-					ledgerTxnId: txnRecord.id,
-					txnType: entryType === "DEBIT" ? "debit" : "credit",
+					entryType,
 					amount: leg.amount,
-					category,
-					reference: txnRecord.reference,
-				}),
-			);
-			batchOps.push(
-				tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
-					topic,
-					JSON.stringify({
-						accountId: r.accountId,
-						amount: leg.amount,
-						transactionId: txnRecord.id,
-						reference: txnRecord.reference,
-					}),
-				]),
-			);
+					currency,
+					isHotAccount: false,
+				});
+
+				const topic =
+					entryType === "DEBIT" ? "ledger-account-debited" : "ledger-account-credited";
+				batchOps.push(
+					tx.raw(`INSERT INTO ${t("outbox")} (topic, payload) VALUES ($1, $2)`, [
+						topic,
+						JSON.stringify({
+							accountId: r.accountId,
+							amount: leg.amount,
+							transferId: txnRecord.id,
+							reference: txnRecord.reference,
+						}),
+					]),
+				);
+			}
 		}
 	}
 
@@ -246,30 +206,61 @@ export async function processJournalLegs(
 }
 
 // =============================================================================
-// ACCOUNT BALANCE VERSION HELPERS
+// ACCOUNT READ HELPERS
 // =============================================================================
 
 /**
- * Read the latest account_balance_version for an account.
- * Caller must hold FOR UPDATE lock on account_balance.id.
+ * Read the current balance state directly from the `account` table.
+ * In the v2 schema, balance is a mutable column on account (no LATERAL JOIN).
  */
-export async function readLatestVersion(
+export async function readAccountBalance(
 	tx: { raw: <T>(sql: string, params: unknown[]) => Promise<T[]> },
 	t: (name: string) => string,
 	accountId: string,
-): Promise<LatestVersion> {
-	const rows = await tx.raw<LatestVersion>(
+): Promise<{
+	version: number;
+	balance: number;
+	credit_balance: number;
+	debit_balance: number;
+	pending_debit: number;
+	pending_credit: number;
+	status: string;
+	checksum: string | null;
+	freeze_reason: string | null;
+	frozen_at: string | Date | null;
+	frozen_by: string | null;
+	closed_at: string | Date | null;
+	closed_by: string | null;
+	closure_reason: string | null;
+}> {
+	const rows = await tx.raw<{
+		version: number;
+		balance: number;
+		credit_balance: number;
+		debit_balance: number;
+		pending_debit: number;
+		pending_credit: number;
+		status: string;
+		checksum: string | null;
+		freeze_reason: string | null;
+		frozen_at: string | Date | null;
+		frozen_by: string | null;
+		closed_at: string | Date | null;
+		closed_by: string | null;
+		closure_reason: string | null;
+	}>(
 		`SELECT version, balance, credit_balance, debit_balance,
             pending_debit, pending_credit, status, checksum,
             freeze_reason, frozen_at, frozen_by,
             closed_at, closed_by, closure_reason
-     FROM ${t("account_balance_version")}
-     WHERE account_id = $1
-     ORDER BY version DESC
-     LIMIT 1`,
+     FROM ${t("account")}
+     WHERE id = $1`,
 		[accountId],
 	);
 	const row = rows[0];
-	if (!row) throw SummaError.internal(`No version found for account ${accountId}`);
+	if (!row) throw SummaError.internal(`Account ${accountId} not found`);
 	return row;
 }
+
+/** @deprecated Use `readAccountBalance` instead. Kept for backward compat during migration. */
+export const readLatestVersion = readAccountBalance;
